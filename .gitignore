@@ -1,0 +1,25 @@
+# Never commit local access configuration or credentials.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials/
+secrets/
+local-probe.local.json
+*.local.json
+runtime/
+logs/
+*.log
+
+# Build, test and reference-only inputs.
+/bin/
+/dist/
+/coverage.out
+/coverage.html
+/_references/
+/tmp/
+/.cache/
+*.test
+*.exe
+.DS_Store
