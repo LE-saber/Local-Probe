@@ -411,6 +411,44 @@ func TestSourceAndCloseFailuresAreSanitized(t *testing.T) {
 	}
 }
 
+func TestTypedSourceErrorsUseOnlyStableCodeAndMessage(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		code    string
+		message string
+	}{
+		{
+			name:    "known",
+			err:     &ItemError{Code: "unsupported_type", Message: "file type is not supported"},
+			code:    "unsupported_type",
+			message: "file type is not supported",
+		},
+		{
+			name:    "unknown code",
+			err:     &ItemError{Code: "secret_path", Message: "C:/private/secret.txt"},
+			code:    "unavailable",
+			message: "source operation failed",
+		},
+		{
+			name:    "unknown message",
+			err:     &ItemError{Code: "unsupported_type", Message: "C:/private/secret.txt"},
+			code:    "unavailable",
+			message: "source operation failed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := &fixtureSource{openErr: tc.err}
+			item := read(t, engineFor(t, source, DefaultLimits()), context.Background(), request("f", 0, 10)).Items[0]
+			expectCode(t, item, tc.code)
+			if item.Error.Message != tc.message {
+				t.Fatalf("message = %q, want %q", item.Error.Message, tc.message)
+			}
+		})
+	}
+}
+
 func TestTinyBatchBudgetDoesNotOpenUnfundedItems(t *testing.T) {
 	limits := DefaultLimits()
 	limits.MaxOutputBytes = 1

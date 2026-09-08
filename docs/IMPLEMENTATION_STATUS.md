@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-08。当前等级：**K0 内核原型，已进行实现者自测；不是可连接 ChatGPT 的 Local-Probe 产品。**
+日期：2026-09-08。当前等级：**K0 内核原型 + P04 部分实现，已进行实现者自测；不是可连接 ChatGPT 的 Local-Probe 产品。**
 
 ## 一、先计划，后实现
 
@@ -19,17 +19,25 @@
 | P01 | 未实测 | COMPATIBILITY.md 预检流程；没有真实账号、模型或 Tunnel 调用证据 |
 | P02 | 完成内核部分 | Scope/Source/Handle/Request/Result/Limits、接口边界、威胁模型 |
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
-| P04/P05 | 未实现 | 生产安全 root adapter、真实身份、MCP SDK/服务、原生 App/Tunnel 链路 |
+| P04 | 部分实现 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter 及 Windows 本机测试；junction/reparse、hardlink、volume identity 和完整攻击测试仍未完成 |
+| P05 | 未实现 | 真实身份、MCP SDK/服务、原生 App/Tunnel 链路 |
 | P06/P07 | 未实现 | 目录分页、行范围、内容搜索、workspace snapshot、模型任务效果评测 |
 | P08 | 未实现 | 有限环境/Git 探查，不提供任意 Shell |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
-代码位置：`internal/readcore/` 和 `cmd/readcore-demo/`。本轮没有调用独立 Codex 执行者；主计划中的任务包是可交接工作，不是已经执行的后台任务。
+代码位置：`internal/config/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/` 和 `cmd/readcore-demo/`。本轮没有调用独立 Codex 执行者；主计划中的任务包是可交接工作，不是已经执行的后台任务。
+
+### P04 增量事实（2026-09-08）
+
+- `config`/`policy` 已修复配置上限、重复 key、显式 `enabled` 语义，并由 `policy.BoundScope` 绑定 connection/profile revision 和 root/path deny。
+- `rootfs.Source` 从配置快照持有 Go 1.25+ `os.Root`，只读打开普通文件；`BoundScope` adapter 接入 `readcore.Engine`，Open、Metadata、ReadAt 均重新验证授权和撤权。
+- deny 匹配已覆盖 Windows 大小写不敏感语义与 `**`；Source revision 校验阻止“旧 Source + 新 scope”在 root ID 复用后访问旧 root。
+- 这些是当前代码和本机测试事实，不代表 P04 全部放行；junction/reparse、hardlink、volume identity、真实 auth/MCP/Tunnel/P01 仍未完成。
 
 ## 三、真正运行过的验证
 
-本地环境为 **Go 1.23.2 / Linux amd64**，无容器外网 DNS；GitHub 操作通过连接器完成。当前内核没有第三方模块依赖，因此可离线编译测试。不能因为当前环境只有旧工具链，就将其定为产品发布版本。
+早期 Linux 内核验证环境为 **Go 1.23.2 / Linux amd64**，无容器外网 DNS；GitHub 操作通过连接器完成。当前 `go.mod` 已提升到 Go 1.25.0，Windows rootfs 增量验证使用 Go 1.26.0。当前仍没有第三方模块依赖，因此可离线编译测试；工具链通过不等于产品发布版本。
 
 | 检查 | 实际结果 | 限制 |
 |---|---|---|
@@ -40,7 +48,7 @@
 | `FuzzValidPath`，3 秒、2 workers | PASS；39,940 次 fuzz 执行 | 短时探测，不是穷尽证明 |
 | `FuzzUTF8Pagination`，3 秒、2 workers | PASS；28,747 次 fuzz 执行 | 同上 |
 | Linux amd64 build | PASS | 本机运行 demo 已测 |
-| Windows amd64 cross-build | PASS | 没有 Windows 运行、junction 或安全路径测试 |
+| Windows amd64 cross-build | PASS（历史记录） | 该记录本身没有 Windows 运行、junction 或安全路径测试 |
 | macOS arm64 cross-build | PASS | 没有 macOS 运行测试 |
 
 最初将多项检查合并到一次命令时，外层命令在冷启动 fuzz 编译阶段达到执行工具时间上限；此前单元/竞争/vet/coverage 已结束。随后分别运行两项 fuzz，均实际通过。没有把未结束的一次命令记为通过。
@@ -75,29 +83,29 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 
 | 检查 | 实际结果 | 限制 |
 |---|---|---|
-| `gofmt -l internal cmd` | PASS | 修复原提交 Go 文件的 CRLF 导致的格式检查失败；仅规范化换行/格式，未改逻辑 |
+| `gofmt -l internal cmd` | PASS | 仅规范化换行/格式，未改逻辑 |
 | `git diff --check` | PASS | Git 输出的 `core.autocrlf` 换行转换提示不影响退出码 |
-| `go test -count=1 ./...` | PASS | 实现者自测 |
-| `go test -race -count=1 ./...` | PASS | 不等于真实多账号/全局调度验证 |
+| `go test -count=1 ./...` | PASS | 包含 rootfs 的正常读取、deny、撤权、链接/目录、版本和关闭测试；实现者自测 |
+| `go test -race -count=1 ./...` | PASS | 包含 rootfs 并发关闭测试；不等于真实多账号/全局调度验证 |
 | `go vet ./...` | PASS | 静态检查不是安全审计 |
-| `go build ./...` | PASS | 构建通过不等于 Windows 路径安全行为已验证 |
+| `go build ./...` | PASS | 构建通过不等于 junction/reparse、hardlink 或 volume identity 已安全验证 |
 
-本节结果是当前实现者在 Windows 上的增量验证，不构成独立安全审查，也不证明生产 rootfs、MCP、Tunnel、真实账号或多连接隔离已完成。既有 Linux 验证证据保持不变。
+本节结果是当前实现者在 Windows 上对 P04 部分实现的增量验证，不构成独立安全审查，也不证明 P04 全部放行、生产 rootfs、MCP、Tunnel、真实账号或多连接隔离已完成。既有 Linux 验证证据保持不变。
 
 ## 四、已知未完成边界
 
 - 没有真实身份认证；Scope 只能由可信代码创建，但调用方认证还未实现。
-- 没有生产路径打开器；词法检查不能防 symlink、junction、hardlink 或 TOCTOU。
+- 已有最小生产 rootfs adapter：使用 `os.Root`、逐组件 symlink 拒绝、普通文件检查和 bound adapter；junction/reparse、hardlink、volume identity 与完整 TOCTOU/OS 攻击测试仍未完成。
 - 没有签名 cursor、全局多连接公平调度、完整 MCP wire 限额或强快照。
 - byte offset 的 continuation 不能直接作为可跨账号转移的授权凭证。
 - Metadata 版本是弱证据，无法检测保持相同元数据的内容更改；batch 也不是全仓快照。
 - 暂不回收短文件/错误项的剩余配额；优先保证可解释和确定性。
 - 不能强制取消任意阻塞 OS I/O；当前 Source 约束与未来平台测试必须明确。
-- 未验证实际 ChatGPT App、目标 Pro、Tunnel、账号政策或两个真实账号并发。
+- 未验证实际 ChatGPT App、目标 Pro、Tunnel、真实 auth、P01 连接预检、账号政策或两个真实账号并发。
 - 未完成独立审查、生产部署或发布；没有运行任意本地命令或修改用户项目。
 
 ## 五、下一执行者的明确入口
 
-先按主计划 P01 取得一个真实最小 echo 调用证据，同时执行 P04/P05：升级/固定受支持工具链、实现安全 root Source、认证 ingress 和官方 MCP SDK 适配。允许修改 `internal/rootfs`、`internal/policy`、`internal/config`、`internal/mcpserver`、对应 tests/docs 及依赖文件；不在这一任务包增加索引、UI、Shell 或写文件。
+先补完 P04 rootfs 的 junction/reparse、hardlink、volume identity 和真实 Windows/Linux 攻击测试，再按主计划 P01 取得真实最小 echo 调用证据，推进 P05 的认证 ingress 和官方 MCP SDK 适配。当前不得据此开放 listener 或声称产品可连接 ChatGPT。允许修改 `internal/rootfs`、`internal/policy`、`internal/config`、`internal/mcpserver`、对应 tests/docs 及依赖文件；不在这一任务包增加索引、UI、Shell 或写文件。
 
 之后依次推进 P06/P07 的调查效果，P08 的固定探查动作，以及 P09/P10 的多连接隔离与恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。
