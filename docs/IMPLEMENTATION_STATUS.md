@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-07。当前等级：**K0 内核原型，已进行实现者自测；不是可连接 ChatGPT 的 Local-Probe 产品。**
+日期：2026-09-08。当前等级：**K0 内核原型，已进行实现者自测；不是可连接 ChatGPT 的 Local-Probe 产品。**
 
 ## 一、先计划，后实现
 
@@ -15,7 +15,7 @@
 
 | 计划项 | 状态 | 已有成果 |
 |---|---|---|
-| P00 | 主要完成 | 计划先行、来源 SHA、许可证/政策纠偏、分支；完整上游下载仍是后续步骤 |
+| P00 | 主要完成 | 计划先行、来源 SHA、许可证/政策纠偏、分支；指定上游选择性检出已于 2026-09-08 完成 |
 | P01 | 未实测 | COMPATIBILITY.md 预检流程；没有真实账号、模型或 Tunnel 调用证据 |
 | P02 | 完成内核部分 | Scope/Source/Handle/Request/Result/Limits、接口边界、威胁模型 |
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
@@ -68,6 +68,21 @@ go run ./cmd/readcore-demo -file ./README.md -offset 0 -max-bytes 4096
 ```
 
 GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/macOS 跑 core/demo 测试，并在 Linux 跑 race/fuzz。**写入 workflow 不等于 CI 成功；真实 run 状态以 PR/Actions 为准。** CI 的普通文件 demo 通过也不能替代未来 rootfs 安全测试。
+
+### Windows 增量验证（2026-09-08）
+
+在 **Windows amd64 / Go 1.26.0** 上补充运行了以下检查，均通过：
+
+| 检查 | 实际结果 | 限制 |
+|---|---|---|
+| `gofmt -l internal cmd` | PASS | 修复原提交 Go 文件的 CRLF 导致的格式检查失败；仅规范化换行/格式，未改逻辑 |
+| `git diff --check` | PASS | Git 输出的 `core.autocrlf` 换行转换提示不影响退出码 |
+| `go test -count=1 ./...` | PASS | 实现者自测 |
+| `go test -race -count=1 ./...` | PASS | 不等于真实多账号/全局调度验证 |
+| `go vet ./...` | PASS | 静态检查不是安全审计 |
+| `go build ./...` | PASS | 构建通过不等于 Windows 路径安全行为已验证 |
+
+本节结果是当前实现者在 Windows 上的增量验证，不构成独立安全审查，也不证明生产 rootfs、MCP、Tunnel、真实账号或多连接隔离已完成。既有 Linux 验证证据保持不变。
 
 ## 四、已知未完成边界
 
