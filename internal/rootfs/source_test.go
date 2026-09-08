@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/LE-saber/Local-Probe/internal/config"
 	"github.com/LE-saber/Local-Probe/internal/policy"
@@ -207,6 +209,163 @@ func TestSourceMetadataChangesAfterFileMutation(t *testing.T) {
 	}
 	if first.Version.Token == second.Version.Token || second.Size != int64(len("changed-size")) {
 		t.Fatalf("metadata token did not change: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestSourceRejectsHardlinks(t *testing.T) {
+	env := newTestSource(t, nil)
+	original := filepath.Join(env.dir, "original.txt")
+	alias := filepath.Join(env.dir, "alias.txt")
+	if err := os.WriteFile(original, []byte("hardlink"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(original, alias); err != nil {
+		t.Skipf("hardlink test requires a filesystem and permission supporting links: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(alias) })
+	if _, err := env.source.Open(context.Background(), env.bound, readcore.FileRef{RootID: "workspace", Path: "alias.txt"}); !errors.Is(err, ErrUnsupportedType) {
+		t.Fatalf("hardlink error = %v", err)
+	}
+}
+
+func TestMetadataTokenIncludesNativeIdentityWhenAvailable(t *testing.T) {
+	env := newTestSource(t, nil)
+	original := filepath.Join(env.dir, "identity.txt")
+	fixedTime := time.Unix(123456789, 0)
+	if err := os.WriteFile(original, []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(original, fixedTime, fixedTime); err != nil {
+		t.Skipf("filesystem does not support the required timestamp precision: %v", err)
+	}
+	info, err := os.Stat(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := env.source.Open(context.Background(), env.bound, readcore.FileRef{RootID: "workspace", Path: "identity.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileHandle, ok := handle.(*fileHandle)
+	if !ok {
+		t.Fatalf("unexpected handle type %T", handle)
+	}
+	native, err := nativeMetadata(fileHandle.file, info)
+	if err != nil || !native.hasIdentity {
+		_ = handle.Close()
+		t.Skipf("native file identity unavailable; metadata fallback is expected: %v", err)
+	}
+	first, err := handle.Metadata(context.Background())
+	if err != nil {
+		_ = handle.Close()
+		t.Fatal(err)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := filepath.Join(env.dir, "identity-replacement.txt")
+	if err := os.WriteFile(replacement, []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(replacement, info.ModTime(), info.ModTime()); err != nil {
+		t.Skipf("filesystem does not support restoring metadata timestamps: %v", err)
+	}
+	if err := os.Remove(original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, original); err != nil {
+		t.Fatal(err)
+	}
+	secondHandle, err := env.source.Open(context.Background(), env.bound, readcore.FileRef{RootID: "workspace", Path: "identity.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondHandle.Close()
+	second, err := secondHandle.Metadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Version.Token == second.Version.Token {
+		t.Fatalf("metadata token ignored native file identity: first=%q second=%q", first.Version.Token, second.Version.Token)
+	}
+}
+
+func TestMetadataIdentityFailureFailsClosed(t *testing.T) {
+	env := newTestSource(t, nil)
+	filePath := filepath.Join(env.dir, "identity-failure.txt")
+	if err := os.WriteFile(filePath, []byte("must not escape"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := nativeMetadataFn
+	nativeMetadataFn = func(*os.File, os.FileInfo) (fileIdentity, error) {
+		return fileIdentity{}, errors.New("injected native metadata failure")
+	}
+	t.Cleanup(func() { nativeMetadataFn = previous })
+
+	handle, err := env.source.Open(context.Background(), env.bound, readcore.FileRef{RootID: "workspace", Path: "identity-failure.txt"})
+	if handle != nil || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("identity failure Open() = handle %v, error %v", handle, err)
+	}
+
+	nativeMetadataFn = previous
+	handle, err = env.source.Open(context.Background(), env.bound, readcore.FileRef{RootID: "workspace", Path: "identity-failure.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+	nativeMetadataFn = func(*os.File, os.FileInfo) (fileIdentity, error) {
+		return fileIdentity{}, errors.New("injected native metadata failure")
+	}
+	metadata, err := handle.Metadata(context.Background())
+	if !errors.Is(err, ErrUnavailable) || metadata.Version.Token != "" {
+		t.Fatalf("identity failure Metadata() = %#v, %v", metadata, err)
+	}
+	boundSource, err := env.source.Bind(env.bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := readcore.New(boundSource, readcore.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.ReadBatch(context.Background(), env.scope, []readcore.Request{{
+		File:     readcore.FileRef{RootID: "workspace", Path: "identity-failure.txt"},
+		MaxBytes: 32,
+	}})
+	if err != nil || len(result.Items) != 1 || result.Items[0].Error == nil || result.Items[0].Content != "" {
+		t.Fatalf("identity failure Engine read = %#v, %v", result, err)
+	}
+}
+
+func TestMetadataIdentityFallbackIsExplicit(t *testing.T) {
+	env := newTestSource(t, nil)
+	filePath := filepath.Join(env.dir, "identity-fallback.txt")
+	if err := os.WriteFile(filePath, []byte("fallback"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := nativeMetadataFn
+	nativeMetadataFn = func(*os.File, os.FileInfo) (fileIdentity, error) {
+		return fileIdentity{}, nil
+	}
+	t.Cleanup(func() { nativeMetadataFn = previous })
+	handle, err := env.source.Open(context.Background(), env.bound, readcore.FileRef{RootID: "workspace", Path: "identity-fallback.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	metadata, err := handle.Metadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(metadata.Version.Token, "m0.") {
+		t.Fatalf("identity fallback token = %q", metadata.Version.Token)
 	}
 }
 

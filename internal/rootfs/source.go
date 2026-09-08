@@ -7,14 +7,10 @@ package rootfs
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -316,7 +312,7 @@ func rejectSymlinkComponents(root *os.Root, relativePath string) error {
 			return mapStatError(err)
 		}
 		finalInfo = info
-		if info.Mode()&os.ModeSymlink != 0 {
+		if info.Mode()&os.ModeSymlink != 0 || fileInfoReparse(info) {
 			return deniedError()
 		}
 	}
@@ -326,26 +322,6 @@ func rejectSymlinkComponents(root *os.Root, relativePath string) error {
 	return nil
 }
 
-func metadataFor(file *os.File, rootID string) (readcore.Metadata, error) {
-	if file == nil {
-		return readcore.Metadata{}, ErrUnavailable
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return readcore.Metadata{}, mapStatError(err)
-	}
-	if !info.Mode().IsRegular() {
-		return readcore.Metadata{}, unsupportedTypeError()
-	}
-	return readcore.Metadata{
-		Size: info.Size(),
-		Version: readcore.Version{
-			Token:    metadataToken(info),
-			Strength: "metadata",
-		},
-	}, nil
-}
-
 func unsupportedTypeError() error {
 	return errors.Join(ErrUnsupportedType, &readcore.ItemError{
 		Code:    "unsupported_type",
@@ -353,28 +329,19 @@ func unsupportedTypeError() error {
 	})
 }
 
-func metadataToken(info os.FileInfo) string {
-	var encoded [24]byte
-	binary.BigEndian.PutUint64(encoded[0:8], uint64(info.Size()))
-	binary.BigEndian.PutUint64(encoded[8:16], uint64(info.ModTime().UnixNano()))
-	binary.BigEndian.PutUint64(encoded[16:24], uint64(info.Mode()))
-	digest := sha256.Sum256(encoded[:])
-	return "m1." + hex.EncodeToString(digest[:])
-}
-
 func validateRootPath(rootPath string) (string, error) {
 	if rootPath == "" || !filepath.IsAbs(rootPath) {
 		return "", ErrInvalidRoot
 	}
-	if runtime.GOOS == "windows" && (strings.HasPrefix(rootPath, `\\`) || strings.HasPrefix(rootPath, `//`)) {
-		return "", ErrUnsupportedType
-	}
 	rootPath = filepath.Clean(rootPath)
+	if err := validateRootPathPlatform(rootPath); err != nil {
+		return "", err
+	}
 	info, err := os.Lstat(rootPath)
 	if err != nil {
 		return "", ErrInvalidRoot
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+	if info.Mode()&os.ModeSymlink != 0 || fileInfoReparse(info) || !info.IsDir() {
 		return "", ErrInvalidRoot
 	}
 	return rootPath, nil
