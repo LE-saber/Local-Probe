@@ -1,0 +1,137 @@
+{
+  "schema_version": "local-probe.p04-platform-verification.v0",
+  "date": "2026-09-09",
+  "verification_level": "bounded_implementer_self_verified",
+  "platforms": [
+    {
+      "platform": "windows/amd64",
+      "environment": {
+        "os": "Windows",
+        "go": "go1.26.0",
+        "arch": "amd64"
+      },
+      "commands": [
+        {
+          "command": "go test ./internal/rootfs -count=1 -v",
+          "result": "PASS",
+          "tests_observed": [
+            "TestWindowsUnicodeCaseAndCombiningPath",
+            "TestWindowsLongPathReadRemainsRootBound",
+            "TestWindowsRejectsSpecialPathsBeforeSourceOpen (ADS fixture created)",
+            "TestWindowsRejectsSymlinkAndJunctionSwapRace",
+            "TestWindowsHandleIdentityFields",
+            "TestWindowsRejectsJunctionReparse"
+          ]
+        },
+        {
+          "command": "go test ./internal/rootfs -run '^TestWindowsRejectsSymlinkAndJunctionSwapRace$' -count=5 -v",
+          "result": "PASS",
+          "assertions": [
+            "outside file marker unchanged",
+            "outside directory marker unchanged",
+            "read overlap counter greater than zero"
+          ]
+        },
+        {
+          "command": "go test -race ./internal/rootfs -run '^TestWindowsRejectsSymlinkAndJunctionSwapRace$' -count=1 -v",
+          "result": "PASS",
+          "assertions": [
+            "outside file marker unchanged",
+            "outside directory marker unchanged",
+            "read overlap counter greater than zero"
+          ]
+        },
+        {
+          "command": "go test -c ./internal/rootfs -o .tmp-rootfs-windows-cross.test.exe",
+          "result": "PASS",
+          "output_bytes": 5094912
+        },
+        {
+          "command": "$env:GOOS='linux'; $env:GOARCH='amd64'; go test -c ./internal/rootfs -o .tmp-rootfs-linux-cross.test",
+          "result": "PASS",
+          "output_bytes": 5422220
+        }
+      ],
+      "temporary_loopback_smb_mapping": {
+        "map_command": "New-PSDrive -Name Z -PSProvider FileSystem -Root '\\\\localhost\\C$' -Persist",
+        "map_result": "success",
+        "GetDriveTypeW_result": 4,
+        "remote_root_test_command": "go test ./internal/rootfs -run '^TestWindowsRejectsRemoteMappedRoot$' -count=1 -v",
+        "remote_root_test_result": "PASS",
+        "cleanup_command": "Remove-PSDrive -Name Z -Force",
+        "cleanup_result": "success",
+        "mapping_absent_after_cleanup": {
+          "PowerShell_PSDrive": true,
+          "LogicalDisk": true,
+          "net_use": true
+        }
+      }
+    },
+    {
+      "platform": "linux/amd64 under WSL2",
+      "environment": {
+        "distribution": "Ubuntu-22.04",
+        "kernel": "6.6.87.2-microsoft-standard-WSL2",
+        "go": "go1.26.2",
+        "arch": "amd64",
+        "bare_metal": false
+      },
+      "temporary_copy": {
+        "copy_commands": [
+          "src=/mnt/d/HOPP/download/Local-Probe/repo",
+          "tmp=$(mktemp -d /tmp/local-probe-full.XXXXXX)",
+          "cp -a \"$src\"/. \"$tmp\"/"
+        ],
+        "cleanup_commands": [
+          "cleanup() { rm -rf -- \"$tmp\"; }",
+          "trap cleanup EXIT"
+        ],
+        "cleanup_result": "PASS",
+        "leftover_check_command": "find /tmp -maxdepth 1 -type d \\( -name 'local-probe-full.*' -o -name 'local-probe-test.*' \\) -print",
+        "leftover_check_result": "PASS (no output)"
+      },
+      "commands": [
+        {
+          "command": "go test ./internal/rootfs -run '^(TestSourceRejectsUnixFIFO|TestSourceRejectsUnixSocket|TestSourceRejectsHardlinks|TestSourceRejectsUnixSymlinkSwapEscape)$' -count=5 -v",
+          "result": "PASS",
+          "tests_observed": [
+            "TestSourceRejectsUnixFIFO",
+            "TestSourceRejectsUnixSocket",
+            "TestSourceRejectsHardlinks",
+            "TestSourceRejectsUnixSymlinkSwapEscape"
+          ],
+          "swap_observations": {
+            "regular_swaps_each_run": 128,
+            "symlink_swaps_each_run": 128,
+            "inside_reads_minimum": 492,
+            "safe_rejections_minimum": 488,
+            "overlapping_read_attempts_minimum": 1023,
+            "outside_marker_unchanged": true
+          }
+        },
+        {
+          "command": "go test -race ./internal/rootfs -run '^(TestSourceRejectsUnixFIFO|TestSourceRejectsUnixSocket|TestSourceRejectsHardlinks|TestSourceRejectsUnixSymlinkSwapEscape)$' -count=5 -v",
+          "result": "PASS",
+          "tests_observed": [
+            "TestSourceRejectsUnixFIFO",
+            "TestSourceRejectsUnixSocket",
+            "TestSourceRejectsHardlinks",
+            "TestSourceRejectsUnixSymlinkSwapEscape"
+          ],
+          "swap_observations": {
+            "regular_swaps_each_run": 128,
+            "symlink_swaps_each_run": 128,
+            "inside_reads_minimum": 590,
+            "safe_rejections_minimum": 414,
+            "overlapping_read_attempts_minimum": 1021,
+            "outside_marker_unchanged": true
+          }
+        },
+        {
+          "command": "go vet ./...",
+          "result": "PASS"
+        }
+      ]
+    }
+  ]
+}

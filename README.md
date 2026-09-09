@@ -8,20 +8,21 @@
 
 [实际进度与验证记录](docs/IMPLEMENTATION_STATUS.md) · [接口与边界](docs/TOOL_CONTRACTS.md) · [威胁模型](docs/THREAT_MODEL.md) · [兼容性预检](docs/COMPATIBILITY.md) · [上游来源与复用决定](docs/UPSTREAM_REVIEW.md)
 
-## 当前状态：K0 内核原型，不是可连接 ChatGPT 的产品
+## 当前状态：K0 内核原型，P04 部分实现，不是可连接 ChatGPT 的产品
 
-当前实现了有界字节范围读取、确定性批量预算、输入顺序保持、部分失败、UTF-8 安全续读、版本变化检测及本机命令行演示。没有 MCP listener、生产级路径打开器、账号认证、Tunnel supervisor、目录搜索、行范围接口或文件修改功能。
+当前实现了有界字节范围读取、确定性批量预算、输入顺序保持、部分失败、UTF-8 安全续读、版本变化检测及本机命令行演示。P04 已有配置/策略校验、`policy.BoundScope`、基于 Go `os.Root` 的只读 rootfs 和绑定到 `readcore` 的 Source adapter；仍没有 MCP listener、真实账号认证、Tunnel supervisor、目录搜索、行范围接口或文件修改功能。
 
-`Source` 是尚需安全实现的受信任边界，词法路径检查不等于文件系统隔离。演示程序仅打开本地操作者明确指定的文件，不能改成接收远程路径后直接部署。
+rootfs 已对绝对/相对 root、普通文件、逐组件 symlink 拒绝、Scope 撤权和元数据版本做最小实现；junction/reparse、hardlink、volume identity 等 P04 安全闸门仍未完成。词法路径检查和当前自测都不等于完整文件系统隔离。演示程序仅打开本地操作者明确指定的文件，不能改成接收远程路径后直接部署。
 
 ## 运行已有代码
 
-使用受支持的 Go 版本。当前 `go.mod` 的 1.23 是离线算法原型的最低编译要求，不是产品发布工具链承诺；加入生产 root adapter/MCP 前须按计划升级并锁定工具链和 SDK。
+使用受支持的 Go 版本。当前 `go.mod` 要求 Go 1.25.0；Windows 本机验证使用 Go 1.26.0。该版本要求服务于 `os.Root` rootfs 和后续官方 SDK 集成，不代表产品已经完成发布工具链、真实认证或 MCP 链路。
 
 ```sh
 go test ./...
 go test -race ./...
 go vet ./...
+go build ./...
 go run ./cmd/readcore-demo -file ./README.md -offset 0 -max-bytes 4096
 ```
 
@@ -47,6 +48,6 @@ ChatGPT 原生自定义 App
 
 ## 接续开发
 
-下一条关键路径为计划 P01 的真实连接预检，以及 P04/P05 的安全 root adapter + 官方 MCP SDK。搜索与概览随后接入；多连接与故障恢复按 P09/P10 实现。索引是否引入取决于对照基准，不以工具数或代码量判断完成度。
+下一条关键路径为补完 P04 rootfs 的 junction/reparse、hardlink、volume identity 和真实 Windows/Linux 攻击测试，并执行 P01 的真实连接预检、P05 的认证 ingress 与官方 MCP SDK。搜索与概览随后接入；多连接与故障恢复按 P09/P10 实现。当前不得开放网络 listener，也不得据此声称产品可连接 ChatGPT。
 
 本仓库暂未选择对外发布许可证。当前代码是本项目独立实现，未复制 LCA、ChatCMD 或 Codex Free 源码；任何后续复用必须先审核上游许可并保留必要通知。

@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-08。当前等级：**K0 内核原型，已进行实现者自测；不是可连接 ChatGPT 的 Local-Probe 产品。**
+日期：2026-09-09。当前等级：**K0 内核原型 + P04 部分实现；P04 平台有界验证已完成；不是可连接 ChatGPT 的 Local-Probe 产品。**
 
 ## 一、先计划，后实现
 
@@ -19,17 +19,27 @@
 | P01 | 未实测 | COMPATIBILITY.md 预检流程；没有真实账号、模型或 Tunnel 调用证据 |
 | P02 | 完成内核部分 | Scope/Source/Handle/Request/Result/Limits、接口边界、威胁模型 |
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
-| P04/P05 | 未实现 | 生产安全 root adapter、真实身份、MCP SDK/服务、原生 App/Tunnel 链路 |
+| P04 | 部分实现；平台有界验证完成 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter；Windows 与 WSL2 的特殊文件、路径、symlink/junction swap 和临时 loopback SMB remote-root 测试已按边界完成；仍不是独立安全审查或发布结论 |
+| P05 | 未实现 | 真实身份、MCP SDK/服务、原生 App/Tunnel 链路 |
 | P06/P07 | 未实现 | 目录分页、行范围、内容搜索、workspace snapshot、模型任务效果评测 |
 | P08 | 未实现 | 有限环境/Git 探查，不提供任意 Shell |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
-代码位置：`internal/readcore/` 和 `cmd/readcore-demo/`。本轮没有调用独立 Codex 执行者；主计划中的任务包是可交接工作，不是已经执行的后台任务。
+代码位置：`internal/config/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/` 和 `cmd/readcore-demo/`。本轮没有调用独立 Codex 执行者；主计划中的任务包是可交接工作，不是已经执行的后台任务。
+
+### P04 增量事实（2026-09-09）
+
+- `config`/`policy` 已修复配置上限、重复 key、显式 `enabled` 语义，并由 `policy.BoundScope` 绑定 connection/profile revision 和 root/path deny。
+- `rootfs.Source` 从配置快照持有 Go 1.25+ `os.Root`，只读打开普通文件；`BoundScope` adapter 接入 `readcore.Engine`，Open、Metadata、ReadAt 均重新验证授权和撤权。
+- deny 匹配已覆盖 Windows 大小写不敏感语义与 `**`；Source revision 校验阻止“旧 Source + 新 scope”在 root ID 复用后访问旧 root。
+- Windows handle metadata 已纳入 volume/file identity、link count 和 reparse attributes；hardlink、junction/reparse、Unicode/组合字符、长路径、ADS/保留名/非法路径和 symlink+junction swap 测试通过。临时通过 `New-PSDrive -Name Z -PSProvider FileSystem -Root '\\localhost\C$' -Persist` 将 `Z:` 映射到 loopback SMB 共享时，`GetDriveTypeW` 返回 4，remote-root 测试通过；finally 执行 `Remove-PSDrive -Name Z -Force`，并复核 PowerShell PSDrive、LogicalDisk 和 `net use` 均无 `Z:`。
+- WSL2 Ubuntu-22.04（Linux 6.6.87.2-microsoft-standard-WSL2、Go 1.26.2）临时复制当前工作树后，FIFO、Unix socket、hardlink、symlink swap 的目标测试 `-count=5 -v` 及 race 版本通过，`go vet ./...` 通过；这不是裸机 Linux 证据。机器可读记录见 `docs/evidence/P04-platform-verification.json`。
+- 上述是实现者在明确环境和次数下的有界验证，不是数学证明，也不代表 P04 全部放行；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台、独立安全审查仍是残余风险；P01/P05 仍未实测，真实 auth/MCP/Tunnel 也未完成。
 
 ## 三、真正运行过的验证
 
-本地环境为 **Go 1.23.2 / Linux amd64**，无容器外网 DNS；GitHub 操作通过连接器完成。当前内核没有第三方模块依赖，因此可离线编译测试。不能因为当前环境只有旧工具链，就将其定为产品发布版本。
+早期 Linux 内核验证环境为 **Go 1.23.2 / Linux amd64**，无容器外网 DNS；GitHub 操作通过连接器完成。当前 `go.mod` 已提升到 Go 1.25.0，Windows rootfs 增量验证使用 Go 1.26.0，WSL2 平台验证使用 Go 1.26.2。当前仍没有第三方模块依赖，因此可离线编译测试；工具链通过不等于产品发布版本。
 
 | 检查 | 实际结果 | 限制 |
 |---|---|---|
@@ -40,7 +50,8 @@
 | `FuzzValidPath`，3 秒、2 workers | PASS；39,940 次 fuzz 执行 | 短时探测，不是穷尽证明 |
 | `FuzzUTF8Pagination`，3 秒、2 workers | PASS；28,747 次 fuzz 执行 | 同上 |
 | Linux amd64 build | PASS | 本机运行 demo 已测 |
-| Windows amd64 cross-build | PASS | 没有 Windows 运行、junction 或安全路径测试 |
+| `GOOS=linux GOARCH=amd64 go test -c ./internal/rootfs` | PASS | 仅 rootfs 交叉编译检查；未在 Windows 上执行 Linux 二进制，不能替代 Linux 攻击测试 |
+| Windows amd64 cross-build | PASS（历史记录） | 该记录本身不等于 Windows 运行或安全路径测试；本机运行证据见下方增量验证 |
 | macOS arm64 cross-build | PASS | 没有 macOS 运行测试 |
 
 最初将多项检查合并到一次命令时，外层命令在冷启动 fuzz 编译阶段达到执行工具时间上限；此前单元/竞争/vet/coverage 已结束。随后分别运行两项 fuzz，均实际通过。没有把未结束的一次命令记为通过。
@@ -69,35 +80,37 @@ go run ./cmd/readcore-demo -file ./README.md -offset 0 -max-bytes 4096
 
 GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/macOS 跑 core/demo 测试，并在 Linux 跑 race/fuzz。**写入 workflow 不等于 CI 成功；真实 run 状态以 PR/Actions 为准。** CI 的普通文件 demo 通过也不能替代未来 rootfs 安全测试。
 
-### Windows 增量验证（2026-09-08）
+### Windows 增量验证（2026-09-09）
 
-在 **Windows amd64 / Go 1.26.0** 上补充运行了以下检查，均通过：
+在 **Windows amd64 / Go 1.26.0** 上补充运行了以下检查。普通 rootfs 测试覆盖 Unicode/组合字符、长路径、ADS/保留名/非法路径、hardlink、junction/reparse；symlink+junction swap 普通测试重复 5 次、race 测试运行 1 次，测试会回读 outside marker 并要求读写重叠计数大于零。
 
 | 检查 | 实际结果 | 限制 |
 |---|---|---|
-| `gofmt -l internal cmd` | PASS | 修复原提交 Go 文件的 CRLF 导致的格式检查失败；仅规范化换行/格式，未改逻辑 |
-| `git diff --check` | PASS | Git 输出的 `core.autocrlf` 换行转换提示不影响退出码 |
-| `go test -count=1 ./...` | PASS | 实现者自测 |
-| `go test -race -count=1 ./...` | PASS | 不等于真实多账号/全局调度验证 |
+| `go test ./internal/rootfs -count=1 -v` | PASS | 包含 Unicode/组合字符、>260 长路径、ADS/保留名/非法路径、hardlink、junction/reparse 及普通 symlink+junction swap；实现者自测 |
+| `go test ./internal/rootfs -run '^TestWindowsRejectsSymlinkAndJunctionSwapRace$' -count=5 -v` | PASS | 每次校验 outside file/directory marker 未变且 overlap counter > 0；测试中的允许共享/锁失败按策略计数 |
+| `go test -race ./internal/rootfs -run '^TestWindowsRejectsSymlinkAndJunctionSwapRace$' -count=1 -v` | PASS | 同上；实现者自测，不等于真实多账号/全局调度验证 |
 | `go vet ./...` | PASS | 静态检查不是安全审计 |
-| `go build ./...` | PASS | 构建通过不等于 Windows 路径安全行为已验证 |
+| `go test -c ./internal/rootfs`（Windows amd64） | PASS | 仅编译检查，不替代运行时攻击测试 |
+| `GOOS=linux GOARCH=amd64 go test -c ./internal/rootfs` | PASS | Windows 主机上的 Linux 交叉编译；未在 Windows 执行 Linux 二进制 |
 
-本节结果是当前实现者在 Windows 上的增量验证，不构成独立安全审查，也不证明生产 rootfs、MCP、Tunnel、真实账号或多连接隔离已完成。既有 Linux 验证证据保持不变。
+临时通过 `New-PSDrive -Name Z -PSProvider FileSystem -Root '\\localhost\C$' -Persist` 将 `Z:` 映射到 loopback SMB 共享时，PowerShell 对 `Z:\` 调用 `GetDriveTypeW` 返回 **4**，`TestWindowsRejectsRemoteMappedRoot` PASS；finally 执行 `Remove-PSDrive -Name Z -Force`，并复核 PowerShell PSDrive、LogicalDisk 和 `net use` 均无 `Z:`。`nativeMetadata` 故障注入测试确认查询错误返回 `ErrUnavailable` 且 Engine 不返回内容。
+
+本节结果是当前实现者在 Windows 上对 P04 部分实现的有界验证，不构成独立安全审查，也不证明 P04 全部放行、生产 rootfs、MCP、Tunnel、真实账号或多连接隔离已完成。既有 Linux 验证证据保持不变。
 
 ## 四、已知未完成边界
 
 - 没有真实身份认证；Scope 只能由可信代码创建，但调用方认证还未实现。
-- 没有生产路径打开器；词法检查不能防 symlink、junction、hardlink 或 TOCTOU。
+- 已有最小生产 rootfs adapter：使用 `os.Root`、逐组件 symlink/reparse 拒绝、普通文件检查、handle identity/link-count 检查和 bound adapter。Windows 与 WSL2 已完成明确次数的特殊文件、路径、symlink/junction swap 及临时 loopback SMB remote-root 有界验证；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台和完整 TOCTOU/OS 攻击覆盖仍是残余风险。
 - 没有签名 cursor、全局多连接公平调度、完整 MCP wire 限额或强快照。
 - byte offset 的 continuation 不能直接作为可跨账号转移的授权凭证。
 - Metadata 版本是弱证据，无法检测保持相同元数据的内容更改；batch 也不是全仓快照。
 - 暂不回收短文件/错误项的剩余配额；优先保证可解释和确定性。
 - 不能强制取消任意阻塞 OS I/O；当前 Source 约束与未来平台测试必须明确。
-- 未验证实际 ChatGPT App、目标 Pro、Tunnel、账号政策或两个真实账号并发。
+- 未验证实际 ChatGPT App、目标 Pro、Tunnel、真实 auth、P01 连接预检、账号政策或两个真实账号并发。
 - 未完成独立审查、生产部署或发布；没有运行任意本地命令或修改用户项目。
 
 ## 五、下一执行者的明确入口
 
-先按主计划 P01 取得一个真实最小 echo 调用证据，同时执行 P04/P05：升级/固定受支持工具链、实现安全 root Source、认证 ingress 和官方 MCP SDK 适配。允许修改 `internal/rootfs`、`internal/policy`、`internal/config`、`internal/mcpserver`、对应 tests/docs 及依赖文件；不在这一任务包增加索引、UI、Shell 或写文件。
+跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台）并安排独立安全审查；随后按主计划 P01 取得真实最小 echo 调用证据，推进 P05 的认证 ingress 和官方 MCP SDK 适配。当前不得据此开放 listener 或声称产品可连接 ChatGPT。允许修改 `internal/rootfs`、`internal/policy`、`internal/config`、`internal/mcpserver`、对应 tests/docs 及依赖文件；不在这一任务包增加索引、UI、Shell 或写文件。
 
 之后依次推进 P06/P07 的调查效果，P08 的固定探查动作，以及 P09/P10 的多连接隔离与恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。

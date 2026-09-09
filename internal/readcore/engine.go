@@ -235,7 +235,14 @@ func classify(err error) *ItemError {
 		return issue("denied", "file access denied")
 	case errors.Is(err, fs.ErrNotExist):
 		return issue("not_found", "file not found")
-	default:
-		return issue("unavailable", "source operation failed")
 	}
+	var sourceIssue *ItemError
+	if errors.As(err, &sourceIssue) && isSafeSourceIssue(sourceIssue) {
+		return issue(sourceIssue.Code, sourceIssue.Message)
+	}
+	return issue("unavailable", "source operation failed")
+}
+
+func isSafeSourceIssue(sourceIssue *ItemError) bool {
+	return sourceIssue != nil && sourceIssue.Code == "unsupported_type" && sourceIssue.Message == "file type is not supported"
 }
