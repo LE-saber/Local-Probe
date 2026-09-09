@@ -1,0 +1,33 @@
+# Copy this file to .runtime/tunnel-client.yaml with
+# scripts/Initialize-TunnelClient.ps1.  The runtime profile is intentionally
+# ignored by git.  Do not replace the file: reference with a literal key.
+config_version: 1
+control_plane:
+  base_url: https://api.openai.com
+  # The wrapper passes the selected value from the external tunnel-id.txt.
+  tunnel_id: tunnel_00000000000000000000000000000000
+  # Runtime key only: Platform Tunnels Read + Use.  Never use an admin key here.
+  api_key: 'file:D:/HOPP/download/Local-Probe/.secrets/control-plane-api-key.txt'
+
+health:
+  listen_addr: 127.0.0.1:0
+  url_file: D:/HOPP/download/Local-Probe/repo/.runtime/tunnel-health-url.txt
+
+admin_ui:
+  open_browser: false
+
+log:
+  level: info
+  format: struct-text
+  file: stdout
+
+mcp:
+  server_urls:
+    - channel: main
+      url: http://127.0.0.1:8787/mcp
+  # Initialize-TunnelClient.ps1 creates this local hop token automatically.
+  # The MCP server must load the same protected file at startup.
+  extra_headers:
+    X-Local-Probe-Token: 'file:D:/HOPP/download/Local-Probe/.secrets/mcp-bearer-token.txt'
+  startup_wait_timeout: 30s
+  max_concurrent_requests: 10

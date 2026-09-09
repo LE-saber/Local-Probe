@@ -1,6 +1,6 @@
 # 兼容性与真实账户预检
 
-核查日期：2026-09-07。**目前没有真实 ChatGPT 账号/模型/Tunnel 组合被本项目端到端验证。** 不要把开发者文档、App 可添加或 Go 单元测试等同于真实工具调用成功。
+核查日期：2026-09-09。**目前没有真实 ChatGPT 账号/模型/Tunnel 组合被本项目端到端验证。** 本机 MCP 与官方 Tunnel 客户端已经完成无凭据预检；不要把这些准备工作、App 可添加或 Go 单元测试等同于真实工具调用成功。
 
 ## 官方资料口径差异
 
@@ -24,7 +24,7 @@
 1. 在目标账户确认原生 App/Developer Mode 入口及创建权限；记录网页模型实际标签，不凭订阅名称推断。
 2. 单独确认 Platform Tunnel Read/Use 权限及 ChatGPT workspace association；由所有者在本机录入 runtime key，不把 key 发给聊天、Issue 或 PR。
 3. 用官方 MCP SDK 的最小无敏感信息 echo 工具验证 initialize、tools/list 和 tools/call；按官方客户端当前 help 配置，不猜旧参数。
-4. 先验证本机 SDK client，再经官方 Tunnel 在目标 Pro 对话中调用 echo；记录准确错误层次。
+4. 先验证本机 SDK client，再经官方 Tunnel 在用户指定的网页模型与“极高”推理档位调用只读工具；本轮明确不使用 Pro，并记录准确错误层次。
 5. 完成安全 root adapter 后，再调用 read_file/batch_read，验证返回路径、范围及版本与本机相符。
 6. 第二账户重复；使用两个不同 profile 做正向和越权测试，再独立停用其中一个。
 7. 根据实际证据更新矩阵，标明测试日期、客户端/协议/模型版本和脱敏证据位置。
@@ -33,6 +33,8 @@
 
 ## 当前本地可验证内容
 
-Go 1.23.2/Linux amd64 已运行内核及本机 demo 测试。Windows amd64 和 macOS arm64 已交叉编译，但没有本地 OS 运行与安全路径测试。GitHub Actions 配置使用 Go 1.26.5 进行三平台测试，配置存在不表示 run 已通过，实际状态见 workflow/PR。
+Windows 本机已固定官方 MCP Go SDK v1.7.0，并通过 SDK client 的 `initialize -> tools/list -> tools/call`、本地认证、connection/profile 工具隔离、跨源保护、`read_file` 与 `batch_read` 测试。可执行服务只接受显式 loopback 地址，当前实际监听检查为 `127.0.0.1:8787`。
 
-当前没有 MCP SDK 依赖和 Tunnel 二进制安装，也没有调用真实账号。不能给出“所有套餐可用”的产品承诺。
+官方 `tunnel-client v0.0.14` Windows amd64 完整包已放在仓库外，release SHA-256、相邻 `cloudflared`、loopback profile、secret 文件 ACL、Git 忽略和 `api.openai.com:443` 可达性均通过无凭据预检。运行时 API key 与 Tunnel ID 尚未填写，因此真实 `doctor/run`、ChatGPT App 工具发现和网页模型工具调用仍为待测。详见 `docs/TUNNEL_SETUP.zh-CN.md`。
+
+这仍不能给出“所有套餐可用”的产品承诺，也不代表 P05 的 `workspace_snapshot`、完整 wire 预算或 P10 supervisor 已完成。

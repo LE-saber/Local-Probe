@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-09。当前等级：**K0 内核原型 + P04 部分实现；P04 平台有界验证已完成；不是可连接 ChatGPT 的 Local-Probe 产品。**
+日期：2026-09-09。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 最小 MCP/Tunnel 本机准备；尚未完成真实 ChatGPT/Tunnel 调用。**
 
 ## 一、先计划，后实现
 
@@ -16,11 +16,11 @@
 | 计划项 | 状态 | 已有成果 |
 |---|---|---|
 | P00 | 主要完成 | 计划先行、来源 SHA、许可证/政策纠偏、分支；指定上游选择性检出已于 2026-09-08 完成 |
-| P01 | 未实测 | COMPATIBILITY.md 预检流程；没有真实账号、模型或 Tunnel 调用证据 |
+| P01 | 本机准备完成；账号实测待凭据 | 官方 tunnel-client v0.0.14、loopback profile、脱敏预检脚本；没有真实账号、模型或 Tunnel 调用证据 |
 | P02 | 完成内核部分 | Scope/Source/Handle/Request/Result/Limits、接口边界、威胁模型 |
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
 | P04 | 部分实现；平台有界验证完成 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter；Windows 与 WSL2 的特殊文件、路径、symlink/junction swap 和临时 loopback SMB remote-root 测试已按边界完成；仍不是独立安全审查或发布结论 |
-| P05 | 未实现 | 真实身份、MCP SDK/服务、原生 App/Tunnel 链路 |
+| P05 | 最小 MCP 已实现；真实链路待测 | 官方 MCP Go SDK v1.7.0、认证 Streamable HTTP、server_info/ping/read_file/batch_read、本地 SDK 生命周期与隔离测试；workspace_snapshot、完整 wire 预算和原生 App/Tunnel 证据待完成 |
 | P06/P07 | 未实现 | 目录分页、行范围、内容搜索、workspace snapshot、模型任务效果评测 |
 | P08 | 未实现 | 有限环境/Git 探查，不提供任意 Shell |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
@@ -35,7 +35,7 @@
 - deny 匹配已覆盖 Windows 大小写不敏感语义与 `**`；Source revision 校验阻止“旧 Source + 新 scope”在 root ID 复用后访问旧 root。
 - Windows handle metadata 已纳入 volume/file identity、link count 和 reparse attributes；hardlink、junction/reparse、Unicode/组合字符、长路径、ADS/保留名/非法路径和 symlink+junction swap 测试通过。临时通过 `New-PSDrive -Name Z -PSProvider FileSystem -Root '\\localhost\C$' -Persist` 将 `Z:` 映射到 loopback SMB 共享时，`GetDriveTypeW` 返回 4，remote-root 测试通过；finally 执行 `Remove-PSDrive -Name Z -Force`，并复核 PowerShell PSDrive、LogicalDisk 和 `net use` 均无 `Z:`。
 - WSL2 Ubuntu-22.04（Linux 6.6.87.2-microsoft-standard-WSL2、Go 1.26.2）临时复制当前工作树后，FIFO、Unix socket、hardlink、symlink swap 的目标测试 `-count=5 -v` 及 race 版本通过，`go vet ./...` 通过；这不是裸机 Linux 证据。机器可读记录见 `docs/evidence/P04-platform-verification.json`。
-- 上述是实现者在明确环境和次数下的有界验证，不是数学证明，也不代表 P04 全部放行；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台、独立安全审查仍是残余风险；P01/P05 仍未实测，真实 auth/MCP/Tunnel 也未完成。
+- 上述是实现者在明确环境和次数下的有界验证，不是数学证明，也不代表 P04 全部放行；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台、独立安全审查仍是残余风险。P05 的本地 MCP 生命周期已测，但 P01 的真实账号/Tunnel 与 App 调用仍未实测。
 
 ## 三、真正运行过的验证
 
@@ -106,7 +106,7 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 - Metadata 版本是弱证据，无法检测保持相同元数据的内容更改；batch 也不是全仓快照。
 - 暂不回收短文件/错误项的剩余配额；优先保证可解释和确定性。
 - 不能强制取消任意阻塞 OS I/O；当前 Source 约束与未来平台测试必须明确。
-- 未验证实际 ChatGPT App、目标 Pro、Tunnel、真实 auth、P01 连接预检、账号政策或两个真实账号并发。
+- 未验证实际 ChatGPT App、用户指定的“极高”推理档位、Tunnel、P01 真实连接、账号政策或两个真实账号并发；本轮明确不以 Pro 模式替代。
 - 未完成独立审查、生产部署或发布；没有运行任意本地命令或修改用户项目。
 
 ## 五、下一执行者的明确入口

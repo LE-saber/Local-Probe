@@ -9,6 +9,7 @@ secrets/
 local-probe.local.json
 *.local.json
 runtime/
+/.runtime/
 logs/
 *.log
 

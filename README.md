@@ -10,7 +10,7 @@
 
 ## 当前状态：K0 内核原型，P04 部分实现，不是可连接 ChatGPT 的产品
 
-当前实现了有界字节范围读取、确定性批量预算、输入顺序保持、部分失败、UTF-8 安全续读、版本变化检测及本机命令行演示。P04 已有配置/策略校验、`policy.BoundScope`、基于 Go `os.Root` 的只读 rootfs 和绑定到 `readcore` 的 Source adapter；仍没有 MCP listener、真实账号认证、Tunnel supervisor、目录搜索、行范围接口或文件修改功能。
+当前实现了有界字节范围读取、确定性批量预算、输入顺序保持、部分失败、UTF-8 安全续读、版本变化检测及本机命令行演示。P04 已有配置/策略校验、`policy.BoundScope`、基于 Go `os.Root` 的只读 rootfs 和绑定到 `readcore` 的 Source adapter；P05 已加入使用官方 SDK 的认证 loopback MCP listener 及 `server_info`、`ping`、`read_file`、`batch_read`。真实 ChatGPT/Tunnel 调用、Tunnel supervisor、目录搜索、行范围接口和文件修改功能仍未完成。
 
 rootfs 已对绝对/相对 root、普通文件、逐组件 symlink 拒绝、Scope 撤权和元数据版本做最小实现；junction/reparse、hardlink、volume identity 等 P04 安全闸门仍未完成。词法路径检查和当前自测都不等于完整文件系统隔离。演示程序仅打开本地操作者明确指定的文件，不能改成接收远程路径后直接部署。
 
