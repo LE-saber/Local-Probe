@@ -61,6 +61,7 @@ $profilePath = Join-Path $RuntimeRoot 'tunnel-client.yaml'
 $apiKeyPath = Join-Path $SecretRoot 'control-plane-api-key.txt'
 $tunnelIdPath = Join-Path $SecretRoot 'tunnel-id.txt'
 $mcpTokenPath = Join-Path $SecretRoot 'mcp-bearer-token.txt'
+$mcpTokenRef = ($mcpTokenPath -replace '\\', '/')
 
 $checks = [System.Collections.Generic.List[object]]::new()
 
@@ -116,6 +117,7 @@ if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
         $profileText = [IO.File]::ReadAllText($profilePath)
         $literalApiKey = $false
         $literalMcpToken = $false
+        $expectedMcpTokenRef = [regex]::Escape("file:$mcpTokenRef")
         foreach ($line in ($profileText -split "`r?`n")) {
             if ($line -match '^\s*api_key:\s*(.+)$') {
                 $profileApiValue = $Matches[1].Trim().Trim("'`"")
@@ -134,6 +136,9 @@ if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
             Add-Check $checks 'profile secret reference' 'FAIL' 'profile contains a literal control-plane API key'
         } elseif ($literalMcpToken) {
             Add-Check $checks 'profile secret reference' 'FAIL' 'profile contains a literal local MCP bearer'
+        } elseif ($profileText -notmatch '(?im)^\s*discovery_extra_headers:\s*$' -or
+            [regex]::Matches($profileText, $expectedMcpTokenRef).Count -lt 2) {
+            Add-Check $checks 'profile discovery auth' 'FAIL' 'extra_headers and discovery_extra_headers must reference the same local MCP token file'
         } elseif ($profileText -match '(?im)^\s*log\.http_raw_unsafe:\s*(true|1|yes)\s*$') {
             Add-Check $checks 'profile logging' 'FAIL' 'raw HTTP logging is enabled'
         } else {

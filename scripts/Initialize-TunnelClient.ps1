@@ -131,6 +131,9 @@ mcp:
   extra_headers:
     # Generated once locally; the MCP server reads the same protected file.
     X-Local-Probe-Token: 'file:$mcpTokenRef'
+  discovery_extra_headers:
+    # Discovery/probe requests are authenticated by the same local hop token.
+    X-Local-Probe-Token: 'file:$mcpTokenRef'
   startup_wait_timeout: 30s
   max_concurrent_requests: 10
 "@

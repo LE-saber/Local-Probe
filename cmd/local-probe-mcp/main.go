@@ -95,7 +95,7 @@ func run(args []string, stdout, stderr *os.File) error {
 	}
 	defer listener.Close()
 	httpServer := &http.Server{
-		Handler:           server.Handler(),
+		Handler:           routeMCP(server.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    64 << 10,
@@ -120,6 +120,17 @@ func run(args []string, stdout, stderr *os.File) error {
 		}
 		return errors.New("MCP HTTP server stopped unexpectedly")
 	}
+}
+
+// routeMCP deliberately leaves every non-MCP path as 404. In particular,
+// tunnel-client uses 404 on /.well-known OAuth metadata candidates to
+// recognize an HTTP MCP server that intentionally has no OAuth/DCR contract.
+// Applying the local authentication handler to those paths would turn them
+// into 401 responses and incorrectly trigger OAuth metadata discovery.
+func routeMCP(handler http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	return mux
 }
 
 func validateLoopbackAddr(addr string) error {

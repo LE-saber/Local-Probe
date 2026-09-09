@@ -29,5 +29,7 @@ mcp:
   # The MCP server must load the same protected file at startup.
   extra_headers:
     X-Local-Probe-Token: 'file:D:/HOPP/download/Local-Probe/.secrets/mcp-bearer-token.txt'
+  discovery_extra_headers:
+    X-Local-Probe-Token: 'file:D:/HOPP/download/Local-Probe/.secrets/mcp-bearer-token.txt'
   startup_wait_timeout: 30s
   max_concurrent_requests: 10
