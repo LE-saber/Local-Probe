@@ -38,6 +38,11 @@ D:\HOPP\download\Local-Probe\.secrets\mcp-bearer-token.txt
 命令行创建/修改/删除 Tunnel 时才需要 Admin key，且不能把它放进长期 daemon
 配置。本项目的本地配置只引用 `file:`，不会保存实际 key。
 
+本地 MCP 的 `/mcp` 路径受独立 hop token 保护，OAuth/PRM 元数据路径则明确
+返回 404，让 Tunnel 将它识别为“不使用 OAuth/DCR”的 MCP 服务。profile 的
+`mcp.extra_headers` 与 `mcp.discovery_extra_headers` 仍共同引用同一个外部
+bearer 文件，分别覆盖正常 MCP 请求和需要认证的发现/初始化探测。
+
 ## 已准备的本机文件
 
 官方 Windows amd64 `tunnel-client v0.0.14` 完整 release（含相邻

@@ -123,7 +123,6 @@ admin_ui:
 log:
   level: info
   format: struct-text
-  file: stdout
 mcp:
   server_urls:
     - channel: main
