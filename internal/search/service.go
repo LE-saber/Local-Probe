@@ -525,6 +525,7 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 			}
 			if len(scan.Matches) != 0 {
 				out.Matches = append(out.Matches, scan.Matches...)
+				out.Coverage.ReturnedEntries += len(scan.Matches)
 			}
 			if !scan.Complete {
 				appendWarning(&out.Warnings, scan.Warning)
@@ -622,6 +623,7 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 			return out, normalizeSearchScanError(scanErr, &out)
 		}
 		out.Matches = append(out.Matches, scan.Matches...)
+		out.Coverage.ReturnedEntries += len(scan.Matches)
 		if !scan.Complete {
 			appendWarning(&out.Warnings, scan.Warning)
 			out.Coverage.Complete = false

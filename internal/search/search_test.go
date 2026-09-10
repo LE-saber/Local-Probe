@@ -115,12 +115,18 @@ func TestFindFilesAndSearchTextUseLiteralUTF8AndCoverage(t *testing.T) {
 	if len(result.Matches) != 1 || result.Matches[0].Path != "notes.txt" || result.Matches[0].Line != 1 {
 		t.Fatalf("literal search = %#v", result)
 	}
+	if result.Coverage.ReturnedEntries != len(result.Matches) {
+		t.Fatalf("literal search returned_entries = %d, matches = %d", result.Coverage.ReturnedEntries, len(result.Matches))
+	}
 	utf8Result, err := service.SearchText(context.Background(), bound, SearchTextRequest{RootID: "project", Query: "needle", PageSize: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(utf8Result.Matches) != 3 || utf8Result.Coverage.DeniedEntries == 0 || utf8Result.Coverage.IgnoredEntries == 0 {
 		t.Fatalf("utf8 search = %#v", utf8Result)
+	}
+	if utf8Result.Coverage.ReturnedEntries != len(utf8Result.Matches) {
+		t.Fatalf("utf8 search returned_entries = %d, matches = %d", utf8Result.Coverage.ReturnedEntries, len(utf8Result.Matches))
 	}
 }
 
