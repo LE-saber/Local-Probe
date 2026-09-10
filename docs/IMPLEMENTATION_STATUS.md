@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-10。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现；P08 固定环境探针核心尚未接入 MCP。**
+日期：2026-09-10。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现；P08 固定环境探针核心尚未接入 MCP。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -133,6 +133,6 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 
 ## 五、下一执行者的明确入口
 
-P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、literal 搜索、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。下一步按 `manual-test-targets/README.md` 完成用户侧夹具复测，再完成 P08 固定探针审查发现的可执行文件启动 TOCTOU 和 MCP 接入；保持显式可执行路径、固定参数、私有环境和完整进程树终止，不开放模型自定义 command、args、cwd、env 或 timeout。
+P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、literal 搜索、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。近期顺序按 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md) 执行：先 R0 冻结能力分层、command profile、audit.v1 与 annotation 契约；再做 R1 的 direct 读取稳定性、cursor/coverage、全局资源预算和日志基础设施；R3 的无进程 `discover_tools`/`get_environment` 可与 R1 并行。R2 的 lines/tail/snapshot 依赖 R1 证据，R4 的 P08 TOCTOU 修复和固定探针必须通过 Windows/Unix 硬门后才可考虑 MCP 暴露；不开放模型自定义 command、args、cwd、env 或 timeout。
 
-并行继续跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台），再推进 P07 的 workspace snapshot/任务效果与 P09/P10 的多连接隔离、监督和恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。
+R5 受控 Git read actions、R6 P09/P10 多 connection/supervisor/recovery、R7 证据驱动的 index、R8 GUI/tray、R9 发布与独立审查依次推进；P14 写入始终独立。P04 的本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台仍按路线的停止条件跟踪，不把本地有界验证写成生产安全结论。
