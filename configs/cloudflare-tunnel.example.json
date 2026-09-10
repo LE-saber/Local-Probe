@@ -2,5 +2,5 @@
   "public_host": "mcp.example.test",
   "origin_url": "http://127.0.0.1:8788",
   "metrics_addr": "127.0.0.1:49300",
-  "transport_protocol": "http2"
+  "transport_protocol": "auto"
 }

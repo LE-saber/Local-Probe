@@ -72,8 +72,13 @@ $tunnelConfig = Get-Content -Raw -LiteralPath $TunnelConfigPath | ConvertFrom-Js
 $transportProtocol = [string]$tunnelConfig.transport_protocol
 $previousProtocol = [Environment]::GetEnvironmentVariable('TUNNEL_TRANSPORT_PROTOCOL')
 if ($transportProtocol -eq 'auto') {
+    # Let cloudflared perform its own protocol negotiation.  Remove a stale
+    # inherited process value so an old user/machine setting cannot override
+    # the configured auto mode in the child process.
     Remove-Item Env:TUNNEL_TRANSPORT_PROTOCOL -ErrorAction SilentlyContinue
 } else {
+    # An explicit http2/quic choice is intentionally passed through the
+    # supported environment variable for this one cloudflared invocation.
     $env:TUNNEL_TRANSPORT_PROTOCOL = $transportProtocol
 }
 $runArgs = @(

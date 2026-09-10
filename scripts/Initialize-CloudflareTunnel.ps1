@@ -7,7 +7,7 @@ param(
     [int]$OriginPort = 8788,
     [string]$MetricsAddr = '127.0.0.1:49300',
     [ValidateSet('auto', 'http2', 'quic')]
-    [string]$TransportProtocol = 'http2',
+    [string]$TransportProtocol = 'auto',
     [switch]$ForceConfig
 )
 

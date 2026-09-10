@@ -71,6 +71,57 @@ function Test-TcpEndpoint([string]$HostName, [int]$Port, [int]$TimeoutMillisecon
     }
 }
 
+function Get-HttpStatusCode([string]$Url, [int]$TimeoutMilliseconds = 3000) {
+    $request = [Net.HttpWebRequest]::Create($Url)
+    $request.Method = 'GET'
+    $request.Proxy = $null
+    $request.Timeout = $TimeoutMilliseconds
+    $request.ReadWriteTimeout = $TimeoutMilliseconds
+    try {
+        $response = [Net.HttpWebResponse]$request.GetResponse()
+        try {
+            return [int]$response.StatusCode
+        } finally {
+            $response.Dispose()
+        }
+    } catch [Net.WebException] {
+        $response = $_.Exception.Response
+        if ($response -is [Net.HttpWebResponse]) {
+            try {
+                return [int]$response.StatusCode
+            } finally {
+                $response.Dispose()
+            }
+        }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
+function Get-HttpResponseBody([string]$Url, [int]$TimeoutMilliseconds = 3000) {
+    $request = [Net.HttpWebRequest]::Create($Url)
+    $request.Method = 'GET'
+    $request.Proxy = $null
+    $request.Timeout = $TimeoutMilliseconds
+    $request.ReadWriteTimeout = $TimeoutMilliseconds
+    try {
+        $response = [Net.HttpWebResponse]$request.GetResponse()
+        try {
+            $reader = [IO.StreamReader]::new($response.GetResponseStream())
+            try {
+                return $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+        } finally {
+            $response.Dispose()
+        }
+    } catch {
+        return $null
+    }
+}
+
 $RepoRoot = Get-FullPath $RepoRoot
 if ([string]::IsNullOrWhiteSpace($SecretRoot)) {
     $SecretRoot = Join-Path (Split-Path -Parent $RepoRoot) '.secrets'
@@ -200,24 +251,52 @@ if (Test-Path -LiteralPath $TunnelConfigPath -PathType Leaf) {
     Add-Check $checks 'remote Tunnel expectations' 'PENDING' 'run Initialize-CloudflareTunnel.ps1 first'
 }
 
-$activeConnections = 0
+$activeConnections = $null
+$readyStatusCode = $null
 if ($metricsAddress -and (Test-LoopbackAddr $metricsAddress)) {
+    $readyStatusCode = Get-HttpStatusCode "http://$metricsAddress/ready"
+}
+if ($null -eq $readyStatusCode) {
+    Add-Check $checks 'Cloudflare metrics readiness' 'PENDING' 'metrics /ready is not reachable; cloudflared may be stopped and will be checked again after startup'
+} elseif ($readyStatusCode -eq 200) {
+    Add-Check $checks 'Cloudflare metrics readiness' 'PASS' 'metrics /ready returned HTTP 200'
+} else {
+    Add-Check $checks 'Cloudflare metrics readiness' 'FAIL' "metrics /ready returned HTTP $readyStatusCode; the HA metric is not accepted as proof of readiness"
+}
+
+if ($readyStatusCode -eq 200) {
     try {
-        $metricsBody = (Invoke-WebRequest -UseBasicParsing "http://$metricsAddress/metrics" -TimeoutSec 3).Content
-        if ($metricsBody -match '(?m)^cloudflared_tunnel_ha_connections\s+([0-9]+(?:\.[0-9]+)?)\s*$') {
-            $activeConnections = [double]$Matches[1]
+        $metricsBody = Get-HttpResponseBody "http://$metricsAddress/metrics"
+        if ($null -eq $metricsBody) {
+            throw 'metrics endpoint did not return a response'
+        }
+        $haMatches = [regex]::Matches([string]$metricsBody, '(?m)^cloudflared_tunnel_ha_connections(?:\{[^}\r\n]*\})?\s+([0-9]+(?:\.[0-9]+)?)\s*$')
+        if ($haMatches.Count -gt 0) {
+            $activeConnections = 0.0
+            foreach ($haMatch in $haMatches) {
+                $sample = [double]::Parse($haMatch.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
+                if ($sample -gt $activeConnections) {
+                    $activeConnections = $sample
+                }
+            }
         }
     } catch {
-        $activeConnections = 0
+        $activeConnections = $null
     }
-}
-if ($activeConnections -gt 0) {
-    Add-Check $checks 'Cloudflare edge connectivity' 'PASS' "cloudflared reports $activeConnections active HA connection(s)"
+    if ($null -eq $activeConnections) {
+        Add-Check $checks 'Cloudflare edge connectivity' 'FAIL' 'metrics /ready returned HTTP 200 but the cloudflared HA connection metric was unavailable'
+    } elseif ($activeConnections -gt 0) {
+        Add-Check $checks 'Cloudflare edge connectivity' 'PASS' "metrics /ready returned HTTP 200 and cloudflared reports $activeConnections active HA connection(s)"
+    } else {
+        Add-Check $checks 'Cloudflare edge connectivity' 'FAIL' 'metrics /ready returned HTTP 200 but cloudflared reports no active HA connections'
+    }
+} elseif ($null -ne $readyStatusCode) {
+    Add-Check $checks 'Cloudflare edge connectivity' 'FAIL' "cloudflared metrics /ready is HTTP $readyStatusCode; any HA value is treated as stale until /ready returns HTTP 200"
 } else {
     $edgeTargets = @('region1.v2.argotunnel.com', 'region2.v2.argotunnel.com')
     $reachableEdgeTargets = @($edgeTargets | Where-Object { Test-TcpEndpoint $_ 7844 })
     if ($reachableEdgeTargets.Count -gt 0) {
-        Add-Check $checks 'Cloudflare edge connectivity' 'PASS' 'at least one discovery target accepts TCP 7844'
+        Add-Check $checks 'Cloudflare edge connectivity' 'PENDING' 'a discovery target accepts TCP 7844, but metrics /ready is unavailable; TCP reachability alone is not tunnel readiness'
     } else {
         $broadBlockCount = 0
         try {
