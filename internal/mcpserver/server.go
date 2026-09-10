@@ -45,6 +45,7 @@ const (
 	defaultMaxRequestBodyBytes = 1 << 20
 	defaultMaxResponseBytes    = 512 << 10
 	maxTokenBytes              = 4096
+	modernMCPProtocolVersion   = "2026-07-28"
 )
 
 var (
@@ -215,6 +216,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.Handler().ServeHTTP(w, r)
 }
 
+func usesModernMCPProtocol(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	// Protocol versions are ISO dates, so lexical comparison preserves their
+	// ordering. Future versions stay on the sessionless path and are then
+	// validated by the SDK instead of accidentally entering a legacy session.
+	return strings.TrimSpace(r.Header.Get("Mcp-Protocol-Version")) >= modernMCPProtocolVersion
+}
+
 func (s *Server) buildHandler() http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, &mcp.ServerOptions{
 		// No server-side features other than the explicitly registered tools.
@@ -251,14 +262,35 @@ func (s *Server) buildHandler() http.Handler {
 		Annotations:  readOnlyAnnotations(),
 	}, s.handleBatchRead)
 
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
-		CrossOriginProtection: http.NewCrossOriginProtection(),
-		// The outer cloudflareHost middleware performs exact public Host
-		// validation before this handler. Only that explicit CF mode may
-		// disable the SDK's loopback Host check; local-token mode retains it.
-		DisableLocalhostProtection:   s.cloudflareAccess != nil,
-		MaxRequestBodyBytes:          s.maxBodyBytes,
-		PropagateRequestCancellation: true,
+	streamableOptions := func(stateless bool) *mcp.StreamableHTTPOptions {
+		return &mcp.StreamableHTTPOptions{
+			// A single JSON response is more robust through HTTP proxies than an
+			// SSE response for ordinary request/response calls. The protocol still
+			// uses SSE for standalone GET and long-lived subscription streams.
+			JSONResponse: true,
+			// The outer cloudflareHost middleware performs exact public Host
+			// validation before this handler. Only that explicit CF mode may
+			// disable the SDK's loopback Host check; local-token mode retains it.
+			CrossOriginProtection:        http.NewCrossOriginProtection(),
+			DisableLocalhostProtection:   s.cloudflareAccess != nil,
+			MaxRequestBodyBytes:          s.maxBodyBytes,
+			PropagateRequestCancellation: true,
+			Stateless:                    stateless,
+		}
+	}
+	// MCP 2026-07-28 is sessionless and is only supported by the SDK's
+	// stateless transport. Keep a stateful handler for older protocol versions
+	// so legacy clients retain session IDs, GET/SSE, DELETE, and session-user
+	// binding. The protocol header is mandatory for modern requests, so it is a
+	// safe and unambiguous dispatch key here.
+	statefulHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, streamableOptions(false))
+	statelessHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, streamableOptions(true))
+	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if usesModernMCPProtocol(r) {
+			statelessHandler.ServeHTTP(w, r)
+			return
+		}
+		statefulHandler.ServeHTTP(w, r)
 	})
 	// The SDK's auth middleware populates auth.TokenInfo in the context and
 	// enforces session user binding. The token has no remote expiration; process

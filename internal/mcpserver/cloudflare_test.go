@@ -75,7 +75,10 @@ func TestCloudflareAccessMCPInitializeToolsListAndCall(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	transport := &cloudflareTestTransport{token: assertion, host: "mcp.example.test"}
+	// Force the legacy fallback here so this test keeps covering the stateful
+	// session/GET/DELETE path. The local protocol test covers modern discovery
+	// and stateless requests.
+	transport := &cloudflareTestTransport{token: assertion, host: "mcp.example.test", forceLegacy: true}
 	client := mcp.NewClient(&mcp.Implementation{Name: "cloudflare-test-client", Version: "test"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             httpServer.URL + "/mcp",
@@ -236,11 +239,12 @@ func TestCloudflareAccessDiscardsManagedOAuthAuthorization(t *testing.T) {
 }
 
 type cloudflareTestTransport struct {
-	token string
-	host  string
-	mu    sync.Mutex
-	seen  []string
-	state string
+	token       string
+	host        string
+	forceLegacy bool
+	mu          sync.Mutex
+	seen        []string
+	state       string
 }
 
 func (t *cloudflareTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -249,6 +253,9 @@ func (t *cloudflareTestTransport) RoundTrip(req *http.Request) (*http.Response, 
 	t.mu.Unlock()
 	clone := req.Clone(req.Context())
 	clone.Header = req.Header.Clone()
+	if t.forceLegacy && clone.Header.Get("Mcp-Protocol-Version") >= modernMCPProtocolVersion {
+		clone.Header.Del("Mcp-Protocol-Version")
+	}
 	clone.Header.Set(CloudflareAccessHeader, t.token)
 	// Managed OAuth can forward the client's opaque access token. The origin
 	// must ignore it and authenticate only the Access-signed assertion.

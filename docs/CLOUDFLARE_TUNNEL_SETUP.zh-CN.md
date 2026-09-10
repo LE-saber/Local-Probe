@@ -21,6 +21,8 @@ Cloudflare Edge ── Access JWT ── Named Tunnel
 
 CF ingress 在 SDK 之前检查精确 `Host`。只有该模式且 Host 命中运行配置时，才关闭官方 Go MCP SDK 的 localhost protection；listener 仍由命令强制绑定到 loopback。
 
+MCP 传输同时兼容两代客户端：带 `Mcp-Protocol-Version: 2026-07-28` 的现代请求进入 SDK 的无会话 Streamable HTTP 路径，`server/discover` 返回包含该版本的能力列表，后续 `tools/list`/`tools/call` 每次请求都重新验证 Access 身份；没有该现代版本头的旧协议请求保留会话 ID、GET/SSE、DELETE 和会话用户绑定。普通单次 POST 使用 `application/json` 响应，旧协议的独立 GET/SSE 仍使用 `text/event-stream`。现代请求必须按协议带 `_meta` 协商字段和 `Mcp-Method` 等标准头，不能把 HTTP 200 的 JSON-RPC 错误当成工具发现成功。
+
 ## 初始化和文件位置
 
 ```powershell

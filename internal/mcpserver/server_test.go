@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,8 +51,12 @@ func TestStreamableHTTPClientLifecycleAndReadTools(t *testing.T) {
 	}
 	defer session.Close()
 
-	if err := session.Ping(ctx, nil); err != nil {
-		t.Fatalf("Ping() error = %v", err)
+	// The MCP 2026-07-28 protocol removes the protocol-level ping method;
+	// exercise the legacy ping only when negotiation selected that protocol.
+	if session.InitializeResult().ProtocolVersion < modernMCPProtocolVersion {
+		if err := session.Ping(ctx, nil); err != nil {
+			t.Fatalf("Ping() error = %v", err)
+		}
 	}
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
@@ -106,6 +112,206 @@ func TestStreamableHTTPClientLifecycleAndReadTools(t *testing.T) {
 	}
 }
 
+func TestStreamableHTTPProtocolCompatibility(t *testing.T) {
+	fixture := newFixture(t)
+	defer fixture.close()
+	server := newTestServer(t, fixture, []Credential{
+		{ConnectionID: "connection-one", Token: testTokenOne},
+		{ConnectionID: "connection-two", Token: testTokenTwo},
+	})
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	type wireEnvelope struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Result  json.RawMessage `json:"result"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+	doPost := func(t *testing.T, token, method, version, sessionID, body string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(LocalTokenHeader, token)
+		if version != "" {
+			req.Header.Set("Mcp-Protocol-Version", version)
+			req.Header.Set("Mcp-Method", method)
+		}
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp, payload
+	}
+	decode := func(t *testing.T, payload []byte) wireEnvelope {
+		t.Helper()
+		var envelope wireEnvelope
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			t.Fatalf("decode JSON-RPC envelope: %v; body=%q", err, payload)
+		}
+		if envelope.JSONRPC != "2.0" {
+			t.Fatalf("jsonrpc = %q, want 2.0; body=%q", envelope.JSONRPC, payload)
+		}
+		return envelope
+	}
+	assertJSON := func(t *testing.T, response *http.Response) {
+		t.Helper()
+		if mediaType := strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]); mediaType != "application/json" {
+			t.Fatalf("Content-Type = %q, want application/json", response.Header.Get("Content-Type"))
+		}
+	}
+
+	legacyInitialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"legacy-probe","version":"test"}}}`
+	legacyResponse, legacyPayload := doPost(t, testTokenOne, "initialize", "", "", legacyInitialize)
+	if legacyResponse.StatusCode != http.StatusOK {
+		t.Fatalf("legacy initialize status = %d, want 200; body=%q", legacyResponse.StatusCode, legacyPayload)
+	}
+	assertJSON(t, legacyResponse)
+	legacyEnvelope := decode(t, legacyPayload)
+	if legacyEnvelope.Error != nil {
+		t.Fatalf("legacy initialize error = %#v", legacyEnvelope.Error)
+	}
+	var legacyResult struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(legacyEnvelope.Result, &legacyResult); err != nil {
+		t.Fatal(err)
+	}
+	if legacyResult.ProtocolVersion != "2025-06-18" {
+		t.Fatalf("legacy protocolVersion = %q", legacyResult.ProtocolVersion)
+	}
+	legacySessionID := legacyResponse.Header.Get("Mcp-Session-Id")
+	if legacySessionID == "" {
+		t.Fatal("legacy initialize did not return Mcp-Session-Id")
+	}
+
+	initializedResponse, initializedPayload := doPost(t, testTokenOne, "notifications/initialized", "", legacySessionID, `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`)
+	if initializedResponse.StatusCode != http.StatusAccepted || len(initializedPayload) != 0 {
+		t.Fatalf("legacy initialized response = %d body=%q, want 202 with no body", initializedResponse.StatusCode, initializedPayload)
+	}
+	legacyToolsResponse, legacyToolsPayload := doPost(t, testTokenOne, "tools/list", "", legacySessionID, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	if legacyToolsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("legacy tools/list status = %d; body=%q", legacyToolsResponse.StatusCode, legacyToolsPayload)
+	}
+	assertJSON(t, legacyToolsResponse)
+	legacyToolsEnvelope := decode(t, legacyToolsPayload)
+	var legacyTools struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(legacyToolsEnvelope.Result, &legacyTools); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyTools.Tools) != 4 {
+		t.Fatalf("legacy tools/list returned %d tools, want 4", len(legacyTools.Tools))
+	}
+	wrongIdentityResponse, _ := doPost(t, testTokenTwo, "tools/list", "", legacySessionID, `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`)
+	if wrongIdentityResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("legacy session with another token status = %d, want 403", wrongIdentityResponse.StatusCode)
+	}
+	deleteRequest, err := http.NewRequest(http.MethodDelete, httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteRequest.Header.Set(LocalTokenHeader, testTokenOne)
+	deleteRequest.Header.Set("Mcp-Session-Id", legacySessionID)
+	deleteResponse, err := http.DefaultClient.Do(deleteRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteResponse.Body.Close()
+	if deleteResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("legacy DELETE status = %d, want 204", deleteResponse.StatusCode)
+	}
+
+	modernDiscover := `{"jsonrpc":"2.0","id":4,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"modern-probe","version":"test"},"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	modernResponse, modernPayload := doPost(t, testTokenOne, "server/discover", modernMCPProtocolVersion, "", modernDiscover)
+	if modernResponse.StatusCode != http.StatusOK {
+		t.Fatalf("modern discover status = %d; body=%q", modernResponse.StatusCode, modernPayload)
+	}
+	assertJSON(t, modernResponse)
+	if modernResponse.Header.Get("Mcp-Session-Id") != "" {
+		t.Fatal("modern discover unexpectedly returned a session ID")
+	}
+	modernEnvelope := decode(t, modernPayload)
+	var discovery struct {
+		SupportedVersions []string `json:"supportedVersions"`
+	}
+	if err := json.Unmarshal(modernEnvelope.Result, &discovery); err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.SupportedVersions) == 0 || discovery.SupportedVersions[0] != modernMCPProtocolVersion {
+		t.Fatalf("modern supportedVersions = %v, want %q first", discovery.SupportedVersions, modernMCPProtocolVersion)
+	}
+	modernTools := `{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"modern-probe","version":"test"},"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	modernToolsResponse, modernToolsPayload := doPost(t, testTokenOne, "tools/list", modernMCPProtocolVersion, "", modernTools)
+	if modernToolsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("modern tools/list status = %d; body=%q", modernToolsResponse.StatusCode, modernToolsPayload)
+	}
+	assertJSON(t, modernToolsResponse)
+	modernToolsEnvelope := decode(t, modernToolsPayload)
+	var modernToolsResult struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(modernToolsEnvelope.Result, &modernToolsResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(modernToolsResult.Tools) != 4 {
+		t.Fatalf("modern tools/list returned %d tools, want 4", len(modernToolsResult.Tools))
+	}
+	modernGet, err := http.NewRequest(http.MethodGet, httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modernGet.Header.Set(LocalTokenHeader, testTokenOne)
+	modernGet.Header.Set("Mcp-Protocol-Version", modernMCPProtocolVersion)
+	modernGet.Header.Set("Accept", "text/event-stream")
+	modernGetResponse, err := http.DefaultClient.Do(modernGet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modernGetResponse.Body.Close()
+	if modernGetResponse.StatusCode != http.StatusMethodNotAllowed || modernGetResponse.Header.Get("Allow") != http.MethodPost {
+		t.Fatalf("modern GET response = %d Allow=%q, want 405 Allow POST", modernGetResponse.StatusCode, modernGetResponse.Header.Get("Allow"))
+	}
+	modernDelete, err := http.NewRequest(http.MethodDelete, httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modernDelete.Header.Set(LocalTokenHeader, testTokenOne)
+	modernDelete.Header.Set("Mcp-Protocol-Version", modernMCPProtocolVersion)
+	modernDeleteResponse, err := http.DefaultClient.Do(modernDelete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modernDeleteResponse.Body.Close()
+	if modernDeleteResponse.StatusCode != http.StatusMethodNotAllowed || modernDeleteResponse.Header.Get("Allow") != http.MethodPost {
+		t.Fatalf("modern DELETE response = %d Allow=%q, want 405 Allow POST", modernDeleteResponse.StatusCode, modernDeleteResponse.Header.Get("Allow"))
+	}
+
+	invalidModernResponse, invalidModernPayload := doPost(t, testTokenOne, "server/discover", modernMCPProtocolVersion, "", `{"jsonrpc":"2.0","id":6,"method":"server/discover","params":{}}`)
+	if invalidModernResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid modern discover status = %d, want 400; body=%q", invalidModernResponse.StatusCode, invalidModernPayload)
+	}
+	invalidEnvelope := decode(t, invalidModernPayload)
+	if invalidEnvelope.Error == nil {
+		t.Fatalf("invalid modern discover returned no JSON-RPC error; body=%q", invalidModernPayload)
+	}
+}
+
 func TestToolListAndCallsAreConnectionScoped(t *testing.T) {
 	fixture := newFixture(t)
 	defer fixture.close()
@@ -152,11 +358,14 @@ func TestToolListAndCallsAreConnectionScoped(t *testing.T) {
 		t.Fatalf("disallowed call = %#v", disallowed)
 	}
 
-	// The SDK's session user binding must reject reusing a session ID with a
-	// different connection token.
+	// Modern requests are sessionless, so each request is authenticated against
+	// its current bearer token rather than reusing a stateful session identity.
 	transport.setToken(testTokenOne)
-	if _, err := session.ListTools(ctx, nil); err == nil {
-		t.Fatal("ListTools() with a different connection token unexpectedly succeeded")
+	infoResult := callTool(t, ctx, session, ToolServerInfo, map[string]any{})
+	var info serverInfoOutput
+	decodeToolJSON(t, infoResult, &info)
+	if info.ConnectionID != "connection-one" {
+		t.Fatalf("modern request used connection %q after token switch, want connection-one", info.ConnectionID)
 	}
 }
 

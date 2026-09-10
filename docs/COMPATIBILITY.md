@@ -33,7 +33,7 @@
 
 ## 当前本地可验证内容
 
-Windows 本机已固定官方 MCP Go SDK v1.7.0，并通过 SDK client 的 `initialize -> tools/list -> tools/call`、本地认证、connection/profile 工具隔离、跨源保护、`read_file` 与 `batch_read` 测试。可执行服务只接受显式 loopback 地址，当前实际监听检查为 `127.0.0.1:8787`。
+Windows 本机已固定官方 MCP Go SDK v1.7.0，并通过 SDK client 的现代 `server/discover -> tools/list -> tools/call`、旧协议 `initialize -> tools/list -> tools/call`、本地认证、connection/profile 工具隔离、跨源保护、会话用户绑定、`read_file` 与 `batch_read` 测试。现代请求使用无会话 Streamable HTTP；旧协议继续保留会话 ID、GET/SSE 与 DELETE。可执行服务只接受显式 loopback 地址，当前实际监听检查为 `127.0.0.1:8787`。
 
 官方 `tunnel-client v0.0.14` Windows amd64 完整包已放在仓库外，release SHA-256、相邻 `cloudflared`、loopback profile、secret 文件 ACL、Git 忽略和 `api.openai.com:443` 可达性均通过无凭据预检。运行时 API key 与 Tunnel ID 尚未填写，因此真实 `doctor/run`、ChatGPT App 工具发现和网页模型工具调用仍为待测。详见 `docs/TUNNEL_SETUP.zh-CN.md`。
 
