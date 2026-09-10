@@ -69,6 +69,13 @@ if ($LASTEXITCODE -ne 0) {
 # The remote Tunnel route and origin parameters are managed in Cloudflare.
 # This local file records the expected values and supplies only safe run flags.
 $tunnelConfig = Get-Content -Raw -LiteralPath $TunnelConfigPath | ConvertFrom-Json
+$transportProtocol = [string]$tunnelConfig.transport_protocol
+$previousProtocol = [Environment]::GetEnvironmentVariable('TUNNEL_TRANSPORT_PROTOCOL')
+if ($transportProtocol -eq 'auto') {
+    Remove-Item Env:TUNNEL_TRANSPORT_PROTOCOL -ErrorAction SilentlyContinue
+} else {
+    $env:TUNNEL_TRANSPORT_PROTOCOL = $transportProtocol
+}
 $runArgs = @(
     'tunnel', '--no-autoupdate', '--metrics', [string]$tunnelConfig.metrics_addr,
     'run', '--token-file', $TokenPath
@@ -77,6 +84,16 @@ Write-Output 'Starting the remotely-managed cloudflared Named Tunnel in the fore
 Write-Output 'No login, tunnel creation, DNS change, or Access app provisioning is performed by this script.'
 Write-Output "Token is loaded via --token-file; path: $TokenPath"
 Write-Output "Expected dashboard route: https://$($tunnelConfig.public_host) -> $($tunnelConfig.origin_url)"
+Write-Output "Tunnel transport protocol: $transportProtocol"
 Write-Output 'Keep this terminal running while ChatGPT connects to the configured public hostname.'
-& $CloudflaredPath @runArgs
-exit $LASTEXITCODE
+try {
+    & $CloudflaredPath @runArgs
+    $cloudflaredExitCode = $LASTEXITCODE
+} finally {
+    if ([string]::IsNullOrEmpty($previousProtocol)) {
+        Remove-Item Env:TUNNEL_TRANSPORT_PROTOCOL -ErrorAction SilentlyContinue
+    } else {
+        $env:TUNNEL_TRANSPORT_PROTOCOL = $previousProtocol
+    }
+}
+exit $cloudflaredExitCode

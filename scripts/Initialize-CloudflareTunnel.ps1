@@ -6,6 +6,8 @@ param(
     [string]$PublicHost = 'mcp.example.test',
     [int]$OriginPort = 8788,
     [string]$MetricsAddr = '127.0.0.1:49300',
+    [ValidateSet('auto', 'http2', 'quic')]
+    [string]$TransportProtocol = 'http2',
     [switch]$ForceConfig
 )
 
@@ -94,6 +96,7 @@ if ($ForceConfig -or -not (Test-Path -LiteralPath $tunnelConfigPath -PathType Le
         public_host = $PublicHost
         origin_url = "http://127.0.0.1:$OriginPort"
         metrics_addr = $MetricsAddr
+        transport_protocol = $TransportProtocol
     } | ConvertTo-Json
     [IO.File]::WriteAllText($tunnelConfigPath, $tunnelConfig, [Text.UTF8Encoding]::new($false))
     $tunnelConfigAction = 'created'

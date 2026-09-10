@@ -56,6 +56,21 @@ function Test-PathInside([string]$Child, [string]$Parent) {
         $Child.StartsWith($parentPrefix, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-TcpEndpoint([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds = 4000) {
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        $connect = $client.ConnectAsync($HostName, $Port)
+        if (-not $connect.Wait($TimeoutMilliseconds)) {
+            return $false
+        }
+        return $client.Connected
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
 $RepoRoot = Get-FullPath $RepoRoot
 if ([string]::IsNullOrWhiteSpace($SecretRoot)) {
     $SecretRoot = Join-Path (Split-Path -Parent $RepoRoot) '.secrets'
@@ -84,6 +99,7 @@ $TokenPath = Get-FullPath $TokenPath
 
 $checks = [System.Collections.Generic.List[object]]::new()
 $tunnelPublicHost = $null
+$metricsAddress = $null
 if (Test-PathInside $SecretRoot $RepoRoot) {
     Add-Check $checks 'secret directory location' 'FAIL' 'SecretRoot must be outside RepoRoot'
 } else {
@@ -147,14 +163,15 @@ if (Test-Path -LiteralPath $CloudflaredPath -PathType Leaf) {
 if (Test-Path -LiteralPath $TunnelConfigPath -PathType Leaf) {
     try {
         $tunnelConfig = Get-Content -Raw -LiteralPath $TunnelConfigPath | ConvertFrom-Json
-        $required = @('public_host', 'origin_url', 'metrics_addr')
+        $required = @('public_host', 'origin_url', 'metrics_addr', 'transport_protocol')
         $missing = @($required | Where-Object { $null -eq $tunnelConfig.PSObject.Properties[$_] })
         if ($missing.Count -gt 0) {
-            Add-Check $checks 'remote Tunnel expectations' 'FAIL' 'public_host, origin_url, and metrics_addr are required'
+            Add-Check $checks 'remote Tunnel expectations' 'FAIL' 'public_host, origin_url, metrics_addr, and transport_protocol are required'
         } else {
             $tunnelPublicHost = [string]$tunnelConfig.public_host
             $originUrl = [string]$tunnelConfig.origin_url
             $metricsAddress = [string]$tunnelConfig.metrics_addr
+            $transportProtocol = [string]$tunnelConfig.transport_protocol
             if ($tunnelPublicHost -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$') {
                 Add-Check $checks 'public Tunnel hostname' 'FAIL' 'public_host must be one exact DNS hostname'
             } else {
@@ -170,12 +187,59 @@ if (Test-Path -LiteralPath $TunnelConfigPath -PathType Leaf) {
             } else {
                 Add-Check $checks 'origin binding' 'PASS' 'expected dashboard route targets loopback only'
             }
+            if ($transportProtocol -notin @('auto', 'http2', 'quic')) {
+                Add-Check $checks 'Tunnel transport protocol' 'FAIL' 'transport_protocol must be auto, http2, or quic'
+            } else {
+                Add-Check $checks 'Tunnel transport protocol' 'PASS' "transport protocol is $transportProtocol"
+            }
         }
     } catch {
         Add-Check $checks 'remote Tunnel expectations' 'FAIL' 'config is not valid JSON'
     }
 } else {
     Add-Check $checks 'remote Tunnel expectations' 'PENDING' 'run Initialize-CloudflareTunnel.ps1 first'
+}
+
+$activeConnections = 0
+if ($metricsAddress -and (Test-LoopbackAddr $metricsAddress)) {
+    try {
+        $metricsBody = (Invoke-WebRequest -UseBasicParsing "http://$metricsAddress/metrics" -TimeoutSec 3).Content
+        if ($metricsBody -match '(?m)^cloudflared_tunnel_ha_connections\s+([0-9]+(?:\.[0-9]+)?)\s*$') {
+            $activeConnections = [double]$Matches[1]
+        }
+    } catch {
+        $activeConnections = 0
+    }
+}
+if ($activeConnections -gt 0) {
+    Add-Check $checks 'Cloudflare edge connectivity' 'PASS' "cloudflared reports $activeConnections active HA connection(s)"
+} else {
+    $edgeTargets = @('region1.v2.argotunnel.com', 'region2.v2.argotunnel.com')
+    $reachableEdgeTargets = @($edgeTargets | Where-Object { Test-TcpEndpoint $_ 7844 })
+    if ($reachableEdgeTargets.Count -gt 0) {
+        Add-Check $checks 'Cloudflare edge connectivity' 'PASS' 'at least one discovery target accepts TCP 7844'
+    } else {
+        $broadBlockCount = 0
+        try {
+            $broadBlockCount = @(Get-NetFirewallRule -Enabled True -Direction Outbound -Action Block -ErrorAction Stop | Where-Object {
+                $application = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $_
+                $port = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $_
+                $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $_
+                $remoteAddresses = @($address.RemoteAddress)
+                $coversPublicInternet = $remoteAddresses -contains 'Any' -or
+                    (($remoteAddresses -contains '0.0.0.0-126.255.255.255') -and
+                    ($remoteAddresses -contains '128.0.0.0-255.255.255.255'))
+                $application.Program -eq 'Any' -and $port.RemotePort -eq 'Any' -and $coversPublicInternet
+            }).Count
+        } catch {
+            $broadBlockCount = 0
+        }
+        if ($broadBlockCount -gt 0) {
+            Add-Check $checks 'Cloudflare edge connectivity' 'FAIL' "$broadBlockCount enabled broad outbound block rule(s) cover the public Internet"
+        } else {
+            Add-Check $checks 'Cloudflare edge connectivity' 'PENDING' 'discovery targets did not accept TCP 7844; cloudflared may still rotate to another edge, so verify its HA connection metric after startup'
+        }
+    }
 }
 
 if (Test-Path -LiteralPath $AccessConfigPath -PathType Leaf) {
@@ -197,6 +261,16 @@ if (Test-Path -LiteralPath $AccessConfigPath -PathType Leaf) {
             Add-Check $checks 'Access verifier config' 'FAIL' 'public_hosts must include the exact tunnel ingress hostname'
         } else {
             Add-Check $checks 'Access verifier config' 'PASS' 'required non-secret verifier settings are present'
+            try {
+                $jwksUri = [Uri][string]$access.jwks_url
+                if ($jwksUri.Scheme -eq 'https' -and (Test-TcpEndpoint $jwksUri.DnsSafeHost 443)) {
+                    Add-Check $checks 'Access JWKS network' 'PASS' 'JWKS host accepts HTTPS connections'
+                } else {
+                    Add-Check $checks 'Access JWKS network' 'FAIL' 'JWKS must use HTTPS and its host must accept TCP 443'
+                }
+            } catch {
+                Add-Check $checks 'Access JWKS network' 'FAIL' 'jwks_url is not a valid HTTPS URL'
+            }
         }
     } catch {
         Add-Check $checks 'Access verifier config' 'FAIL' 'config is not valid JSON'

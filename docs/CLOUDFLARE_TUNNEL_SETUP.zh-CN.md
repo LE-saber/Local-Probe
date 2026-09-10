@@ -45,6 +45,7 @@ CF ingress 在 SDK 之前检查精确 `Host`。只有该模式且 Host 命中运
 - `public_host`：一个固定公网 DNS hostname；
 - `origin_url`：保持 `http://127.0.0.1:8788`，不要使用 `0.0.0.0`、局域网或公网地址；
 - `metrics_addr`：保持 loopback，例如 `127.0.0.1:49300`。
+- `transport_protocol`：`http2`、`quic` 或 `auto`。Windows/受限网络默认使用 `http2`；无 UDP 7844 限制时可选 `quic`。
 
 本方案统一使用 Cloudflare 推荐的**远程托管 Named Tunnel**。Tunnel 身份由仓库外 token 文件提供；Published application route 与 Host Header 等 origin 参数在 Cloudflare Dashboard 管理。不要把本地托管 Tunnel 的 `credentials-file`/ingress YAML 与远程 token 启动方式混用。
 
@@ -85,6 +86,8 @@ go run ./cmd/local-probe-mcp -config .runtime/local-probe.json -ingress cloudfla
 ```
 
 该脚本使用 `cloudflared tunnel --no-autoupdate --metrics <loopback> run --token-file <外部文件路径>`；token 值不会进入 argv、配置或日志。脚本不会执行 login、Tunnel/DNS/Access app 创建，也不会用不受支持的本地 ingress YAML 覆盖远程托管路由。
+
+预检会测试 Cloudflare Tunnel edge 的 TCP 7844、Access JWKS 的 TCP 443、loopback 绑定和潜在的全局出站 Block 规则。发行脚本只报告并拒绝启动，不会自动停用或改写系统防火墙；网络管理员应按 Cloudflare 要求放行出站 7844。
 
 ## 后续人工 Cloudflare/ChatGPT 步骤
 
