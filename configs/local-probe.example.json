@@ -19,7 +19,8 @@
         "batch_read",
         "list_directory",
         "find_files",
-        "search_text"
+        "search_text",
+        "tree_directory"
       ],
       "deny_patterns": [],
       "ignore_patterns": [],

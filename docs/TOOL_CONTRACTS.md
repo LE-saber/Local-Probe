@@ -67,13 +67,13 @@ metadata 是弱版本：相同 size/mtime 的内容修改可能无法检测，�
 
 ## 七、未来 MCP 工具面
 
-目标约十个高层工具：workspace_snapshot、list_directory、find_files、search_text、read_file、batch_read、get_environment、run_probe、git_status、git_diff。具体 schema 在 P05/P06 冻结，不把底层全部细节扔给模型。
+目标约十个高层工具：workspace_snapshot、list_directory、tree_directory、find_files、search_text、read_file、batch_read、get_environment、run_probe、git_status、git_diff。具体 schema 在 P05/P06 冻结，不把底层全部细节扔给模型。
 
 统一产品响应还需 request_id、coverage、warnings、预算和 continuation。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
 
-## 八、P06 发现与文本搜索工具（第一增量）
+## 八、P06 发现、文本搜索与目录树工具（第一增量）
 
-这三个工具都只接受已认证 connection 对应的 `root_id` 和规范化相对路径。根目录的
+这四个工具都只接受已认证 connection 对应的 `root_id` 和规范化相对路径。根目录的
 `path` 省略或使用空字符串；绝对路径、`..`、反斜杠、NUL 和平台保留名都会被拒绝。
 服务端从配置快照取得 root，模型不能传入或替换本机绝对根路径。显式 deny 优先于
 ignore；ignore 只影响发现结果，不授予读取权限。默认不跨 symlink、junction 或其他
@@ -81,6 +81,39 @@ reparse 边界。每个结果都包含 `coverage.complete`、计数和 `warnings
 不能被误认为全量结果。`continuation` 是带 HMAC 的短期游标，绑定 connection、profile、
 配置 revision、root、起始路径、查询/模式、大小写和预算；篡改、过期、撤权或目录/文件
 generation 变化都会要求重新开始。
+
+### `tree_directory`
+
+Use when：需要在一个授权目录范围内以类似 `tree` 的方式查看层级，并希望一次只接收一页
+扁平、有序的路径条目。
+
+Do not use：需要执行 `tree.exe`、Shell、改变进程当前目录或读取文件正文时。它不会创建
+会话级 `cd` 状态；每次调用都必须重新提供 `root_id`、相对 `path` 和（如有）签名游标。
+目录本身以深度 `0` 返回，普通文件以叶子条目返回；symlink、junction 和 reparse 条目
+只返回类型元数据，绝不会继续下钻。
+
+完整参数示例：
+
+```json
+{
+  "root_id": "project",
+  "path": "src",
+  "max_depth": 4,
+  "page_size": 128,
+  "max_entries": 4096
+}
+```
+
+结果使用扁平 `entries`，每项含规范相对 `path`、`name`、`type` 和相对于起始目录的
+`depth`，并包含 `coverage`、`warnings`、`budget` 与可选 `continuation`。`max_entries`
+限制实际扫描的子项数；根目录不计入该扫描计数，但计入返回条目数。达到页数、扫描、输出
+或时间预算时必须 `complete:false`，并在可继续时返回游标；达到 `max_depth` 或链接/特殊
+类型边界时也不能宣称整棵树完整。显式 deny 优先于 ignore，二者均不会把被过滤的名称
+写入结果。
+
+若 `continuation` 非空，使用相同的 `root_id`、`path`、`max_depth`、`page_size` 和
+`max_entries` 再次调用并把游标放入 `cursor`。游标绑定 connection、profile revision、
+root、起始路径和全部预算；不能跨连接、改预算或在目录 generation 改变后继续使用。
 
 ### `list_directory`
 

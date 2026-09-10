@@ -49,7 +49,8 @@ func TestListDirectoryIsBoundedAndCursorIsSigned(t *testing.T) {
 	if len(second.Entries) != 1 || second.Entries[0].Path != "b.txt" {
 		t.Fatalf("second page = %#v", second)
 	}
-	if _, err := service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 1, Cursor: first.Continuation[:len(first.Continuation)-1] + "x"}); !errors.Is(err, ErrInvalidCursor) {
+	tampered := first.Continuation[:len(first.Continuation)-1] + "!"
+	if _, err := service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 1, Cursor: tampered}); !errors.Is(err, ErrInvalidCursor) {
 		t.Fatalf("tampered cursor error = %v", err)
 	}
 	updated, err := config.Parse([]byte(`{
@@ -67,6 +68,141 @@ func TestListDirectoryIsBoundedAndCursorIsSigned(t *testing.T) {
 	}
 	if _, err := service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 1, Cursor: first.Continuation}); !errors.Is(err, ErrInvalidCursor) {
 		t.Fatalf("revoked cursor error = %v", err)
+	}
+}
+
+func TestTreeDirectoryReturnsFlatBoundedTreeAndHidesDeniedSubtrees(t *testing.T) {
+	bound, store := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project","deny_patterns":["private/**"],"ignore_patterns":["ignored/**"]}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["tree_directory"],"deny_patterns":[],"ignore_patterns":[]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+	source := newFakeSource(map[string][]DirEntry{
+		"": {
+			{Name: "src", Type: EntryDirectory},
+			{Name: "private", Type: EntryDirectory},
+			{Name: "ignored", Type: EntryDirectory},
+			{Name: "README.md", Type: EntryRegular},
+			{Name: "link", Type: EntrySymlink},
+		},
+		"src": {
+			{Name: "main.go", Type: EntryRegular},
+			{Name: "nested", Type: EntryDirectory},
+		},
+		"src/nested": {{Name: "util.go", Type: EntryRegular}},
+		"private":    {{Name: "secret.txt", Type: EntryRegular}},
+		"ignored":    {{Name: "ignored.txt", Type: EntryRegular}},
+	})
+	service, err := New(source, DefaultLimits(), []byte("tree-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", PageSize: 3, MaxEntries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Coverage.Complete || first.Continuation == "" || first.Entries[0].Path != "" || first.Entries[0].Depth != 0 {
+		t.Fatalf("first tree page = %#v", first)
+	}
+	if first.Entries[1].Path != "src" || first.Entries[1].Depth != 1 || first.Entries[2].Path != "src/main.go" || first.Entries[2].Depth != 2 {
+		t.Fatalf("first tree entries = %#v", first.Entries)
+	}
+	for _, entry := range first.Entries {
+		if strings.HasPrefix(entry.Path, "private") || strings.HasPrefix(entry.Path, "ignored") {
+			t.Fatalf("tree leaked filtered entry: %#v", entry)
+		}
+	}
+
+	second, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", PageSize: 3, MaxEntries: 2, Cursor: first.Continuation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Entries) == 0 || second.Entries[0].Path == "" {
+		t.Fatalf("tree cursor repeated root or returned nothing: %#v", second)
+	}
+	for _, entry := range second.Entries {
+		if strings.HasPrefix(entry.Path, "private") || strings.HasPrefix(entry.Path, "ignored") {
+			t.Fatalf("tree leaked filtered entry after cursor: %#v", entry)
+		}
+		if entry.Path == "link" && entry.Type != EntrySymlink {
+			t.Fatalf("tree symlink type = %#v", entry)
+		}
+	}
+	if second.Coverage.Complete {
+		t.Fatalf("tree marked partial cursor result complete: %#v", second)
+	}
+	all, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", PageSize: 32, MaxEntries: 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Coverage.DeniedEntries == 0 || all.Coverage.IgnoredEntries == 0 || all.Coverage.Complete {
+		t.Fatalf("tree filter coverage = %#v warnings=%v", all.Coverage, all.Warnings)
+	}
+	for _, entry := range all.Entries {
+		if strings.HasPrefix(entry.Path, "private") || strings.HasPrefix(entry.Path, "ignored") {
+			t.Fatalf("tree leaked filtered entry in complete traversal: %#v", entry)
+		}
+	}
+	if _, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", PageSize: 3, MaxEntries: 3, Cursor: first.Continuation}); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("tree accepted cursor with changed budget: %v", err)
+	}
+
+	updated, err := config.Parse([]byte(`{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["tree_directory"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Replace(updated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", PageSize: 3, MaxEntries: 2, Cursor: first.Continuation}); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("tree accepted revoked cursor: %v", err)
+	}
+}
+
+func TestTreeDirectoryDepthLimitIsExplicitAndRootOnlyIsAllowed(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["tree_directory"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+	source := newFakeSource(map[string][]DirEntry{
+		"":        {{Name: "one", Type: EntryDirectory}},
+		"one":     {{Name: "two", Type: EntryDirectory}},
+		"one/two": {{Name: "file.txt", Type: EntryRegular}},
+	})
+	service, err := New(source, DefaultLimits(), []byte("tree-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", MaxDepth: 1, PageSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 2 || result.Entries[0].Path != "" || result.Entries[1].Path != "one" || result.Entries[1].Depth != 1 {
+		t.Fatalf("depth-limited tree = %#v", result)
+	}
+	if result.Coverage.Complete || !contains(result.Warnings, "depth_limit") || result.Continuation != "" {
+		t.Fatalf("depth-limited coverage = %#v warnings=%v cursor=%q", result.Coverage, result.Warnings, result.Continuation)
+	}
+
+	rootOnly, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", MaxDepth: 0, PageSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// max_depth=0 uses the service default, matching the other P06 walkers.
+	if len(rootOnly.Entries) != 4 || rootOnly.Entries[2].Path != "one/two" || rootOnly.Entries[3].Path != "one/two/file.txt" {
+		t.Fatalf("default-depth tree = %#v", rootOnly)
 	}
 }
 

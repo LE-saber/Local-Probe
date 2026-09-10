@@ -125,6 +125,18 @@ type ListDirectoryRequest struct {
 	Cursor     string `json:"cursor,omitempty"`
 }
 
+// TreeDirectoryRequest describes one stateless, bounded pre-order traversal.
+// Path is always relative to the configured root; it is a traversal start
+// point, not a process working directory.
+type TreeDirectoryRequest struct {
+	RootID     string `json:"root_id"`
+	Path       string `json:"path,omitempty"`
+	MaxDepth   int    `json:"max_depth,omitempty"`
+	PageSize   int    `json:"page_size,omitempty"`
+	MaxEntries int    `json:"max_entries,omitempty"`
+	Cursor     string `json:"cursor,omitempty"`
+}
+
 type FindFilesRequest struct {
 	RootID        string `json:"root_id"`
 	Path          string `json:"path,omitempty"`
@@ -160,6 +172,17 @@ type Entry struct {
 	ModTime   string    `json:"mod_time,omitempty"`
 }
 
+// TreeEntry is a flat pre-order tree item. Depth is relative to the requested
+// start directory, which itself is emitted at depth zero.
+type TreeEntry struct {
+	Path      string    `json:"path"`
+	Name      string    `json:"name"`
+	Type      EntryType `json:"type"`
+	Depth     int       `json:"depth"`
+	SizeBytes int64     `json:"size_bytes,omitempty"`
+	ModTime   string    `json:"mod_time,omitempty"`
+}
+
 type Coverage struct {
 	Complete               bool `json:"complete"`
 	ScannedEntries         int  `json:"scanned_entries"`
@@ -190,6 +213,17 @@ type ListDirectoryResult struct {
 	Warnings      []string `json:"warnings,omitempty"`
 	Budget        Budget   `json:"budget"`
 	Continuation  string   `json:"continuation,omitempty"`
+}
+
+type TreeDirectoryResult struct {
+	SchemaVersion string      `json:"schema_version"`
+	RootID        string      `json:"root_id"`
+	Path          string      `json:"path"`
+	Entries       []TreeEntry `json:"entries"`
+	Coverage      Coverage    `json:"coverage"`
+	Warnings      []string    `json:"warnings,omitempty"`
+	Budget        Budget      `json:"budget"`
+	Continuation  string      `json:"continuation,omitempty"`
 }
 
 type FindFilesResult struct {

@@ -39,6 +39,7 @@ const (
 	ToolListDirectory = "list_directory"
 	ToolFindFiles     = "find_files"
 	ToolSearchText    = "search_text"
+	ToolTreeDirectory = "tree_directory"
 	LocalTokenHeader  = "X-Local-Probe-Token"
 
 	// CloudflareAccessHeader is re-exported for callers that need to construct
@@ -296,6 +297,13 @@ func (s *Server) buildHandler() http.Handler {
 		OutputSchema: searchTextOutputSchema,
 		Annotations:  readOnlyAnnotations(),
 	}, s.handleSearchText)
+	addTool(server, &mcp.Tool{
+		Name:         ToolTreeDirectory,
+		Description:  "Return a bounded flat tree of an authorized directory without changing process state or crossing links.",
+		InputSchema:  treeDirectoryInputSchema,
+		OutputSchema: treeDirectoryOutputSchema,
+		Annotations:  readOnlyAnnotations(),
+	}, s.handleTreeDirectory)
 
 	streamableOptions := func(stateless bool) *mcp.StreamableHTTPOptions {
 		return &mcp.StreamableHTTPOptions{
@@ -731,13 +739,46 @@ func (s *Server) handleSearchText(ctx context.Context, req *mcp.CallToolRequest)
 	return s.jsonResult(result), nil
 }
 
+func (s *Server) handleTreeDirectory(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var input search.TreeDirectoryRequest
+	if err := decodeArguments(req, &input); err != nil {
+		return errorResult("invalid_request", "arguments must be a JSON object with supported fields"), nil
+	}
+	bound, err := s.boundScope(ctx)
+	if err != nil {
+		return errorResult("unauthorized", "authentication is required"), nil
+	}
+	if s.search == nil {
+		return s.searchErrorResult(search.ErrUnavailable), nil
+	}
+	if !bound.AllowsTool(ToolTreeDirectory) {
+		return deniedToolResult(), nil
+	}
+	out, err := s.search.TreeDirectory(ctx, bound, input)
+	if err != nil {
+		return s.searchErrorResult(err), nil
+	}
+	result := struct {
+		SchemaVersion string             `json:"schema_version"`
+		RequestID     string             `json:"request_id"`
+		RootID        string             `json:"root_id"`
+		Path          string             `json:"path"`
+		Entries       []search.TreeEntry `json:"entries"`
+		Coverage      search.Coverage    `json:"coverage"`
+		Warnings      []string           `json:"warnings,omitempty"`
+		Budget        search.Budget      `json:"budget"`
+		Continuation  string             `json:"continuation,omitempty"`
+	}{out.SchemaVersion, s.nextRequestID(), out.RootID, out.Path, out.Entries, out.Coverage, out.Warnings, out.Budget, out.Continuation}
+	return s.jsonResult(result), nil
+}
+
 func (s *Server) handleServerInfo(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	bound, err := s.boundScope(ctx)
 	if err != nil {
 		return errorResult("unauthorized", "authentication is required"), nil
 	}
-	tools := make([]string, 0, 7)
-	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText} {
+	tools := make([]string, 0, 8)
+	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText, ToolTreeDirectory} {
 		if bound.AllowsTool(name) {
 			tools = append(tools, name)
 		}
@@ -1051,6 +1092,20 @@ var searchTextInputSchema = map[string]any{
 	},
 }
 
+var treeDirectoryInputSchema = map[string]any{
+	"type": "object", "additionalProperties": false,
+	"required": []string{"root_id"},
+	"properties": map[string]any{
+		"root_id":     map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+		"path":        map[string]any{"type": "string", "maxLength": 4096},
+		"max_depth":   map[string]any{"type": "integer", "minimum": 0, "maximum": 256},
+		"page_size":   map[string]any{"type": "integer", "minimum": 1, "maximum": 1024},
+		"max_entries": map[string]any{"type": "integer", "minimum": 1, "maximum": 1048576},
+		"cursor":      map[string]any{"type": "string", "maxLength": 65536},
+	},
+}
+
 var listDirectoryOutputSchema = map[string]any{"type": "object"}
 var findFilesOutputSchema = map[string]any{"type": "object"}
 var searchTextOutputSchema = map[string]any{"type": "object"}
+var treeDirectoryOutputSchema = map[string]any{"type": "object"}

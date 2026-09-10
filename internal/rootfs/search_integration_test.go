@@ -37,7 +37,7 @@ func TestBoundSearchSourceUsesRootfsPolicyAndDirectoryGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := config.NewProfileWithIgnore("read", []string{"project"}, []string{"list_directory", "find_files", "search_text"}, nil, []string{"*.tmp"})
+	profile, err := config.NewProfileWithIgnore("read", []string{"project"}, []string{"list_directory", "find_files", "search_text", "tree_directory"}, nil, []string{"*.tmp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +99,19 @@ func TestBoundSearchSourceUsesRootfsPolicyAndDirectoryGeneration(t *testing.T) {
 	}
 	if len(text.Matches) != 2 || text.Coverage.DeniedEntries == 0 || text.Coverage.IgnoredEntries == 0 {
 		t.Fatalf("search_text = %#v", text)
+	}
+	tree, err := service.TreeDirectory(ctx, bound, search.TreeDirectoryRequest{RootID: "project", MaxDepth: 2, PageSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	treePaths := make([]string, 0, len(tree.Entries))
+	for _, entry := range tree.Entries {
+		treePaths = append(treePaths, entry.Path)
+	}
+	sortedTreePaths := append([]string(nil), treePaths...)
+	sort.Strings(sortedTreePaths)
+	if strings.Join(sortedTreePaths, ",") != ",notes.txt,src,src/main.go,src/nested" || tree.Coverage.DeniedEntries == 0 || tree.Coverage.IgnoredEntries == 0 || tree.Coverage.Complete {
+		t.Fatalf("tree_directory paths = %v coverage=%#v warnings=%v", treePaths, tree.Coverage, tree.Warnings)
 	}
 
 	// The generation is tied to the opened directory's metadata. A changed

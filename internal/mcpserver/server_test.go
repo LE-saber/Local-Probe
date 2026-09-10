@@ -116,7 +116,7 @@ func TestStreamableHTTPClientLifecycleAndReadTools(t *testing.T) {
 func TestSearchToolsAreMCPScopedAndUseStructuredResults(t *testing.T) {
 	fixture := newFixture(t)
 	defer fixture.close()
-	fixture.profileOneTools = []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText}
+	fixture.profileOneTools = []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText, ToolTreeDirectory}
 	if err := os.MkdirAll(fixture.root+"/src/nested", 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -149,8 +149,8 @@ func TestSearchToolsAreMCPScopedAndUseStructuredResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 7 {
-		t.Fatalf("tools = %d, want 7", len(tools.Tools))
+	if len(tools.Tools) != 8 {
+		t.Fatalf("tools = %d, want 8", len(tools.Tools))
 	}
 	listing := callTool(t, ctx, session, ToolListDirectory, map[string]any{"root_id": "workspace", "page_size": 32})
 	var list struct {
@@ -177,6 +177,15 @@ func TestSearchToolsAreMCPScopedAndUseStructuredResults(t *testing.T) {
 	decodeToolJSON(t, textResult, &text)
 	if len(text.Matches) != 3 {
 		t.Fatalf("search_text = %#v", text)
+	}
+	treeResult := callTool(t, ctx, session, ToolTreeDirectory, map[string]any{"root_id": "workspace", "page_size": 16, "max_depth": 1})
+	var tree struct {
+		Entries  []search.TreeEntry `json:"entries"`
+		Coverage search.Coverage    `json:"coverage"`
+	}
+	decodeToolJSON(t, treeResult, &tree)
+	if len(tree.Entries) < 2 || tree.Entries[0].Path != "" || tree.Entries[0].Depth != 0 || tree.Entries[1].Path != "hello.txt" || tree.Entries[1].Depth != 1 {
+		t.Fatalf("tree_directory = %#v", tree)
 	}
 }
 
