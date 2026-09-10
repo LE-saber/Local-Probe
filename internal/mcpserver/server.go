@@ -11,12 +11,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"unicode/utf8"
 
+	"github.com/LE-saber/Local-Probe/internal/cfaccess"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/readcore"
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -33,6 +36,11 @@ const (
 	ToolReadFile     = "read_file"
 	ToolBatchRead    = "batch_read"
 	LocalTokenHeader = "X-Local-Probe-Token"
+
+	// CloudflareAccessHeader is re-exported for callers that need to construct
+	// a local integration test request without depending on the cfaccess
+	// package's transport details.
+	CloudflareAccessHeader = cfaccess.AccessJWTHeader
 
 	defaultMaxRequestBodyBytes = 1 << 20
 	defaultMaxResponseBytes    = 512 << 10
@@ -65,11 +73,16 @@ type Credential struct {
 // built from the same config.Store snapshot family. Credentials are runtime
 // values and are never serialized by this package.
 type Options struct {
-	Manager      *policy.Manager
-	Source       SourceBinder
-	Credentials  []Credential
-	Limits       readcore.Limits
-	MaxBodyBytes int64
+	Manager     *policy.Manager
+	Source      SourceBinder
+	Credentials []Credential
+	// CloudflareAccess selects the explicit Cloudflare Access ingress. When it
+	// is non-nil, local Credentials must be empty and every request must carry
+	// a valid Cf-Access-Jwt-Assertion plus a trusted public Host.
+	CloudflareAccess      *cfaccess.Verifier
+	CloudflarePublicHosts []string
+	Limits                readcore.Limits
+	MaxBodyBytes          int64
 	// MaxResponseBytes bounds the serialized MCP CallToolResult content. The
 	// JSON-RPC envelope adds a small amount of transport overhead; callers that
 	// impose a hard wire cap should leave room for that envelope.
@@ -85,6 +98,8 @@ type Server struct {
 	maxBodyBytes     int64
 	maxResponseBytes int64
 	credentials      []credential
+	cloudflareAccess *cfaccess.Verifier
+	cloudflareHosts  map[string]hostPattern
 	requestID        atomic.Uint64
 	handler          http.Handler
 }
@@ -92,6 +107,11 @@ type Server struct {
 type credential struct {
 	connectionID string
 	token        []byte
+}
+
+type hostPattern struct {
+	host string
+	port string
 }
 
 // New creates an MCP server backed by the current policy and rootfs adapter.
@@ -126,6 +146,25 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("%w: response size limit out of bounds", ErrInvalidOptions)
 	}
 
+	if opts.CloudflareAccess != nil && len(opts.Credentials) > 0 {
+		return nil, fmt.Errorf("%w: local credentials and Cloudflare Access ingress cannot be combined", ErrInvalidOptions)
+	}
+	if opts.CloudflareAccess == nil && len(opts.Credentials) == 0 {
+		return nil, fmt.Errorf("%w: at least one credential is required", ErrInvalidOptions)
+	}
+	hosts := make(map[string]hostPattern)
+	if opts.CloudflareAccess != nil {
+		var err error
+		hosts, err = validateCloudflareHosts(opts.CloudflarePublicHosts)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid Cloudflare public host", ErrInvalidOptions)
+		}
+		for _, connectionID := range opts.CloudflareAccess.ConnectionIDs() {
+			if _, err := opts.Manager.BindAuthenticated(connectionID); err != nil {
+				return nil, fmt.Errorf("%w: Cloudflare principal mapping targets an unavailable connection", ErrInvalidOptions)
+			}
+		}
+	}
 	credentials := make([]credential, 0, len(opts.Credentials))
 	seenConnections := make(map[string]struct{}, len(opts.Credentials))
 	seenTokens := make([][]byte, 0, len(opts.Credentials))
@@ -147,10 +186,6 @@ func New(opts Options) (*Server, error) {
 		credentials = append(credentials, credential{connectionID: c.ConnectionID, token: token})
 		seenTokens = append(seenTokens, token)
 	}
-	if len(credentials) == 0 {
-		return nil, fmt.Errorf("%w: at least one credential is required", ErrInvalidOptions)
-	}
-
 	s := &Server{
 		manager:          opts.Manager,
 		source:           opts.Source,
@@ -158,6 +193,8 @@ func New(opts Options) (*Server, error) {
 		maxBodyBytes:     maxBody,
 		maxResponseBytes: maxResponse,
 		credentials:      credentials,
+		cloudflareAccess: opts.CloudflareAccess,
+		cloudflareHosts:  hosts,
 	}
 	s.handler = s.buildHandler()
 	return s, nil
@@ -215,17 +252,30 @@ func (s *Server) buildHandler() http.Handler {
 	}, s.handleBatchRead)
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
-		CrossOriginProtection:        http.NewCrossOriginProtection(),
+		CrossOriginProtection: http.NewCrossOriginProtection(),
+		// The outer cloudflareHost middleware performs exact public Host
+		// validation before this handler. Only that explicit CF mode may
+		// disable the SDK's loopback Host check; local-token mode retains it.
+		DisableLocalhostProtection:   s.cloudflareAccess != nil,
 		MaxRequestBodyBytes:          s.maxBodyBytes,
 		PropagateRequestCancellation: true,
 	})
 	// The SDK's auth middleware populates auth.TokenInfo in the context and
 	// enforces session user binding. The token has no remote expiration; process
 	// restart/credential rotation is the lifetime boundary for this local hop.
-	protected := auth.RequireBearerToken(s.verifyToken, &auth.RequireBearerTokenOptions{
-		AllowMissingExpiration: true,
-	})
-	return localTokenHeader(protected(mcpHandler))
+	verify := auth.TokenVerifier(s.verifyToken)
+	authOptions := &auth.RequireBearerTokenOptions{AllowMissingExpiration: true}
+	if s.cloudflareAccess != nil {
+		verify = s.cloudflareAccess.Verify
+		authOptions.AllowMissingExpiration = false
+		authOptions.ClockSkew = s.cloudflareAccess.ClockSkew()
+	}
+	protected := auth.RequireBearerToken(verify, authOptions)
+	protectedHandler := protected(mcpHandler)
+	if s.cloudflareAccess != nil {
+		return cloudflareHost(s.cloudflareHosts, cloudflareAccessHeader(protectedHandler))
+	}
+	return localTokenHeader(protectedHandler)
 }
 
 // localTokenHeader adapts the private X-Local-Probe-Token hop to the SDK's
@@ -247,6 +297,118 @@ func localTokenHeader(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, clone)
 	})
+}
+
+// cloudflareAccessHeader adapts the assertion injected by Cloudflare Access
+// to the SDK's standard bearer middleware. Any client Authorization value is
+// discarded: Managed OAuth may forward its opaque bearer token, but the CF
+// ingress has exactly one trusted identity source and never verifies that
+// opaque value or falls back to the local hop token.
+func cloudflareAccessHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := r.Header.Values(cfaccess.AccessJWTHeader)
+		if len(values) != 1 || values[0] == "" || len(values[0]) > 64<<10 || strings.TrimSpace(values[0]) != values[0] {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "invalid authorization", http.StatusUnauthorized)
+			return
+		}
+		clone := r.Clone(r.Context())
+		clone.Header = r.Header.Clone()
+		clone.Header.Del("Authorization")
+		clone.Header.Set("Authorization", "Bearer "+values[0])
+		next.ServeHTTP(w, clone)
+	})
+}
+
+func cloudflareHost(hosts map[string]hostPattern, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !trustedCloudflareHost(hosts, r.Host) {
+			http.Error(w, "invalid Host header", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func validateCloudflareHosts(values []string) (map[string]hostPattern, error) {
+	if len(values) == 0 || len(values) > 16 {
+		return nil, errors.New("at least one exact public host is required")
+	}
+	allowed := make(map[string]hostPattern, len(values))
+	for _, value := range values {
+		pattern, key, err := parseHostPattern(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := allowed[key]; exists {
+			return nil, errors.New("duplicate public host")
+		}
+		allowed[key] = pattern
+	}
+	return allowed, nil
+}
+
+func trustedCloudflareHost(hosts map[string]hostPattern, raw string) bool {
+	host, port, err := splitHost(raw)
+	if err != nil {
+		return false
+	}
+	for _, pattern := range hosts {
+		if pattern.host != host {
+			continue
+		}
+		if pattern.port == port {
+			return true
+		}
+	}
+	return false
+}
+
+func parseHostPattern(raw string) (hostPattern, string, error) {
+	if strings.TrimSpace(raw) != raw || raw == "" || strings.ContainsAny(raw, "/?#@\\") || strings.ContainsAny(raw, "\r\n\x00") {
+		return hostPattern{}, "", errors.New("host must be an exact authority")
+	}
+	host, port, err := splitHost(raw)
+	if err != nil || host == "" || net.ParseIP(host) != nil || strings.Contains(host, "*") {
+		return hostPattern{}, "", errors.New("host must be a DNS name")
+	}
+	if len(host) > 253 || strings.HasSuffix(host, ".") {
+		return hostPattern{}, "", errors.New("invalid DNS host")
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return hostPattern{}, "", errors.New("invalid DNS host")
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return hostPattern{}, "", errors.New("invalid DNS host")
+			}
+		}
+	}
+	host = strings.ToLower(host)
+	pattern := hostPattern{host: host, port: port}
+	return pattern, host + "\x00" + port, nil
+}
+
+func splitHost(raw string) (string, string, error) {
+	if strings.Contains(raw, ":") {
+		host, port, err := net.SplitHostPort(raw)
+		if err != nil || host == "" || port == "" {
+			return "", "", errors.New("invalid host port")
+		}
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				return "", "", errors.New("invalid host port")
+			}
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return "", "", errors.New("invalid host port")
+		}
+		return strings.ToLower(host), port, nil
+	}
+	return strings.ToLower(raw), "", nil
 }
 
 func (s *Server) verifyToken(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {

@@ -6,6 +6,7 @@
 *.pem
 credentials/
 secrets/
+/.secrets/
 local-probe.local.json
 *.local.json
 runtime/

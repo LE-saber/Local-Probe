@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LE-saber/Local-Probe/internal/cfaccess"
 	"github.com/LE-saber/Local-Probe/internal/config"
 	"github.com/LE-saber/Local-Probe/internal/mcpserver"
 	"github.com/LE-saber/Local-Probe/internal/policy"
@@ -25,6 +26,11 @@ import (
 )
 
 const defaultListenAddr = "127.0.0.1:8787"
+
+const (
+	ingressLocalToken       = "local-token"
+	ingressCloudflareAccess = "cloudflare-access"
+)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -37,22 +43,49 @@ func run(args []string, stdout, stderr *os.File) error {
 	flags := flag.NewFlagSet("local-probe-mcp", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "validated Local-Probe JSON configuration")
-	connectionID := flags.String("connection-id", "", "configured connection to bind to the local hop token")
+	ingress := flags.String("ingress", ingressLocalToken, "authentication ingress: local-token or cloudflare-access")
+	connectionID := flags.String("connection-id", "", "configured connection to bind to the local hop token (local-token only)")
 	tokenEnv := flags.String("token-env", "", "environment variable containing the local MCP hop token")
 	tokenFile := flags.String("token-file", "", "protected file containing the local MCP hop token")
+	cloudflareAccessConfig := flags.String("cloudflare-access-config", "", "external Cloudflare Access JSON config (cloudflare-access only)")
 	listenAddr := flags.String("listen-addr", defaultListenAddr, "loopback listen address")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *configPath == "" || *connectionID == "" {
-		return errors.New("provide -config and -connection-id; no positional arguments are accepted")
+	if flags.NArg() != 0 || *configPath == "" {
+		return errors.New("provide -config; no positional arguments are accepted")
 	}
 	if err := validateLoopbackAddr(*listenAddr); err != nil {
 		return err
 	}
-	token, err := mcpserver.ResolveToken(*tokenEnv, *tokenFile)
-	if err != nil {
-		return fmt.Errorf("resolve local MCP token: %w", err)
+	mode := strings.ToLower(strings.TrimSpace(*ingress))
+	if mode != ingressLocalToken && mode != ingressCloudflareAccess {
+		return errors.New("-ingress must be local-token or cloudflare-access")
+	}
+	if mode == ingressLocalToken && *connectionID == "" {
+		return errors.New("-connection-id is required for local-token ingress")
+	}
+	if mode == ingressCloudflareAccess && (*connectionID != "" || *tokenEnv != "" || *tokenFile != "") {
+		if *connectionID != "" {
+			return errors.New("-connection-id is only valid for local-token ingress")
+		}
+		if *tokenEnv != "" || *tokenFile != "" {
+			return errors.New("local MCP token flags are only valid for local-token ingress")
+		}
+	}
+	if mode == ingressLocalToken && *cloudflareAccessConfig != "" {
+		return errors.New("-cloudflare-access-config is only valid for cloudflare-access ingress")
+	}
+
+	var token string
+	if mode == ingressLocalToken {
+		var err error
+		token, err = mcpserver.ResolveToken(*tokenEnv, *tokenFile)
+		if err != nil {
+			return fmt.Errorf("resolve local MCP token: %w", err)
+		}
+	} else if strings.TrimSpace(*cloudflareAccessConfig) == "" {
+		return errors.New("-cloudflare-access-config is required for cloudflare-access ingress")
 	}
 
 	configFile, err := os.Open(*configPath)
@@ -77,14 +110,25 @@ func run(args []string, stdout, stderr *os.File) error {
 		return errors.New("configured filesystem roots cannot be opened safely")
 	}
 	defer source.Close()
-	server, err := mcpserver.New(mcpserver.Options{
+	options := mcpserver.Options{
 		Manager: manager,
 		Source:  source,
-		Credentials: []mcpserver.Credential{{
-			ConnectionID: *connectionID,
-			Token:        token,
-		}},
-	})
+	}
+	if mode == ingressLocalToken {
+		options.Credentials = []mcpserver.Credential{{ConnectionID: *connectionID, Token: token}}
+	} else {
+		accessConfig, loadErr := cfaccess.LoadFile(*cloudflareAccessConfig)
+		if loadErr != nil {
+			return errors.New("cannot load Cloudflare Access configuration")
+		}
+		accessVerifier, verifierErr := cfaccess.New(accessConfig)
+		if verifierErr != nil {
+			return errors.New("Cloudflare Access configuration is invalid")
+		}
+		options.CloudflareAccess = accessVerifier
+		options.CloudflarePublicHosts = accessConfig.PublicHosts
+	}
+	server, err := mcpserver.New(options)
 	if err != nil {
 		return fmt.Errorf("create MCP server: %w", err)
 	}
@@ -104,7 +148,7 @@ func run(args []string, stdout, stderr *os.File) error {
 	defer stop()
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- httpServer.Serve(listener) }()
-	fmt.Fprintf(stdout, "Local-Probe MCP listening on http://%s/mcp\n", listener.Addr().String())
+	fmt.Fprintf(stdout, "Local-Probe MCP listening on http://%s/mcp (ingress=%s)\n", listener.Addr().String(), mode)
 
 	select {
 	case <-ctx.Done():

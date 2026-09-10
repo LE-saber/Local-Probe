@@ -1,0 +1,254 @@
+[CmdletBinding()]
+param(
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$SecretRoot,
+    [string]$RuntimeRoot,
+    [string]$CloudflaredPath,
+    [string]$TunnelConfigPath,
+    [string]$AccessConfigPath,
+    [string]$TokenPath,
+    [string]$McpServerUrl = 'http://127.0.0.1:8788/mcp',
+    [switch]$RequireCredentials,
+    [switch]$CheckMcpEndpoint
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Get-FullPath([string]$Path) {
+    return [IO.Path]::GetFullPath($Path)
+}
+
+function Add-Check([System.Collections.Generic.List[object]]$Checks, [string]$Name, [string]$Status, [string]$Detail) {
+    $Checks.Add([PSCustomObject]@{ Name = $Name; Status = $Status; Detail = $Detail })
+}
+
+function Test-LoopbackUrl([string]$Url) {
+    try {
+        $parsed = [Uri]$Url
+        return $Url -match '^http://(?:127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]{0,4}/mcp$' -and
+            $parsed.Port -ge 1 -and $parsed.Port -le 65535 -and
+            $parsed.AbsolutePath -eq '/mcp'
+    } catch {
+        return $false
+    }
+}
+
+function Test-LoopbackAddr([string]$Addr) {
+    if ($Addr -notmatch '^(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})$') {
+        return $false
+    }
+    $port = [int]$Matches[1]
+    return $port -le 65535
+}
+
+function Get-TrimmedFileText([string]$Path, [int]$MaxBytes = 262144) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -gt $MaxBytes) {
+        throw 'file exceeds the local size limit'
+    }
+    return [Text.Encoding]::UTF8.GetString($bytes).Trim()
+}
+
+function Test-PathInside([string]$Child, [string]$Parent) {
+    $parentPrefix = $Parent.TrimEnd('\') + '\'
+    return $Child.Equals($Parent, [StringComparison]::OrdinalIgnoreCase) -or
+        $Child.StartsWith($parentPrefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+$RepoRoot = Get-FullPath $RepoRoot
+if ([string]::IsNullOrWhiteSpace($SecretRoot)) {
+    $SecretRoot = Join-Path (Split-Path -Parent $RepoRoot) '.secrets'
+}
+if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
+    $RuntimeRoot = Join-Path $RepoRoot '.runtime'
+}
+if ([string]::IsNullOrWhiteSpace($CloudflaredPath)) {
+    $CloudflaredPath = Join-Path (Split-Path -Parent $RepoRoot) '_tools\tunnel-client-v0.0.14-windows-amd64\bin\cloudflared.exe'
+}
+if ([string]::IsNullOrWhiteSpace($TunnelConfigPath)) {
+    $TunnelConfigPath = Join-Path $RuntimeRoot 'cloudflare-tunnel.json'
+}
+if ([string]::IsNullOrWhiteSpace($AccessConfigPath)) {
+    $AccessConfigPath = Join-Path $RuntimeRoot 'cloudflare-access.json'
+}
+if ([string]::IsNullOrWhiteSpace($TokenPath)) {
+    $TokenPath = Join-Path $SecretRoot 'cloudflared-tunnel-token.txt'
+}
+$SecretRoot = Get-FullPath $SecretRoot
+$RuntimeRoot = Get-FullPath $RuntimeRoot
+$CloudflaredPath = Get-FullPath $CloudflaredPath
+$TunnelConfigPath = Get-FullPath $TunnelConfigPath
+$AccessConfigPath = Get-FullPath $AccessConfigPath
+$TokenPath = Get-FullPath $TokenPath
+
+$checks = [System.Collections.Generic.List[object]]::new()
+$tunnelPublicHost = $null
+if (Test-PathInside $SecretRoot $RepoRoot) {
+    Add-Check $checks 'secret directory location' 'FAIL' 'SecretRoot must be outside RepoRoot'
+} else {
+    Add-Check $checks 'secret directory location' 'PASS' 'secret directory is outside the repository'
+}
+if (-not (Test-PathInside $TokenPath $SecretRoot) -or (Test-PathInside $TokenPath $RepoRoot)) {
+    Add-Check $checks 'token file location' 'FAIL' 'TokenPath must remain inside SecretRoot and outside RepoRoot'
+} else {
+    Add-Check $checks 'token file location' 'PASS' 'token file is constrained to the external secret directory'
+}
+if (-not (Test-PathInside $TunnelConfigPath $RuntimeRoot) -or -not (Test-PathInside $AccessConfigPath $RuntimeRoot)) {
+    Add-Check $checks 'runtime config location' 'FAIL' 'both config files must remain inside RuntimeRoot'
+} else {
+    Add-Check $checks 'runtime config location' 'PASS' 'both config files are constrained to RuntimeRoot'
+}
+if (-not (Test-PathInside $RuntimeRoot $RepoRoot)) {
+    Add-Check $checks 'runtime directory location' 'FAIL' 'RuntimeRoot must be inside RepoRoot'
+} else {
+    Add-Check $checks 'runtime directory location' 'PASS' 'runtime directory is inside the ignored repository runtime area'
+}
+
+if (-not (Test-LoopbackUrl $McpServerUrl)) {
+    Add-Check $checks 'MCP target binding' 'FAIL' 'McpServerUrl must be an HTTP loopback URL with an explicit port'
+} else {
+    Add-Check $checks 'MCP target binding' 'PASS' 'MCP target is constrained to loopback'
+    if ($CheckMcpEndpoint) {
+        $uri = [Uri]$McpServerUrl
+        try {
+            $tcpReady = Test-NetConnection -ComputerName $uri.Host -Port $uri.Port -InformationLevel Quiet -WarningAction SilentlyContinue
+            if ($tcpReady) {
+                Add-Check $checks 'MCP endpoint socket' 'PASS' 'loopback MCP port accepts TCP connections'
+            } else {
+                Add-Check $checks 'MCP endpoint socket' 'FAIL' 'loopback MCP port is not listening'
+            }
+        } catch {
+            Add-Check $checks 'MCP endpoint socket' 'FAIL' 'could not test the loopback MCP port'
+        }
+    }
+}
+
+if (Test-Path -LiteralPath $CloudflaredPath -PathType Leaf) {
+    $binary = Get-Item -LiteralPath $CloudflaredPath
+    if (($binary.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Add-Check $checks 'cloudflared binary' 'FAIL' 'binary is a reparse point'
+    } else {
+        try {
+            $null = & $CloudflaredPath --version 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Add-Check $checks 'cloudflared binary' 'PASS' 'cloudflared responds to --version'
+            } else {
+                Add-Check $checks 'cloudflared binary' 'FAIL' 'cloudflared did not return a version'
+            }
+        } catch {
+            Add-Check $checks 'cloudflared binary' 'FAIL' 'cloudflared could not be executed'
+        }
+    }
+} else {
+    Add-Check $checks 'cloudflared binary' 'FAIL' 'cloudflared.exe is missing; install it separately'
+}
+
+if (Test-Path -LiteralPath $TunnelConfigPath -PathType Leaf) {
+    try {
+        $tunnelConfig = Get-Content -Raw -LiteralPath $TunnelConfigPath | ConvertFrom-Json
+        $required = @('public_host', 'origin_url', 'metrics_addr')
+        $missing = @($required | Where-Object { $null -eq $tunnelConfig.PSObject.Properties[$_] })
+        if ($missing.Count -gt 0) {
+            Add-Check $checks 'remote Tunnel expectations' 'FAIL' 'public_host, origin_url, and metrics_addr are required'
+        } else {
+            $tunnelPublicHost = [string]$tunnelConfig.public_host
+            $originUrl = [string]$tunnelConfig.origin_url
+            $metricsAddress = [string]$tunnelConfig.metrics_addr
+            if ($tunnelPublicHost -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$') {
+                Add-Check $checks 'public Tunnel hostname' 'FAIL' 'public_host must be one exact DNS hostname'
+            } else {
+                Add-Check $checks 'public Tunnel hostname' 'PASS' 'one exact public hostname is configured'
+            }
+            if (-not (Test-LoopbackAddr $metricsAddress)) {
+                Add-Check $checks 'metrics binding' 'FAIL' 'metrics_addr must listen on loopback only'
+            } else {
+                Add-Check $checks 'metrics binding' 'PASS' 'metrics listener is loopback-only'
+            }
+            if (-not (Test-LoopbackUrl ($originUrl.TrimEnd('/') + '/mcp'))) {
+                Add-Check $checks 'origin binding' 'FAIL' 'origin_url must be an HTTP loopback URL with an explicit port and no path'
+            } else {
+                Add-Check $checks 'origin binding' 'PASS' 'expected dashboard route targets loopback only'
+            }
+        }
+    } catch {
+        Add-Check $checks 'remote Tunnel expectations' 'FAIL' 'config is not valid JSON'
+    }
+} else {
+    Add-Check $checks 'remote Tunnel expectations' 'PENDING' 'run Initialize-CloudflareTunnel.ps1 first'
+}
+
+if (Test-Path -LiteralPath $AccessConfigPath -PathType Leaf) {
+    try {
+        $access = Get-Content -Raw -LiteralPath $AccessConfigPath | ConvertFrom-Json
+        $required = @('issuer', 'jwks_url', 'audience', 'principal_to_connection', 'public_hosts')
+        $missing = @($required | Where-Object { $null -eq $access.PSObject.Properties[$_] })
+        if ($missing.Count -gt 0) {
+            Add-Check $checks 'Access verifier config' 'FAIL' 'issuer, jwks_url, audience, principal_to_connection, and public_hosts are required'
+        } elseif ([string]::IsNullOrWhiteSpace([string]$access.issuer) -or
+            [string]$access.issuer -match 'REPLACE_WITH' -or
+            [string]$access.jwks_url -match 'REPLACE_WITH' -or
+            [string]$access.audience -match 'REPLACE_WITH' -or
+            $access.principal_to_connection.PSObject.Properties.Name -contains 'REPLACE_WITH_CLOUDFLARE_SUBJECT') {
+            Add-Check $checks 'Access verifier config' ($(if ($RequireCredentials) { 'FAIL' } else { 'PENDING' })) 'replace the generated Cloudflare team, audience tag, and subject mapping placeholders'
+        } elseif (@($access.principal_to_connection.PSObject.Properties).Count -eq 0 -or @($access.public_hosts).Count -eq 0) {
+            Add-Check $checks 'Access verifier config' 'FAIL' 'principal_to_connection and public_hosts must not be empty'
+        } elseif ($tunnelPublicHost -and -not (@($access.public_hosts) -contains $tunnelPublicHost)) {
+            Add-Check $checks 'Access verifier config' 'FAIL' 'public_hosts must include the exact tunnel ingress hostname'
+        } else {
+            Add-Check $checks 'Access verifier config' 'PASS' 'required non-secret verifier settings are present'
+        }
+    } catch {
+        Add-Check $checks 'Access verifier config' 'FAIL' 'config is not valid JSON'
+    }
+} else {
+    Add-Check $checks 'Access verifier config' 'PENDING' 'run Initialize-CloudflareTunnel.ps1 first'
+}
+
+if (Test-Path -LiteralPath $TokenPath -PathType Leaf) {
+    try {
+        $token = Get-TrimmedFileText $TokenPath 8192
+        if ($token -and $token -notmatch '[\r\n]') {
+            Add-Check $checks 'Cloudflare tunnel token' 'PASS' 'token file contains one line; value is never displayed'
+        } else {
+            Add-Check $checks 'Cloudflare tunnel token' ($(if ($RequireCredentials) { 'FAIL' } else { 'PENDING' })) 'fill exactly one token line in the external token file'
+        }
+        $acl = Get-Acl -LiteralPath $TokenPath
+        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $allowedSids = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
+        $unsafeAllowRules = @($acl.Access | Where-Object {
+            $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin $allowedSids
+        })
+        if ($acl.AreAccessRulesProtected -and $unsafeAllowRules.Count -eq 0) {
+            Add-Check $checks 'Cloudflare token ACL' 'PASS' 'inheritance is disabled on the token file'
+        } else {
+            Add-Check $checks 'Cloudflare token ACL' ($(if ($RequireCredentials) { 'FAIL' } else { 'PENDING' })) 'token file inheritance or explicit allow rules are too broad; rerun initialization or tighten ACL'
+        }
+    } catch {
+        Add-Check $checks 'Cloudflare tunnel token' 'FAIL' 'token file could not be checked'
+    }
+} else {
+    Add-Check $checks 'Cloudflare tunnel token' ($(if ($RequireCredentials) { 'FAIL' } else { 'PENDING' })) 'fill the external cloudflared-tunnel-token.txt file'
+}
+
+if (Test-PathInside $AccessConfigPath $RepoRoot -and (Test-Path -LiteralPath $AccessConfigPath -PathType Leaf)) {
+    $relative = $AccessConfigPath.Substring($RepoRoot.TrimEnd('\').Length).TrimStart('\').Replace('\', '/')
+    & git -C $RepoRoot check-ignore --quiet -- $relative 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Add-Check $checks 'runtime config ignore rule' 'PASS' 'Access verifier config is ignored by git'
+    } else {
+        Add-Check $checks 'runtime config ignore rule' 'FAIL' 'Access verifier config is not ignored by git'
+    }
+}
+
+Write-Output 'Local-Probe Cloudflare tunnel preflight (no Cloudflare login, resource creation, DNS change, or network API call is performed):'
+foreach ($check in $checks) {
+    Write-Output (('[{0}] {1}: {2}' -f $check.Status, $check.Name, $check.Detail))
+}
+
+$failCount = @($checks | Where-Object Status -eq 'FAIL').Count
+if ($failCount -gt 0) {
+    exit 1
+}
+exit 0

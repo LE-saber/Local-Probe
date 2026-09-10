@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-09。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 最小 MCP/Tunnel 本机准备；尚未完成真实 ChatGPT/Tunnel 调用。**
+日期：2026-09-10。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 最小 MCP/Cloudflare Access 本机验证；尚未完成真实 ChatGPT/Cloudflare Tunnel 调用。**
 
 ## 一、先计划，后实现
 
@@ -20,13 +20,13 @@
 | P02 | 完成内核部分 | Scope/Source/Handle/Request/Result/Limits、接口边界、威胁模型 |
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
 | P04 | 部分实现；平台有界验证完成 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter；Windows 与 WSL2 的特殊文件、路径、symlink/junction swap 和临时 loopback SMB remote-root 测试已按边界完成；仍不是独立安全审查或发布结论 |
-| P05 | 最小 MCP 已实现；真实链路待测 | 官方 MCP Go SDK v1.7.0、认证 Streamable HTTP、server_info/ping/read_file/batch_read、本地 SDK 生命周期与隔离测试；workspace_snapshot、完整 wire 预算和原生 App/Tunnel 证据待完成 |
+| P05 | 最小 MCP 与 Cloudflare Access 本地 ingress 已实现；真实链路待测 | 官方 MCP Go SDK v1.7.0、Streamable HTTP、本地 bearer 与 Cloudflare Access JWT/JWKS 验证、显式 Host 校验、server_info/ping/read_file/batch_read、本地 SDK 生命周期与隔离测试；workspace_snapshot、完整 wire 预算和原生 App/Tunnel 证据待完成 |
 | P06/P07 | 未实现 | 目录分页、行范围、内容搜索、workspace snapshot、模型任务效果评测 |
 | P08 | 未实现 | 有限环境/Git 探查，不提供任意 Shell |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
-代码位置：`internal/config/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/` 和 `cmd/readcore-demo/`。本轮没有调用独立 Codex 执行者；主计划中的任务包是可交接工作，不是已经执行的后台任务。
+代码位置：`internal/config/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
 
 ### P04 增量事实（2026-09-09）
 
@@ -39,7 +39,7 @@
 
 ## 三、真正运行过的验证
 
-早期 Linux 内核验证环境为 **Go 1.23.2 / Linux amd64**，无容器外网 DNS；GitHub 操作通过连接器完成。当前 `go.mod` 已提升到 Go 1.25.0，Windows rootfs 增量验证使用 Go 1.26.0，WSL2 平台验证使用 Go 1.26.2。当前仍没有第三方模块依赖，因此可离线编译测试；工具链通过不等于产品发布版本。
+早期 Linux 内核验证环境为 **Go 1.23.2 / Linux amd64**，无容器外网 DNS；GitHub 操作通过连接器完成。当前 `go.mod` 已提升到 Go 1.25.0，Windows rootfs 增量验证使用 Go 1.26.0，WSL2 平台验证使用 Go 1.26.2；Cloudflare Access 验证使用 `coreos/go-oidc` 及其间接依赖，因此首次构建需要模块缓存或网络。工具链通过不等于产品发布版本。
 
 | 检查 | 实际结果 | 限制 |
 |---|---|---|
@@ -99,7 +99,7 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 
 ## 四、已知未完成边界
 
-- 没有真实身份认证；Scope 只能由可信代码创建，但调用方认证还未实现。
+- Cloudflare Access JWT/JWKS 身份认证已实现为显式本地 ingress 模式；尚无真实 Cloudflare Access edge 或 ChatGPT 身份链路证据。Scope 仍只能由可信代码创建。
 - 已有最小生产 rootfs adapter：使用 `os.Root`、逐组件 symlink/reparse 拒绝、普通文件检查、handle identity/link-count 检查和 bound adapter。Windows 与 WSL2 已完成明确次数的特殊文件、路径、symlink/junction swap 及临时 loopback SMB remote-root 有界验证；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台和完整 TOCTOU/OS 攻击覆盖仍是残余风险。
 - 没有签名 cursor、全局多连接公平调度、完整 MCP wire 限额或强快照。
 - byte offset 的 continuation 不能直接作为可跨账号转移的授权凭证。
@@ -111,6 +111,6 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 
 ## 五、下一执行者的明确入口
 
-跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台）并安排独立安全审查；随后按主计划 P01 取得真实最小 echo 调用证据，推进 P05 的认证 ingress 和官方 MCP SDK 适配。当前不得据此开放 listener 或声称产品可连接 ChatGPT。允许修改 `internal/rootfs`、`internal/policy`、`internal/config`、`internal/mcpserver`、对应 tests/docs 及依赖文件；不在这一任务包增加索引、UI、Shell 或写文件。
+跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台）并安排独立安全审查；随后按主计划 P01 取得真实最小 echo 调用证据，并在不改变本地安全边界的前提下验证 Cloudflare Access/Tunnel edge 与 ChatGPT App。当前不得据此开放 listener 或声称产品已可连接 ChatGPT。允许修改 `internal/rootfs`、`internal/policy`、`internal/config`、`internal/mcpserver`、`internal/cfaccess`、对应 tests/docs 及依赖文件；不在这一任务包增加索引、UI、Shell 或写文件。
 
 之后依次推进 P06/P07 的调查效果，P08 的固定探查动作，以及 P09/P10 的多连接隔离与恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。
