@@ -86,8 +86,8 @@ $tunnelConfigPath = Join-Path $RuntimeRoot 'cloudflare-tunnel.json'
 $accessConfigPath = Join-Path $RuntimeRoot 'cloudflare-access.json'
 if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
     [IO.File]::WriteAllText($tokenPath, '', [Text.UTF8Encoding]::new($false))
-    Protect-LocalPath $tokenPath $false
 }
+Protect-LocalPath $tokenPath $false
 
 if ($ForceConfig -or -not (Test-Path -LiteralPath $tunnelConfigPath -PathType Leaf)) {
     $tunnelConfig = [ordered]@{
