@@ -9,7 +9,7 @@
 以下提示假定 `root_id` 是 `project`，并且已连接当前 Local-Probe。每一条都可以单独
 发送；不要把本机绝对路径填入参数。
 
-1. `请调用 tree_directory，root_id=project，path=manual-test-targets，max_depth=4，page_size=4，max_entries=20。返回第一页后继续使用 continuation，直到 complete=true；不要读取 denied 子目录。`
+1. `请调用 tree_directory，root_id=project，path=manual-test-targets，max_depth=4，page_size=4，max_entries=20。返回第一页后把 continuation 原样作为 cursor 继续调用，直到 complete=true；不要读取 denied 子目录。`
 
    预期：返回扁平的相对路径和 `depth`，应看到 `pagination`、`nested`、`unicode` 等
    可见项；`manual-test-targets/denied` 不应出现在 `entries` 中。第一页应因为小
@@ -19,14 +19,15 @@
 
    预期：`item-01.txt` 至 `item-08.txt` 分页返回，每页最多 3 项；最终页才可以完整。
 
-3. `请调用 find_files，root_id=project，path=manual-test-targets，pattern="**/*.txt"，page_size=4，max_depth=5。`
+3. `请调用 find_files，root_id=project，path=manual-test-targets，pattern="**/*.txt"，page_size=4，max_depth=5。若返回 continuation，请把它原样作为 cursor 继续调用，直到 complete=true。`
 
-   预期：找到分页目录、嵌套目录和 Unicode 目录中的普通文本文件；拒绝目录中的
-   `拒绝目标.txt` 不得返回。
+   预期：找到分页目录、嵌套目录和 Unicode 目录中的普通文本文件；每页最多 4 条，
+   需要时会有 continuation；拒绝目录中的 `拒绝目标.txt` 不得返回。
 
 4. `请调用 search_text，root_id=project，path=manual-test-targets，query="LP_MANUAL_UNICODE_20260910"，globs=["**/*.txt"]。`
 
-   预期：只返回 `unicode/中文目录/第二层/🌏-标记.txt`，并给出行号和字节位置。
+   预期：只返回相对授权 root 的完整路径
+   `manual-test-targets/unicode/中文目录/第二层/🌏-标记.txt`，并给出行号和字节位置。
 
 5. `请调用 read_file，root_id=project，path=manual-test-targets/root-marker.txt，max_bytes=256。`
 
