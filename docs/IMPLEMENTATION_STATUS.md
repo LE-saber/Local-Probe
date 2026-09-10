@@ -21,7 +21,7 @@
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
 | P04 | 部分实现；平台有界验证完成 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter；Windows 与 WSL2 的特殊文件、路径、symlink/junction swap 和临时 loopback SMB remote-root 测试已按边界完成；仍不是独立安全审查或发布结论 |
 | P05 | 最小 MCP 与真实 Cloudflare ingress 已验证 | 官方 MCP Go SDK v1.7.0、现代无状态/旧版有状态 Streamable HTTP 协商、本地 bearer 与 Cloudflare Access JWT/JWKS、Host 校验；ChatGPT“极高”实际调用 server_info/ping/read_file/batch_read 通过，Tunnel 重连后无需重新登录 |
-| P06 | 第一增量已实现并通过本机与真实链路验证；目录树增量已接入代码待部署验证 | list_directory、find_files、search_text、tree_directory；有界迭代、扁平深度优先树、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；既有三个工具已由 ChatGPT“极高”验证，tree_directory 已完成本机单元/MCP 集成测试 |
+| P06 | 第一增量已实现并通过本机与真实链路验证；手工靶场已加入 | list_directory、find_files、search_text、tree_directory；有界迭代、扁平深度优先树、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；四个发现工具已由 ChatGPT Business“极高”验证，`manual-test-targets/` 提供分页、嵌套、Unicode、空文件和拒绝负例 |
 | P07 | 未实现 | workspace snapshot、行范围与模型任务效果评测 |
 | P08 | 核心第一增量已实现，未接入远程工具面 | 固定 tool_exists/tool_version 核心、显式受信任可执行路径、私有环境、输出/超时限制与进程树终止；不提供任意 Shell，配置/MCP 接入和独立安全复核待完成 |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
@@ -63,6 +63,27 @@
 2. 另外在 Linux 创建一个真实的 **10 GiB 稀疏文件**，只在 9 GiB 位置写入 4,096 字节，再用编译后的 demo 读取。返回正文 4,096 字节、逻辑 ReaderAt 字节 4,096、version strength=metadata；当时文件实际分配磁盘约 4,096 字节。临时文件随后删除。
 3. 这不是实体 10 GiB 日志扫描测试，不是百万文件仓库测试，也不是 Pro 模型的调用效率测试。不能据此承诺这些场景的延迟。
 4. 合成 ReaderAt 微基准三轮为约 33.3/36.2/33.5 微秒/页，9,088 B/op、21 allocs/op；结果只用于内核局部参考，不代表真实磁盘或 Web 端性能。
+
+### ChatGPT Business `tree_directory` 真实验证（2026-09-10 20:53，模型档位“极高”）
+
+在已登录的 GPT-workspace Business 会话中，真实调用 Local-Probe 完成以下链路；只记录
+返回的非敏感字段，不记录任何 token、JWT 或密钥：
+
+- `tree_directory(root_id=project, path=internal, max_depth=2, page_size=8, max_entries=30)`
+  第一页返回 `internal`（depth 0）、`internal/cfaccess`（depth 1）及其两个 `.go`
+  文件、`internal/config` 及其两个 `.go` 文件和 `internal/mcpserver`（共 8 项），
+  `coverage.complete=false`、`warnings=["page_limit"]`，存在 continuation。
+- 使用完全相同参数和第一页 cursor 调用第二页，返回从
+  `internal/mcpserver/cloudflare_test.go` 继续的 8 项，仍为
+  `complete=false`、`warnings=["page_limit"]`；`internal` 的 depth 0 根条目没有重复。
+- 从前两页选择 `internal/cfaccess/verifier.go` 调用 `read_file(offset=0,max_bytes=128)`，
+  返回 `bytes_read=128`、`eof=false`。
+- `tree_directory(path=.runtime,max_depth=1,page_size=8,max_entries=30)` 被拒绝，错误
+  关键字段为 `code=invalid_request`；未返回 `.runtime` 名称下的文件内容或绝对路径。
+
+上述验证证明远程 Business→Cloudflare→MCP→rootfs 的 tree 分页和拒绝路径已跑通；
+`manual-test-targets/README.md` 中新增的中文/Unicode、空文件、组合读取和专用拒绝目录
+用例仍需按夹具说明再做一轮用户侧手工复测。
 
 精简机器可读证据见 `docs/evidence/K0-local-verification.json`。已测试的七个源码文件逐一按 Git blob SHA 与上传 tree 核对一致，避免测试本地一份、提交另一份。
 
@@ -112,6 +133,6 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 
 ## 五、下一执行者的明确入口
 
-P06 的 `list_directory`、`find_files`、`search_text` 已部署并由现有 ChatGPT“极高”会话验证分页、发现、literal 搜索和 deny 负例；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。`tree_directory` 已完成本机安全实现和 MCP 集成测试，待下一次构建后进行真实 ChatGPT 链路验证。下一步完成 P08 固定探针审查发现的可执行文件启动 TOCTOU，再做配置/MCP 接入；保持显式可执行路径、固定参数、私有环境和完整进程树终止，不开放模型自定义 command、args、cwd、env 或 timeout。
+P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、literal 搜索、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。下一步按 `manual-test-targets/README.md` 完成用户侧夹具复测，再完成 P08 固定探针审查发现的可执行文件启动 TOCTOU 和 MCP 接入；保持显式可执行路径、固定参数、私有环境和完整进程树终止，不开放模型自定义 command、args、cwd、env 或 timeout。
 
 并行继续跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台），再推进 P07 的 workspace snapshot/任务效果与 P09/P10 的多连接隔离、监督和恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。

@@ -4,7 +4,7 @@
     {
       "id": "project",
       "path": "D:/replace/with/an/absolute/project/path",
-      "deny_patterns": [".env", ".env.*", "secrets/**"],
+      "deny_patterns": [".env", ".env.*", "secrets/**", "manual-test-targets/denied/**"],
       "ignore_patterns": [".git/**", "node_modules/**", "vendor/**", "*.tmp"]
     }
   ],
