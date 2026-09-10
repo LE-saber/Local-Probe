@@ -44,7 +44,8 @@ type BoundScope struct {
 }
 
 type rootPolicy struct {
-	denyPatterns []string
+	denyPatterns   []string
+	ignorePatterns []string
 }
 
 // BindAuthenticated binds one enabled connection to its configured profile.
@@ -73,6 +74,7 @@ func (m *Manager) BindAuthenticated(connectionID string) (BoundScope, error) {
 	}
 	roots := make(map[string]rootPolicy, len(profile.RootIDs()))
 	profileDeny := profile.DenyPatterns()
+	profileIgnore := profile.IgnorePatterns()
 	for _, rootID := range profile.RootIDs() {
 		root, ok := cfg.Root(rootID)
 		if !ok {
@@ -80,7 +82,9 @@ func (m *Manager) BindAuthenticated(connectionID string) (BoundScope, error) {
 		}
 		patterns := append([]string(nil), profileDeny...)
 		patterns = append(patterns, root.DenyPatterns()...)
-		roots[rootID] = rootPolicy{denyPatterns: patterns}
+		ignorePatterns := append([]string(nil), profileIgnore...)
+		ignorePatterns = append(ignorePatterns, root.IgnorePatterns()...)
+		roots[rootID] = rootPolicy{denyPatterns: patterns, ignorePatterns: ignorePatterns}
 	}
 	return BoundScope{
 		manager:      m,
@@ -162,14 +166,38 @@ func (b BoundScope) AllowsRoot(rootID string) bool {
 // every path component, making "*.key" deny nested keys. A trailing "/**"
 // denies the named subtree recursively.
 func (b BoundScope) AllowsPath(rootID, relativePath string) bool {
-	if b.Validate() != nil || !readcore.ValidPath(relativePath) {
+	return relativePath != "" && readcore.ValidPath(relativePath) && !b.IsDeniedPath(rootID, relativePath)
+}
+
+// AllowsDirectory is the directory analogue of AllowsPath. The empty path
+// denotes the authorized root itself; all non-empty paths use the same
+// canonical relative-path and deny rules as file operations.
+func (b BoundScope) AllowsDirectory(rootID, relativePath string) bool {
+	if b.Validate() != nil || (relativePath != "" && !readcore.ValidPath(relativePath)) {
+		return false
+	}
+	return !b.IsDeniedPath(rootID, relativePath)
+}
+
+// IsDeniedPath exposes only the boolean policy decision needed by discovery.
+// It never returns the matched pattern and therefore cannot disclose policy
+// details outside the already authorized root.
+func (b BoundScope) IsDeniedPath(rootID, relativePath string) bool {
+	if b.Validate() != nil || (relativePath != "" && !readcore.ValidPath(relativePath)) {
 		return false
 	}
 	root, ok := b.roots[rootID]
-	if !ok || denied(root.denyPatterns, relativePath) {
+	return !ok || denied(root.denyPatterns, relativePath)
+}
+
+// IsIgnoredPath reports an advisory discovery filter. Explicit deny always
+// wins: a denied path is never classified as merely ignored.
+func (b BoundScope) IsIgnoredPath(rootID, relativePath string) bool {
+	if b.Validate() != nil || (relativePath != "" && !readcore.ValidPath(relativePath)) || b.IsDeniedPath(rootID, relativePath) {
 		return false
 	}
-	return true
+	root, ok := b.roots[rootID]
+	return ok && denied(root.ignorePatterns, relativePath)
 }
 
 func denied(patterns []string, relativePath string) bool {

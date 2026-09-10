@@ -40,9 +40,10 @@ func (e *ValidationError) Unwrap() error { return ErrInvalid }
 // Root is an explicitly configured local root. Path interpretation and safe
 // opening belong to internal/rootfs; this package only validates its shape.
 type Root struct {
-	id           string
-	path         string
-	denyPatterns []string
+	id             string
+	path           string
+	denyPatterns   []string
+	ignorePatterns []string
 }
 
 func (r Root) ID() string { return r.id }
@@ -51,19 +52,25 @@ func (r Root) Path() string { return r.path }
 
 func (r Root) DenyPatterns() []string { return append([]string(nil), r.denyPatterns...) }
 
+// IgnorePatterns are advisory discovery filters. They never grant access and
+// are evaluated only after explicit deny patterns.
+func (r Root) IgnorePatterns() []string { return append([]string(nil), r.ignorePatterns...) }
+
 func (r Root) clone() Root {
 	r.denyPatterns = append([]string(nil), r.denyPatterns...)
+	r.ignorePatterns = append([]string(nil), r.ignorePatterns...)
 	return r
 }
 
 // Profile is a read-only access profile. A profile can be referenced by more
 // than one connection, but its slices are never exposed for mutation.
 type Profile struct {
-	id           string
-	rootIDs      []string
-	tools        []string
-	denyPatterns []string
-	readOnly     bool
+	id             string
+	rootIDs        []string
+	tools          []string
+	denyPatterns   []string
+	ignorePatterns []string
+	readOnly       bool
 }
 
 func (p Profile) ID() string { return p.id }
@@ -74,12 +81,17 @@ func (p Profile) Tools() []string { return append([]string(nil), p.tools...) }
 
 func (p Profile) DenyPatterns() []string { return append([]string(nil), p.denyPatterns...) }
 
+// IgnorePatterns are advisory discovery filters. They never grant access and
+// are evaluated only after explicit deny patterns.
+func (p Profile) IgnorePatterns() []string { return append([]string(nil), p.ignorePatterns...) }
+
 func (p Profile) ReadOnly() bool { return p.readOnly }
 
 func (p Profile) clone() Profile {
 	p.rootIDs = append([]string(nil), p.rootIDs...)
 	p.tools = append([]string(nil), p.tools...)
 	p.denyPatterns = append([]string(nil), p.denyPatterns...)
+	p.ignorePatterns = append([]string(nil), p.ignorePatterns...)
 	return p
 }
 
@@ -125,7 +137,13 @@ type Config struct {
 }
 
 func NewRoot(id, rootPath string, denyPatterns []string) (Root, error) {
-	r := Root{id: id, path: rootPath, denyPatterns: append([]string(nil), denyPatterns...)}
+	return NewRootWithIgnore(id, rootPath, denyPatterns, nil)
+}
+
+// NewRootWithIgnore creates a root with separate explicit deny and discovery
+// ignore patterns. Ignore patterns do not weaken deny enforcement.
+func NewRootWithIgnore(id, rootPath string, denyPatterns, ignorePatterns []string) (Root, error) {
+	r := Root{id: id, path: rootPath, denyPatterns: append([]string(nil), denyPatterns...), ignorePatterns: append([]string(nil), ignorePatterns...)}
 	if err := validateRoot(r, "root"); err != nil {
 		return Root{}, err
 	}
@@ -133,12 +151,19 @@ func NewRoot(id, rootPath string, denyPatterns []string) (Root, error) {
 }
 
 func NewProfile(id string, rootIDs, tools, denyPatterns []string) (Profile, error) {
+	return NewProfileWithIgnore(id, rootIDs, tools, denyPatterns, nil)
+}
+
+// NewProfileWithIgnore creates a read-only profile with separate explicit
+// deny and discovery ignore patterns.
+func NewProfileWithIgnore(id string, rootIDs, tools, denyPatterns, ignorePatterns []string) (Profile, error) {
 	p := Profile{
-		id:           id,
-		rootIDs:      append([]string(nil), rootIDs...),
-		tools:        append([]string(nil), tools...),
-		denyPatterns: append([]string(nil), denyPatterns...),
-		readOnly:     true,
+		id:             id,
+		rootIDs:        append([]string(nil), rootIDs...),
+		tools:          append([]string(nil), tools...),
+		denyPatterns:   append([]string(nil), denyPatterns...),
+		ignorePatterns: append([]string(nil), ignorePatterns...),
+		readOnly:       true,
 	}
 	if err := validateProfile(p, "profile"); err != nil {
 		return Profile{}, err
@@ -280,16 +305,17 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		Credentials:   make([]rawCredential, len(c.credentials)),
 	}
 	for i, root := range c.roots {
-		raw.Roots[i] = rawRoot{ID: root.id, Path: root.path, DenyPatterns: append([]string(nil), root.denyPatterns...)}
+		raw.Roots[i] = rawRoot{ID: root.id, Path: root.path, DenyPatterns: append([]string(nil), root.denyPatterns...), IgnorePatterns: append([]string(nil), root.ignorePatterns...)}
 	}
 	for i, profile := range c.profiles {
 		profileReadOnly := profile.readOnly
 		raw.Profiles[i] = rawProfile{
-			ID:           profile.id,
-			Roots:        append([]string(nil), profile.rootIDs...),
-			Tools:        append([]string(nil), profile.tools...),
-			DenyPatterns: append([]string(nil), profile.denyPatterns...),
-			ReadOnly:     &profileReadOnly,
+			ID:             profile.id,
+			Roots:          append([]string(nil), profile.rootIDs...),
+			Tools:          append([]string(nil), profile.tools...),
+			DenyPatterns:   append([]string(nil), profile.denyPatterns...),
+			IgnorePatterns: append([]string(nil), profile.ignorePatterns...),
+			ReadOnly:       &profileReadOnly,
 		}
 	}
 	for i, connection := range c.connections {
@@ -387,17 +413,19 @@ type rawConfig struct {
 }
 
 type rawRoot struct {
-	ID           string   `json:"id"`
-	Path         string   `json:"path"`
-	DenyPatterns []string `json:"deny_patterns"`
+	ID             string   `json:"id"`
+	Path           string   `json:"path"`
+	DenyPatterns   []string `json:"deny_patterns"`
+	IgnorePatterns []string `json:"ignore_patterns"`
 }
 
 type rawProfile struct {
-	ID           string   `json:"id"`
-	Roots        []string `json:"roots"`
-	Tools        []string `json:"tools"`
-	DenyPatterns []string `json:"deny_patterns"`
-	ReadOnly     *bool    `json:"read_only"`
+	ID             string   `json:"id"`
+	Roots          []string `json:"roots"`
+	Tools          []string `json:"tools"`
+	DenyPatterns   []string `json:"deny_patterns"`
+	IgnorePatterns []string `json:"ignore_patterns"`
+	ReadOnly       *bool    `json:"read_only"`
 }
 
 type rawConnection struct {
@@ -417,7 +445,7 @@ func fromRaw(raw rawConfig) (Config, error) {
 	c := Config{schemaVersion: raw.SchemaVersion}
 	c.roots = make([]Root, len(raw.Roots))
 	for i, root := range raw.Roots {
-		c.roots[i] = Root{id: root.ID, path: root.Path, denyPatterns: append([]string(nil), root.DenyPatterns...)}
+		c.roots[i] = Root{id: root.ID, path: root.Path, denyPatterns: append([]string(nil), root.DenyPatterns...), ignorePatterns: append([]string(nil), root.IgnorePatterns...)}
 	}
 	c.profiles = make([]Profile, len(raw.Profiles))
 	for i, profile := range raw.Profiles {
@@ -426,11 +454,12 @@ func fromRaw(raw rawConfig) (Config, error) {
 			readOnly = *profile.ReadOnly
 		}
 		c.profiles[i] = Profile{
-			id:           profile.ID,
-			rootIDs:      append([]string(nil), profile.Roots...),
-			tools:        append([]string(nil), profile.Tools...),
-			denyPatterns: append([]string(nil), profile.DenyPatterns...),
-			readOnly:     readOnly,
+			id:             profile.ID,
+			rootIDs:        append([]string(nil), profile.Roots...),
+			tools:          append([]string(nil), profile.Tools...),
+			denyPatterns:   append([]string(nil), profile.DenyPatterns...),
+			ignorePatterns: append([]string(nil), profile.IgnorePatterns...),
+			readOnly:       readOnly,
 		}
 	}
 	c.connections = make([]Connection, len(raw.Connections))
@@ -525,7 +554,10 @@ func validateRoot(root Root, field string) error {
 	if root.path == "" || !utf8.ValidString(root.path) || strings.ContainsRune(root.path, 0) {
 		return invalid(field+".path", "invalid root path")
 	}
-	return validatePatterns(root.denyPatterns, field+".deny_patterns")
+	if err := validatePatterns(root.denyPatterns, field+".deny_patterns"); err != nil {
+		return err
+	}
+	return validatePatterns(root.ignorePatterns, field+".ignore_patterns")
 }
 
 func validateProfile(profile Profile, field string) error {
@@ -541,7 +573,10 @@ func validateProfile(profile Profile, field string) error {
 	if err := validateIDList(profile.tools, field+".tools"); err != nil {
 		return err
 	}
-	return validatePatterns(profile.denyPatterns, field+".deny_patterns")
+	if err := validatePatterns(profile.denyPatterns, field+".deny_patterns"); err != nil {
+		return err
+	}
+	return validatePatterns(profile.ignorePatterns, field+".ignore_patterns")
 }
 
 func validateIDList(values []string, field string) error {

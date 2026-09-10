@@ -70,3 +70,127 @@ metadata 是弱版本：相同 size/mtime 的内容修改可能无法检测，�
 目标约十个高层工具：workspace_snapshot、list_directory、find_files、search_text、read_file、batch_read、get_environment、run_probe、git_status、git_diff。具体 schema 在 P05/P06 冻结，不把底层全部细节扔给模型。
 
 统一产品响应还需 request_id、coverage、warnings、预算和 continuation。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
+
+## 八、P06 发现与文本搜索工具（第一增量）
+
+这三个工具都只接受已认证 connection 对应的 `root_id` 和规范化相对路径。根目录的
+`path` 省略或使用空字符串；绝对路径、`..`、反斜杠、NUL 和平台保留名都会被拒绝。
+服务端从配置快照取得 root，模型不能传入或替换本机绝对根路径。显式 deny 优先于
+ignore；ignore 只影响发现结果，不授予读取权限。默认不跨 symlink、junction 或其他
+reparse 边界。每个结果都包含 `coverage.complete`、计数和 `warnings`，因此部分扫描
+不能被误认为全量结果。`continuation` 是带 HMAC 的短期游标，绑定 connection、profile、
+配置 revision、root、起始路径、查询/模式、大小写和预算；篡改、过期、撤权或目录/文件
+generation 变化都会要求重新开始。
+
+### `list_directory`
+
+Use when：需要查看一个授权目录的下一页直接子项，且希望看到文件、目录和被识别的
+特殊项类型。
+
+Do not use：需要递归找文件或读取内容时；此工具不返回文件正文，也不保证 live listing
+是原子快照。它按有界批次迭代目录，不会先把整棵目录排序载入内存。
+
+完整参数示例：
+
+```json
+{
+  "root_id": "project",
+  "path": "src",
+  "page_size": 32,
+  "max_entries": 256
+}
+```
+
+成功结果的核心形状：
+
+```json
+{
+  "schema_version": "local-probe.search.v1",
+  "root_id": "project",
+  "path": "src",
+  "entries": [{"path": "src/main.go", "name": "main.go", "type": "regular"}],
+  "coverage": {"complete": false, "scanned_entries": 32, "returned_entries": 1},
+  "warnings": ["page_limit"],
+  "budget": {"page_size": 32, "max_entries": 256, "max_output_bytes": 262144},
+  "continuation": "v1.…"
+}
+```
+
+若 `continuation` 非空，使用同一个 `root_id`、`path`、预算再次调用并把游标放入
+`cursor`。不要修改任何过滤条件；若目录 generation 改变，服务会返回 `stale_cursor`，
+应重新列举并把结果当作新的 live listing。
+
+### `find_files`
+
+Use when：需要在授权 root 内按文件名/相对路径 glob 找普通文件候选，并接受有界深度、
+目录项和输出预算。
+
+Do not use：需要文件正文、任意命令或正则表达式时；不要把用户给出的 OS 绝对路径拼进
+`path`。模式使用 `/` 分隔组件，支持 `*`、`?`、字符类以及组件级 `**`；返回项始终是
+规范相对路径。
+
+完整参数示例：
+
+```json
+{
+  "root_id": "project",
+  "path": "",
+  "pattern": "src/**/*.go",
+  "page_size": 64,
+  "max_depth": 8,
+  "max_entries": 4096,
+  "case_sensitive": true
+}
+```
+
+成功结果使用与 `list_directory` 相同的 `coverage`、`warnings`、`budget` 和
+`continuation` 字段，并额外回显受校验的 `pattern`。例如达到深度时会返回
+`complete:false` 和 `warnings:["depth_limit"]`；这表示仍有未扫描范围，不应当当作
+“没有匹配文件”。
+
+### `search_text`
+
+Use when：需要在授权普通文件中查找 UTF-8 literal，并需要文件相对路径、1-based 行号、
+0-based byte 位置和有界行文本/上下文。
+
+Do not use：需要正则、二进制内容、无限长日志尾部或一次性读取整棵仓库时。本增量不
+开放 regex；`query` 必须是有效 UTF-8 且不能含换行，NUL 或非法 UTF-8 文件会被跳过并
+在 coverage/warnings 中显式标记。`globs` 仅筛选文件路径，不改变 literal 查询。
+
+完整参数示例：
+
+```json
+{
+  "root_id": "project",
+  "path": "src",
+  "query": "TODO:",
+  "globs": ["**/*.go"],
+  "page_size": 20,
+  "max_depth": 8,
+  "max_entries": 4096,
+  "max_read_bytes": 8388608,
+  "context_bytes": 256,
+  "case_sensitive": true
+}
+```
+
+匹配项示例：
+
+```json
+{
+  "path": "src/main.go",
+  "line": 17,
+  "line_start_byte": 402,
+  "match_start_byte": 415,
+  "match_end_byte": 420,
+  "line_text": "// TODO: replace this adapter",
+  "context": "// TODO: replace this adapter"
+}
+```
+
+`max_read_bytes`、目录项、深度、页数、取消和服务端超时都可能产生不完整结果；此时
+返回 `complete:false`、相应 warning（如 `read_limit`、`scan_limit`、`time_limit`）和
+`continuation`。继续调用时保持 query、globs、大小写和全部预算不变。游标保存有界
+byte/line/KMP/UTF-8 状态，不缓存整行或整棵树。默认签名 key 是进程随机值，服务重启会
+使游标失效；部署者可以通过受保护的 `SearchCursorKey` 提供跨重启 key，但 revision、
+generation、撤权和过期仍会使旧游标失效。

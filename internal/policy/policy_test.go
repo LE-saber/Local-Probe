@@ -70,6 +70,37 @@ func TestBoundScopesAreIsolatedAndDenyWins(t *testing.T) {
 	}
 }
 
+func TestDirectoryPolicySeparatesIgnoreFromDeny(t *testing.T) {
+	const input = `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project","deny_patterns":["secrets/**"],"ignore_patterns":["vendor/**"]}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["find_files"],"deny_patterns":["*.key"],"ignore_patterns":["*.tmp"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`
+	store := policyStore(t, input)
+	manager, err := NewManager(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := manager.BindAuthenticated("connection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bound.AllowsDirectory("project", "") || !bound.AllowsDirectory("project", "src") {
+		t.Fatal("authorized directory was denied")
+	}
+	if !bound.IsIgnoredPath("project", "vendor/pkg/file.go") || !bound.IsIgnoredPath("project", "build.tmp") {
+		t.Fatal("ignore pattern was not applied")
+	}
+	if !bound.IsDeniedPath("project", "secrets/token.txt") || !bound.IsDeniedPath("project", "config.key") {
+		t.Fatal("deny pattern was not applied")
+	}
+	if bound.IsIgnoredPath("project", "secrets/vendor.tmp") {
+		t.Fatal("deny must take precedence over ignore")
+	}
+}
+
 func TestDisabledAndReplacedConnectionsRevokeOldScopes(t *testing.T) {
 	store := policyStore(t, policyConfigJSON)
 	manager, err := NewManager(store)

@@ -17,6 +17,7 @@ import (
 	"github.com/LE-saber/Local-Probe/internal/config"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/rootfs"
+	"github.com/LE-saber/Local-Probe/internal/search"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -109,6 +110,73 @@ func TestStreamableHTTPClientLifecycleAndReadTools(t *testing.T) {
 	decodeToolJSON(t, batchResult, &batch)
 	if len(batch.Items) != 2 || batch.Items[0].Content != "hello " || batch.Items[1].Error == nil || batch.Failed != 1 {
 		t.Fatalf("batch_read = %#v", batch)
+	}
+}
+
+func TestSearchToolsAreMCPScopedAndUseStructuredResults(t *testing.T) {
+	fixture := newFixture(t)
+	defer fixture.close()
+	fixture.profileOneTools = []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText}
+	if err := os.MkdirAll(fixture.root+"/src/nested", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.root+"/src/main.go", []byte("package main\nneedle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.root+"/src/nested/util.go", []byte("package nested\nneedle in utf8\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.root+"/ignored.tmp", []byte("needle ignored by the profile test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServer(t, fixture, []Credential{{ConnectionID: "connection-one", Token: testTokenOne}})
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "search-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             httpServer.URL,
+		HTTPClient:           &http.Client{Transport: &testTokenTransport{token: testTokenOne}},
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.Tools) != 7 {
+		t.Fatalf("tools = %d, want 7", len(tools.Tools))
+	}
+	listing := callTool(t, ctx, session, ToolListDirectory, map[string]any{"root_id": "workspace", "page_size": 32})
+	var list struct {
+		RequestID string          `json:"request_id"`
+		Entries   []search.Entry  `json:"entries"`
+		Coverage  search.Coverage `json:"coverage"`
+	}
+	decodeToolJSON(t, listing, &list)
+	if list.RequestID == "" || len(list.Entries) < 2 {
+		t.Fatalf("list_directory = %#v", list)
+	}
+	found := callTool(t, ctx, session, ToolFindFiles, map[string]any{"root_id": "workspace", "pattern": "**/*.go", "page_size": 16})
+	var find struct {
+		Entries []search.Entry `json:"entries"`
+	}
+	decodeToolJSON(t, found, &find)
+	if len(find.Entries) != 2 {
+		t.Fatalf("find_files = %#v", find)
+	}
+	textResult := callTool(t, ctx, session, ToolSearchText, map[string]any{"root_id": "workspace", "query": "needle", "page_size": 16})
+	var text struct {
+		Matches []search.Match `json:"matches"`
+	}
+	decodeToolJSON(t, textResult, &text)
+	if len(text.Matches) != 3 {
+		t.Fatalf("search_text = %#v", text)
 	}
 }
 
@@ -449,6 +517,7 @@ type testFixture struct {
 	source          *rootfs.Source
 	root            string
 	profileTwoTools []string
+	profileOneTools []string
 }
 
 func newFixture(t *testing.T) *testFixture {
@@ -472,7 +541,10 @@ func newTestServer(t *testing.T, fixture *testFixture, credentials []Credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	allTools := []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead}
+	allTools := fixture.profileOneTools
+	if allTools == nil {
+		allTools = []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead}
+	}
 	profileOne, err := config.NewProfile("profile-one", []string{"workspace"}, allTools, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -22,6 +22,7 @@ import (
 	"github.com/LE-saber/Local-Probe/internal/cfaccess"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/readcore"
+	"github.com/LE-saber/Local-Probe/internal/search"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,11 +32,14 @@ const (
 	ServerName    = "local-probe"
 	ServerVersion = "0.1.0-alpha"
 
-	ToolServerInfo   = "server_info"
-	ToolPing         = "ping"
-	ToolReadFile     = "read_file"
-	ToolBatchRead    = "batch_read"
-	LocalTokenHeader = "X-Local-Probe-Token"
+	ToolServerInfo    = "server_info"
+	ToolPing          = "ping"
+	ToolReadFile      = "read_file"
+	ToolBatchRead     = "batch_read"
+	ToolListDirectory = "list_directory"
+	ToolFindFiles     = "find_files"
+	ToolSearchText    = "search_text"
+	LocalTokenHeader  = "X-Local-Probe-Token"
 
 	// CloudflareAccessHeader is re-exported for callers that need to construct
 	// a local integration test request without depending on the cfaccess
@@ -83,6 +87,8 @@ type Options struct {
 	CloudflareAccess      *cfaccess.Verifier
 	CloudflarePublicHosts []string
 	Limits                readcore.Limits
+	SearchLimits          search.Limits
+	SearchCursorKey       []byte
 	MaxBodyBytes          int64
 	// MaxResponseBytes bounds the serialized MCP CallToolResult content. The
 	// JSON-RPC envelope adds a small amount of transport overhead; callers that
@@ -103,6 +109,7 @@ type Server struct {
 	cloudflareHosts  map[string]hostPattern
 	requestID        atomic.Uint64
 	handler          http.Handler
+	search           *search.Service
 }
 
 type credential struct {
@@ -197,6 +204,13 @@ func New(opts Options) (*Server, error) {
 		cloudflareAccess: opts.CloudflareAccess,
 		cloudflareHosts:  hosts,
 	}
+	if binder, ok := opts.Source.(search.Binder); ok {
+		searchService, searchErr := search.New(binder, opts.SearchLimits, opts.SearchCursorKey)
+		if searchErr != nil {
+			return nil, fmt.Errorf("%w: invalid search options", ErrInvalidOptions)
+		}
+		s.search = searchService
+	}
 	s.handler = s.buildHandler()
 	return s, nil
 }
@@ -261,6 +275,27 @@ func (s *Server) buildHandler() http.Handler {
 		OutputSchema: batchReadOutputSchema,
 		Annotations:  readOnlyAnnotations(),
 	}, s.handleBatchRead)
+	addTool(server, &mcp.Tool{
+		Name:         ToolListDirectory,
+		Description:  "List one bounded page of entries in an authorized directory without crossing symlink or reparse boundaries.",
+		InputSchema:  listDirectoryInputSchema,
+		OutputSchema: listDirectoryOutputSchema,
+		Annotations:  readOnlyAnnotations(),
+	}, s.handleListDirectory)
+	addTool(server, &mcp.Tool{
+		Name:         ToolFindFiles,
+		Description:  "Find authorized regular files by a slash-separated glob using a bounded, cancellable traversal.",
+		InputSchema:  findFilesInputSchema,
+		OutputSchema: findFilesOutputSchema,
+		Annotations:  readOnlyAnnotations(),
+	}, s.handleFindFiles)
+	addTool(server, &mcp.Tool{
+		Name:         ToolSearchText,
+		Description:  "Search authorized UTF-8 files for a literal query with bounded I/O, byte locations and context.",
+		InputSchema:  searchTextInputSchema,
+		OutputSchema: searchTextOutputSchema,
+		Annotations:  readOnlyAnnotations(),
+	}, s.handleSearchText)
 
 	streamableOptions := func(stateless bool) *mcp.StreamableHTTPOptions {
 		return &mcp.StreamableHTTPOptions{
@@ -482,7 +517,7 @@ func (s *Server) authorizationMiddleware() mcp.Middleware {
 					}
 				}
 				list.Tools = filtered
-				// The endpoint has only four fixed tools and uses the SDK default
+				// The endpoint has a small fixed tool set and uses the SDK default
 				// page size, so a filtered page never needs to expose a cursor.
 				list.NextCursor = ""
 				return list, nil
@@ -583,13 +618,126 @@ type batchReadOutput struct {
 	Failed        int               `json:"failed"`
 }
 
+func (s *Server) searchErrorResult(err error) *mcp.CallToolResult {
+	code := "unavailable"
+	message := "search service is unavailable"
+	switch {
+	case errors.Is(err, search.ErrInvalidRequest):
+		code, message = "invalid_request", "arguments are invalid or exceed the search budget"
+	case errors.Is(err, search.ErrDenied):
+		code, message = "denied", "search access is not authorized"
+	case errors.Is(err, search.ErrInvalidCursor):
+		code, message = "invalid_cursor", "continuation is invalid or expired; restart the search"
+	case errors.Is(err, search.ErrGenerationChanged):
+		code, message = "stale_cursor", "the directory changed; restart the search"
+	case errors.Is(err, context.Canceled):
+		code, message = "cancelled", "search was cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		code, message = "deadline_exceeded", "search deadline exceeded"
+	}
+	return errorResult(code, message)
+}
+
+func (s *Server) handleListDirectory(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var input search.ListDirectoryRequest
+	if err := decodeArguments(req, &input); err != nil {
+		return errorResult("invalid_request", "arguments must be a JSON object with supported fields"), nil
+	}
+	bound, err := s.boundScope(ctx)
+	if err != nil {
+		return errorResult("unauthorized", "authentication is required"), nil
+	}
+	if s.search == nil {
+		return s.searchErrorResult(search.ErrUnavailable), nil
+	}
+	out, err := s.search.ListDirectory(ctx, bound, input)
+	if err != nil {
+		return s.searchErrorResult(err), nil
+	}
+	// Search result IDs are assigned only at the authenticated MCP boundary.
+	result := struct {
+		SchemaVersion string          `json:"schema_version"`
+		RequestID     string          `json:"request_id"`
+		RootID        string          `json:"root_id"`
+		Path          string          `json:"path"`
+		Entries       []search.Entry  `json:"entries"`
+		Coverage      search.Coverage `json:"coverage"`
+		Warnings      []string        `json:"warnings,omitempty"`
+		Budget        search.Budget   `json:"budget"`
+		Continuation  string          `json:"continuation,omitempty"`
+	}{out.SchemaVersion, s.nextRequestID(), out.RootID, out.Path, out.Entries, out.Coverage, out.Warnings, out.Budget, out.Continuation}
+	return s.jsonResult(result), nil
+}
+
+func (s *Server) handleFindFiles(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var input search.FindFilesRequest
+	if err := decodeArguments(req, &input); err != nil {
+		return errorResult("invalid_request", "arguments must be a JSON object with supported fields"), nil
+	}
+	bound, err := s.boundScope(ctx)
+	if err != nil {
+		return errorResult("unauthorized", "authentication is required"), nil
+	}
+	if s.search == nil {
+		return s.searchErrorResult(search.ErrUnavailable), nil
+	}
+	out, err := s.search.FindFiles(ctx, bound, input)
+	if err != nil {
+		return s.searchErrorResult(err), nil
+	}
+	result := struct {
+		SchemaVersion string          `json:"schema_version"`
+		RequestID     string          `json:"request_id"`
+		RootID        string          `json:"root_id"`
+		Path          string          `json:"path"`
+		Pattern       string          `json:"pattern"`
+		Entries       []search.Entry  `json:"entries"`
+		Coverage      search.Coverage `json:"coverage"`
+		Warnings      []string        `json:"warnings,omitempty"`
+		Budget        search.Budget   `json:"budget"`
+		Continuation  string          `json:"continuation,omitempty"`
+	}{out.SchemaVersion, s.nextRequestID(), out.RootID, out.Path, out.Pattern, out.Entries, out.Coverage, out.Warnings, out.Budget, out.Continuation}
+	return s.jsonResult(result), nil
+}
+
+func (s *Server) handleSearchText(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var input search.SearchTextRequest
+	if err := decodeArguments(req, &input); err != nil {
+		return errorResult("invalid_request", "arguments must be a JSON object with supported fields"), nil
+	}
+	bound, err := s.boundScope(ctx)
+	if err != nil {
+		return errorResult("unauthorized", "authentication is required"), nil
+	}
+	if s.search == nil {
+		return s.searchErrorResult(search.ErrUnavailable), nil
+	}
+	out, err := s.search.SearchText(ctx, bound, input)
+	if err != nil {
+		return s.searchErrorResult(err), nil
+	}
+	result := struct {
+		SchemaVersion string          `json:"schema_version"`
+		RequestID     string          `json:"request_id"`
+		RootID        string          `json:"root_id"`
+		Path          string          `json:"path"`
+		Query         string          `json:"query"`
+		Matches       []search.Match  `json:"matches"`
+		Coverage      search.Coverage `json:"coverage"`
+		Warnings      []string        `json:"warnings,omitempty"`
+		Budget        search.Budget   `json:"budget"`
+		Continuation  string          `json:"continuation,omitempty"`
+	}{out.SchemaVersion, s.nextRequestID(), out.RootID, out.Path, out.Query, out.Matches, out.Coverage, out.Warnings, out.Budget, out.Continuation}
+	return s.jsonResult(result), nil
+}
+
 func (s *Server) handleServerInfo(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	bound, err := s.boundScope(ctx)
 	if err != nil {
 		return errorResult("unauthorized", "authentication is required"), nil
 	}
-	tools := make([]string, 0, 4)
-	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead} {
+	tools := make([]string, 0, 7)
+	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText} {
 		if bound.AllowsTool(name) {
 			tools = append(tools, name)
 		}
@@ -857,3 +1005,52 @@ var serverInfoSchema = map[string]any{"type": "object"}
 var pingSchema = map[string]any{"type": "object"}
 var readFileOutputSchema = map[string]any{"type": "object"}
 var batchReadOutputSchema = map[string]any{"type": "object"}
+
+var listDirectoryInputSchema = map[string]any{
+	"type": "object", "additionalProperties": false,
+	"required": []string{"root_id"},
+	"properties": map[string]any{
+		"root_id":     map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+		"path":        map[string]any{"type": "string", "maxLength": 4096},
+		"page_size":   map[string]any{"type": "integer", "minimum": 1, "maximum": 1024},
+		"max_entries": map[string]any{"type": "integer", "minimum": 1, "maximum": 1048576},
+		"cursor":      map[string]any{"type": "string", "maxLength": 65536},
+	},
+}
+
+var findFilesInputSchema = map[string]any{
+	"type": "object", "additionalProperties": false,
+	"required": []string{"root_id", "pattern"},
+	"properties": map[string]any{
+		"root_id":        map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+		"path":           map[string]any{"type": "string", "maxLength": 4096},
+		"pattern":        map[string]any{"type": "string", "minLength": 1, "maxLength": 4096},
+		"page_size":      map[string]any{"type": "integer", "minimum": 1, "maximum": 1024},
+		"max_depth":      map[string]any{"type": "integer", "minimum": 0, "maximum": 256},
+		"max_entries":    map[string]any{"type": "integer", "minimum": 1, "maximum": 1048576},
+		"case_sensitive": map[string]any{"type": "boolean"},
+		"cursor":         map[string]any{"type": "string", "maxLength": 65536},
+	},
+}
+
+var searchTextInputSchema = map[string]any{
+	"type": "object", "additionalProperties": false,
+	"required": []string{"root_id", "query"},
+	"properties": map[string]any{
+		"root_id":        map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+		"path":           map[string]any{"type": "string", "maxLength": 4096},
+		"query":          map[string]any{"type": "string", "minLength": 1, "maxLength": 4096},
+		"globs":          map[string]any{"type": "array", "maxItems": 32, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}},
+		"page_size":      map[string]any{"type": "integer", "minimum": 1, "maximum": 1024},
+		"max_depth":      map[string]any{"type": "integer", "minimum": 0, "maximum": 256},
+		"max_entries":    map[string]any{"type": "integer", "minimum": 1, "maximum": 1048576},
+		"max_read_bytes": map[string]any{"type": "integer", "minimum": 1024, "maximum": 67108864},
+		"context_bytes":  map[string]any{"type": "integer", "minimum": 0, "maximum": 65536},
+		"case_sensitive": map[string]any{"type": "boolean"},
+		"cursor":         map[string]any{"type": "string", "maxLength": 65536},
+	},
+}
+
+var listDirectoryOutputSchema = map[string]any{"type": "object"}
+var findFilesOutputSchema = map[string]any{"type": "object"}
+var searchTextOutputSchema = map[string]any{"type": "object"}

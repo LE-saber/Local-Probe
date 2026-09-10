@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-10。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 最小 MCP/Cloudflare Access 本机验证；尚未完成真实 ChatGPT/Cloudflare Tunnel 调用。**
+日期：2026-09-10。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现；P08 固定环境探针核心尚未接入 MCP。**
 
 ## 一、先计划，后实现
 
@@ -16,13 +16,14 @@
 | 计划项 | 状态 | 已有成果 |
 |---|---|---|
 | P00 | 主要完成 | 计划先行、来源 SHA、许可证/政策纠偏、分支；指定上游选择性检出已于 2026-09-08 完成 |
-| P01 | 本机准备完成；账号实测待凭据 | 官方 tunnel-client v0.0.14、loopback profile、脱敏预检脚本；没有真实账号、模型或 Tunnel 调用证据 |
+| P01 | 真实链路已验证 | Cloudflare Named Tunnel、Access Managed OAuth 与 ChatGPT Business 插件已完成真实登录、同步和调用；故障恢复仍需继续扩展 |
 | P02 | 完成内核部分 | Scope/Source/Handle/Request/Result/Limits、接口边界、威胁模型 |
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
 | P04 | 部分实现；平台有界验证完成 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter；Windows 与 WSL2 的特殊文件、路径、symlink/junction swap 和临时 loopback SMB remote-root 测试已按边界完成；仍不是独立安全审查或发布结论 |
-| P05 | 最小 MCP 与 Cloudflare Access 本地 ingress 已实现；真实链路待测 | 官方 MCP Go SDK v1.7.0、Streamable HTTP、本地 bearer 与 Cloudflare Access JWT/JWKS 验证、显式 Host 校验、server_info/ping/read_file/batch_read、本地 SDK 生命周期与隔离测试；workspace_snapshot、完整 wire 预算和原生 App/Tunnel 证据待完成 |
-| P06/P07 | 未实现 | 目录分页、行范围、内容搜索、workspace snapshot、模型任务效果评测 |
-| P08 | 未实现 | 有限环境/Git 探查，不提供任意 Shell |
+| P05 | 最小 MCP 与真实 Cloudflare ingress 已验证 | 官方 MCP Go SDK v1.7.0、现代无状态/旧版有状态 Streamable HTTP 协商、本地 bearer 与 Cloudflare Access JWT/JWKS、Host 校验；ChatGPT“极高”实际调用 server_info/ping/read_file/batch_read 通过，Tunnel 重连后无需重新登录 |
+| P06 | 第一增量已实现并通过本机回归 | list_directory、find_files、search_text；有界迭代、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；真实 ChatGPT 调用待本次部署验证 |
+| P07 | 未实现 | workspace snapshot、行范围与模型任务效果评测 |
+| P08 | 核心第一增量已实现，未接入远程工具面 | 固定 tool_exists/tool_version 核心、显式受信任可执行路径、私有环境、输出/超时限制与进程树终止；不提供任意 Shell，配置/MCP 接入和独立安全复核待完成 |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
@@ -99,18 +100,18 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 
 ## 四、已知未完成边界
 
-- Cloudflare Access JWT/JWKS 身份认证已实现为显式本地 ingress 模式；尚无真实 Cloudflare Access edge 或 ChatGPT 身份链路证据。Scope 仍只能由可信代码创建。
+- Cloudflare Access JWT/JWKS 与 ChatGPT 身份链路已经过一次真实账号验证；该证据不等于多账号、长期稳定性或 Cloudflare/OpenAI 后端兼容性保证。Scope 仍只能由可信代码创建。
 - 已有最小生产 rootfs adapter：使用 `os.Root`、逐组件 symlink/reparse 拒绝、普通文件检查、handle identity/link-count 检查和 bound adapter。Windows 与 WSL2 已完成明确次数的特殊文件、路径、symlink/junction swap 及临时 loopback SMB remote-root 有界验证；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台和完整 TOCTOU/OS 攻击覆盖仍是残余风险。
-- 没有签名 cursor、全局多连接公平调度、完整 MCP wire 限额或强快照。
+- P06 已有绑定 connection/profile/revision/root/query/预算的短期 HMAC cursor；仍没有全局多连接公平调度、完整 MCP wire 限额或强快照。默认 cursor key 为进程随机值，因此重启后旧 cursor 会安全失效。
 - byte offset 的 continuation 不能直接作为可跨账号转移的授权凭证。
 - Metadata 版本是弱证据，无法检测保持相同元数据的内容更改；batch 也不是全仓快照。
 - 暂不回收短文件/错误项的剩余配额；优先保证可解释和确定性。
 - 不能强制取消任意阻塞 OS I/O；当前 Source 约束与未来平台测试必须明确。
-- 未验证实际 ChatGPT App、用户指定的“极高”推理档位、Tunnel、P01 真实连接、账号政策或两个真实账号并发；本轮明确不以 Pro 模式替代。
-- 未完成独立审查、生产部署或发布；没有运行任意本地命令或修改用户项目。
+- 已验证实际 ChatGPT Business 插件、用户指定的“极高”推理档位、Cloudflare Tunnel 与一次自动重连；尚未验证两个真实账号并发、长时间运行和账号策略差异，本轮明确不以 Pro 模式替代。
+- 未完成独立审查、生产发布或任意命令开放；P08 仅允许固定动作，且在安全复核和 MCP 接入完成前不对远程客户端暴露。
 
 ## 五、下一执行者的明确入口
 
-跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台）并安排独立安全审查；随后按主计划 P01 取得真实最小 echo 调用证据，并在不改变本地安全边界的前提下验证 Cloudflare Access/Tunnel edge 与 ChatGPT App。当前不得据此开放 listener 或声称产品已可连接 ChatGPT。允许修改 `internal/rootfs`、`internal/policy`、`internal/config`、`internal/mcpserver`、`internal/cfaccess`、对应 tests/docs 及依赖文件；不在这一任务包增加索引、UI、Shell 或写文件。
+下一步先部署并用现有 ChatGPT“极高”会话验证 P06 三个工具的分页、发现、literal 搜索和 deny 负例。随后完成 P08 固定探针的独立安全复核与配置/MCP 接入；保持显式可执行路径、固定参数、私有环境和完整进程树终止，不开放模型自定义 command、args、cwd、env 或 timeout。
 
-之后依次推进 P06/P07 的调查效果，P08 的固定探查动作，以及 P09/P10 的多连接隔离与恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。
+并行继续跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台），再推进 P07 的 workspace snapshot/任务效果与 P09/P10 的多连接隔离、监督和恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。

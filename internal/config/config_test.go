@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,35 @@ func TestParseStrictAndReferences(t *testing.T) {
 		} else if !errors.Is(err, ErrInvalid) {
 			t.Fatalf("wrong error for invalid config: %v", err)
 		}
+	}
+}
+
+func TestIgnorePatternsAreConfigurableAndPreserved(t *testing.T) {
+	data := []byte(`{
+  "schema_version": "local-probe.config.v1",
+  "roots": [{"id":"project","path":"C:/project","deny_patterns":[".env"],"ignore_patterns":["vendor/**","*.tmp"]}],
+  "profiles": [{"id":"read","roots":["project"],"tools":["list_directory"],"deny_patterns":["secrets/**"],"ignore_patterns":["node_modules/**"]}],
+  "connections": [{"id":"connection","label":"","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials": [{"id":"credential","kind":"local_token"}]
+}`)
+	cfg, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, ok := cfg.Root("project")
+	if !ok || !reflect.DeepEqual(root.IgnorePatterns(), []string{"vendor/**", "*.tmp"}) {
+		t.Fatalf("root ignore patterns = %#v", root.IgnorePatterns())
+	}
+	profile, ok := cfg.Profile("read")
+	if !ok || !reflect.DeepEqual(profile.IgnorePatterns(), []string{"node_modules/**"}) {
+		t.Fatalf("profile ignore patterns = %#v", profile.IgnorePatterns())
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"ignore_patterns"`)) {
+		t.Fatalf("marshal dropped ignore_patterns: %s", encoded)
 	}
 }
 
