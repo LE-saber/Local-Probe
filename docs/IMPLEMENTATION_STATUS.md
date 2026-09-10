@@ -21,7 +21,7 @@
 | P03 | 完成当前 byte-range 内核 | 有界 ReaderAt、确定性公平批量、部分失败、版本/UTF-8/取消、demo、测试 |
 | P04 | 部分实现；平台有界验证完成 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter；Windows 与 WSL2 的特殊文件、路径、symlink/junction swap 和临时 loopback SMB remote-root 测试已按边界完成；仍不是独立安全审查或发布结论 |
 | P05 | 最小 MCP 与真实 Cloudflare ingress 已验证 | 官方 MCP Go SDK v1.7.0、现代无状态/旧版有状态 Streamable HTTP 协商、本地 bearer 与 Cloudflare Access JWT/JWKS、Host 校验；ChatGPT“极高”实际调用 server_info/ping/read_file/batch_read 通过，Tunnel 重连后无需重新登录 |
-| P06 | 第一增量已实现并通过本机回归 | list_directory、find_files、search_text；有界迭代、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；真实 ChatGPT 调用待本次部署验证 |
+| P06 | 第一增量已实现并通过本机与真实链路验证 | list_directory、find_files、search_text；有界迭代、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；ChatGPT“极高”已验证两页 cursor、文件发现、文本搜索和 deny 负例 |
 | P07 | 未实现 | workspace snapshot、行范围与模型任务效果评测 |
 | P08 | 核心第一增量已实现，未接入远程工具面 | 固定 tool_exists/tool_version 核心、显式受信任可执行路径、私有环境、输出/超时限制与进程树终止；不提供任意 Shell，配置/MCP 接入和独立安全复核待完成 |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
@@ -112,6 +112,6 @@ GitHub Actions 配置另固定 Go 1.26.5 和 action commit，对 Linux/Windows/m
 
 ## 五、下一执行者的明确入口
 
-下一步先部署并用现有 ChatGPT“极高”会话验证 P06 三个工具的分页、发现、literal 搜索和 deny 负例。随后完成 P08 固定探针的独立安全复核与配置/MCP 接入；保持显式可执行路径、固定参数、私有环境和完整进程树终止，不开放模型自定义 command、args、cwd、env 或 timeout。
+P06 已部署并由现有 ChatGPT“极高”会话验证三个工具的分页、发现、literal 搜索和 deny 负例；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。下一步完成 P08 固定探针审查发现的可执行文件启动 TOCTOU，再做配置/MCP 接入；保持显式可执行路径、固定参数、私有环境和完整进程树终止，不开放模型自定义 command、args、cwd、env 或 timeout。
 
 并行继续跟踪 P04 的残余风险（本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台），再推进 P07 的 workspace snapshot/任务效果与 P09/P10 的多连接隔离、监督和恢复。没有新增高成本架构问题时，不必再让 Pro 重写一遍计划。
