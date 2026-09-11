@@ -1,6 +1,7 @@
 # R4 Windows `network=deny` 可行性与最小实现设计
 
-状态：设计稿，未实现，未修改 Windows 防火墙/WFP 配置
+状态：R4-NET-02 的固定 deny plan 与跨平台 disabled backend 已实现；真实 WFP backend
+仍未实现，未修改 Windows 防火墙/WFP 配置
 
 日期：2026-09-11
 
@@ -8,6 +9,14 @@
 当前版本开放 `run_probe`。在本文对应实现和验收完成以前，当前 profile 中的
 `network=deny` 仍然只是一个 fail-closed 的准入条件；没有得到网络隔离证明时，
 命令必须拒绝启动。
+
+当前已经落地的 NET-02 只冻结了平台无关的固定形状：`internal/networkguard/wfp` 提供
+不可注入、不可 JSON 重放的 opaque plan，以及跨平台 `DisabledBackend`。它固定八个
+ALE family（`AUTH_CONNECT_V4/V6`、`AUTH_RECV_ACCEPT_V4/V6`、`AUTH_LISTEN_V4/V6`、
+`RESOURCE_ASSIGNMENT_V4/V6`），每个 family 使用 `block`、`dynamic_only`、
+`target_app`、`target_user` slots；backend 永远 fail closed，`Activate` 永远返回零
+coverage。该阶段没有调用 `fwpuclnt.dll`、打开 dynamic session、安装 filter、申请管理员
+权限、改变 Windows Firewall/WFP 或运行真实/手动网络测试。
 
 ## 1. 结论先行
 
@@ -112,12 +121,19 @@ stdout/stderr/版本输出；未通过的 profile 不能回退到 unrestricted �
 
 WFP user-mode API 可打开带 `FWPM_SESSION_FLAG_DYNAMIC` 的会话；在该会话添加的
 对象会在显式关闭或 client process 结束时由 BFE 自动删除。应使用这一点代替临时
-写入 WFAS 的持久规则。WFP 的 ALE 层支持：
+写入 WFAS 的持久规则。当前 NET-02 只把下列固定 layer family 记录为未来 adapter 的
+目标，尚未实现这些 API 或 ABI 调用：
 
 - `FWPM_LAYER_ALE_AUTH_CONNECT_V4/V6`：出站 TCP connect 及出站非 TCP 首包；
 - `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4/V6`：入站 TCP accept 及入站非 TCP 首包；
+- `FWPM_LAYER_ALE_AUTH_LISTEN_V4/V6`：被动 TCP listen 的授权检查；
 - `FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4/V6`：端口分配、bind、raw/promiscuous
   等资源申请；
+
+`AUTH_LISTEN` 在固定计划中是独立的八层之一。`AUTH_CONNECT` 只覆盖主动出站连接，
+`AUTH_RECV_ACCEPT` 只覆盖入站接收/接受，`RESOURCE_ASSIGNMENT` 主要表达 bind 等资源
+申请；三者不能互相推导出被动 listen 的授权覆盖，省略 listen 就不能声称完整 inbound
+生命周期。
 - 必要时使用相应 discard 层/网络事件查询观察拒绝是否命中。
 
 过滤条件最低包含 `FWPM_CONDITION_ALE_APP_ID`，并在 broker 为每次运行建立专用
@@ -294,6 +310,9 @@ process 崩溃也不会像持久 Firewall rule 一样永久留在系统中。但
 
 ### 6.1 静态和单元测试
 
+- NET-02 当前只验证固定八层 plan 的形状、opaque serialization boundary、lease 隔离和
+  disabled backend 的 fail-closed/zero-coverage 语义；这些检查不构成 Windows WFP 或真实
+  网络覆盖证据。
 - filter builder 只能生成固定 layer/action/condition；拒绝任意 layer、provider、
   address、port、weight、persistent/boot-time flags；
 - admission/lease 绑定 profile ID、revision、variant、identity digest、nonce、
@@ -386,9 +405,12 @@ NetworkGuard.Revoke(OpaqueLease, reason) -> CleanupReceipt | error
 ## 8. 与当前实现的边界
 
 当前仓库已实现 Windows 固定 PE/路径/句柄身份守卫、挂起进程复核、单进程 Job、
-私有 cwd/空环境、输出/超时限制和 command profile/confirmation 核心；这些不等于
-OS network deny。当前也没有 WFP broker、服务安装器、网络 attestation、profile→probe
-生产接线或 MCP `run_probe`。
+私有 cwd/空环境、输出/超时限制、command profile/confirmation 核心，以及 NET-02 的
+固定八层 plan/跨平台 disabled backend；这些不等于 OS network deny。当前也没有
+`fwpuclnt.dll`/WFP ABI adapter、dynamic session、filter install、WFP broker、服务安装器、
+管理员权限/ACL 流程、网络 attestation、可信 capability 铸造器、profile→probe 生产接线
+或 MCP `run_probe`。当前 `internal/probe` 内部直接创建并 resume 进程，未由 broker 统一持有
+挂起进程、Job 与网络 lease，因此固定 plan 不能提前接入现有 probe。
 
 因此本设计完成后可声称：候选方案、威胁模型、权限和停止条件已冻结；不能声称：
 Windows 命令已经断网、Cloudflare/GPT 可以安全运行 `codex -v`，或系统防火墙已被

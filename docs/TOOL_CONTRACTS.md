@@ -347,16 +347,35 @@ handle 或 mapped view 仍是残余风险；`LockFileEx` 的 byte-range lock 不
 loopback、children、inherited handles、existing flows、DNS/proxy 与 cleanup coverage；admission
 窗口最多 30 秒，cleanup 默认 5 秒，cleanup 失败会阻塞后续 admission。它不铸造
 `commandprofile.EnforcementCapability`，不触碰 WFP/Windows Firewall，也不等于 production
-network deny；下一步从 WFP adapter 开始。
+network deny。
+
+R4-NET-02 又冻结了一个平台无关的 WFP deny plan，但仍未提供操作系统执行器。该 plan 是
+opaque 且不可 JSON marshal/unmarshal 的固定值，包含八个 ALE family：
+`AUTH_CONNECT_V4/V6`、`AUTH_RECV_ACCEPT_V4/V6`、`AUTH_LISTEN_V4/V6` 和
+`RESOURCE_ASSIGNMENT_V4/V6`。每个 family 只允许固定的 `block`、`dynamic_only`、
+`target_app`、`target_user` slots，不接受 address、port、provider、GUID、weight、flags 或
+coverage 参数。`AUTH_LISTEN` 必须独立存在：connect/recv_accept 不能代替被动监听授权，
+而 resource assignment 只表达 bind 等资源申请；省略 listen 不能声称覆盖完整 inbound
+生命周期。
+
+`internal/networkguard/wfp.DisabledBackend` 是跨平台默认 backend：按 opaque lease 在内存
+保留固定 plan；`LaunchSuspended` 和 `Activate` 永远返回稳定的 fail-closed 错误，`Activate`
+永远返回零 coverage，`Revoke` 仅做本地幂等清理。它不调用 `fwpuclnt.dll`，不创建 dynamic
+session，不安装 filter，不启动进程，不修改 Windows Firewall/WFP，不请求管理员权限，也不
+铸造 `EnforcementCapability`。因此该增量没有真实网络覆盖证据，不能作为 `network=deny`
+已经生效的证明。
 
 这些是已实现的本地核心，不代表执行已经安全可发布。当前明确未完成：
 
 - 没有接入操作系统的 network deny 执行器；`network=deny` 仍强制要求 opaque
-  `EnforcementCapability`。NET-01 `internal/networkguard` contract/fake 不触碰 WFP/Windows
-  Firewall，也不等于 production network deny；没有 WFP adapter、低权限 broker/service 或
+  `EnforcementCapability`。NET-01 contract/fake 与 NET-02 fixed plan/DisabledBackend 都不触碰
+  WFP/Windows Firewall，也不等于 production network deny；没有真实 `fwpuclnt.dll`/WFP ABI
+  adapter、dynamic session、filter install、低权限 broker/service、管理员权限/ACL 流程或
   capability 生产铸造器时 profile 必须拒绝。设计见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)。
 - local commandexec bridge 已把 profile 接到 `probe.AuditExecutable`/`ToolVersionWithPolicy`，
-  但 CLI/supervisor 尚未建立其生产生命周期，不能把它描述成完整 runtime wiring。
+  但 CLI/supervisor 尚未建立其生产生命周期，不能把它描述成完整 runtime wiring。当前 probe
+  内部直接创建并 resume 目标进程，尚未交给 broker 持有挂起进程/Job/WFP lease 的统一所有权，
+  所以 R4-NET-02 不能提前接入。
 - `identity.sha256` 已从同一 Windows guard handle 计算并比较；尚无签名/Authenticode 校验，
   也没有完成 VM identity/network 对抗证据。
 - `internal/audit` 已提供 `command.admission`、`command.start`、`command.result`、

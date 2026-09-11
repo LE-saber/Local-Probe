@@ -1,10 +1,10 @@
 # Local-Probe 下一阶段执行路线（R0–R9）
 
-日期：2026-09-10
+日期：2026-09-11
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、audit.v2 command producers、NET-01 networkguard contract/fake 和一次性确认本地核心，但尚未完成 WFP/broker/service network deny、EnforcementCapability 铸造、生产接线或远程 MCP `run_probe`。P09/P10 及发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心，但尚未完成真实 WFP/broker/service network deny、EnforcementCapability 铸造、生产接线或远程 MCP `run_probe`。P09/P10 及发布级审查仍未完成。
 
 ## 一、能力分层与不变边界
 
@@ -281,8 +281,9 @@ GUI 页面后端先定义：overview、connections、roots/profile/egress previe
 
 状态：Windows 固定路径/PE/句柄守卫、挂起映像复核、单进程 Job、私有环境/cwd/输出/超时、
 严格 version profile（含固定 args 和小写 SHA256）、同一 guard handle 的执行期 hash、config
-revision lease、local commandexec fail-closed bridge、固定 command audit.v2 producers 和一次性
-确认核心已实现；仍属于 local-only，不能接入远程 MCP。
+revision lease、local commandexec fail-closed bridge、固定 command audit.v2 producers、NET-01
+contract/fake、R4-NET-02 固定 8-family opaque plan/跨平台 DisabledBackend 和一次性确认核心已
+实现；仍属于 local-only，不能接入远程 MCP。
 依赖：R0、P04/P05；可与 R1/R2/R3 的非进程部分并行，但远程暴露必须等全部硬门通过。
 剩余产物按以下顺序推进（设计见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)）：
 
@@ -292,16 +293,29 @@ revision lease、local commandexec fail-closed bridge、固定 command audit.v2 
    flows、DNS/proxy 与 cleanup coverage；admission 最多 30 秒，cleanup 默认 5 秒，cleanup 失败
    阻塞后续 admission。它不铸造 `commandprofile.EnforcementCapability`，不触碰 WFP/Windows
    Firewall，也不等于 production network deny。
-2. **下一步：WFP adapter**：实现动态会话级 WFP 过滤器，覆盖 outbound/inbound/listen/bind/loopback，
-   不创建持久 Windows Firewall 规则；未能证明的状态 fail closed。
-3. **低权限 broker/service**：把需要 UAC/SID ACL 的安装和 WFP 管理放在签名、低权限 broker/service，
+2. **已实现：NET-02 固定 plan/disabled backend**：`internal/networkguard/wfp` 只生成一个
+   不接受调用方参数的 opaque deny plan，固定八个 ALE family：`AUTH_CONNECT_V4/V6`、
+   `AUTH_RECV_ACCEPT_V4/V6`、`AUTH_LISTEN_V4/V6`、`RESOURCE_ASSIGNMENT_V4/V6`；每个 family
+   固定 `block`、`dynamic_only`、`target_app` 和 `target_user` identity slots。`AUTH_LISTEN`
+   不能由 connect/recv_accept 推导省略：主动连接、被动监听/接收和 bind/resource assignment
+   是不同的覆盖语义。跨平台 `DisabledBackend` 只保存每个 opaque lease 的固定 plan，
+   `LaunchSuspended`/`Activate` 始终 fail closed，`Activate` 返回零 coverage，`Revoke` 只做
+   本地幂等清理。该增量不调用 `fwpuclnt.dll`，不实现 WFP ABI/dynamic session/filter install，
+   不请求管理员权限，不修改 Windows Firewall，不铸造 capability；本阶段也没有真实/手动
+   网络测试证据。
+3. **下一步：真实 WFP adapter**：基于受审查的 `fwpuclnt.dll` user-mode ABI 实现动态会话级
+   WFP 过滤器，覆盖上述八个固定 family 以及 loopback/适用的 identity 绑定；不创建持久
+   Windows Firewall 规则，未能证明的状态 fail closed。该 adapter 尚不能直接接入当前
+   `internal/probe`：当前 probe 内部自己创建并 resume 进程，下一步必须先建立 broker/launcher
+   对挂起进程、Job、WFP lease 的统一所有权。
+4. **低权限 broker/service**：把需要 UAC/SID ACL 的安装和 WFP 管理放在签名、低权限 broker/service，
    运行期只返回不可伪造的本地 enforcement capability；拒绝任意模型参数和持久化放行规则。
-4. **suspended Job integration**：将 capability 生命周期接到现有挂起进程/Job 流程，必须在
+5. **suspended Job integration**：将 capability 生命周期接到现有挂起进程/Job 流程，必须在
    resume 前确认网络状态、句柄 identity、revision lease 和子进程边界仍有效。
-5. **VM identity/network adversarial tests**：在 Windows VM 中验证替换、wrapper、pre-open
+6. **VM identity/network adversarial tests**：在 Windows VM 中验证替换、wrapper、pre-open
    writable/mapped handle、IPv4/IPv6、DNS/proxy、existing flow、child process、crash/restart
    和撤权；`LockFileEx` 不能替代 mapped-view 防护。
-6. **audit/commandexec integration**：把 admission/start/result/reject producers 接入实际
+7. **audit/commandexec integration**：把 admission/start/result/reject producers 接入实际
    executor 和 supervisor，audit sink 故障/网络状态不确定时拒绝新增执行；审计不得写入 argv、
    env、输出、路径或密钥。
 

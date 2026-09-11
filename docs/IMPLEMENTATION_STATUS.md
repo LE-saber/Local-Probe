@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-11。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4/P08 Windows 固定探针、严格 version profile、执行期 SHA256、revision lease、local commandexec fail-closed bridge、一次性确认和 audit.v2 command producers 已实现；这些进程能力尚未接入 MCP。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
+日期：2026-09-11。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4/P08 Windows 固定探针、严格 version profile、执行期 SHA256、revision lease、local commandexec fail-closed bridge、一次性确认、audit.v2 command producers 和 R4-NET-02 固定 WFP deny plan/跨平台 DisabledBackend 已实现；这些进程能力尚未接入 MCP，网络仍未在操作系统层执行。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -23,7 +23,7 @@
 | P05 | 最小 MCP 与真实 Cloudflare ingress 已验证 | 官方 MCP Go SDK v1.7.0、现代无状态/旧版有状态 Streamable HTTP 协商、本地 bearer 与 Cloudflare Access JWT/JWKS、Host 校验；ChatGPT“极高”实际调用 server_info/ping/read_file/batch_read 通过，Tunnel 重连后无需重新登录 |
 | P06 | 第一增量已实现并通过本机与真实链路验证；手工靶场已加入 | list_directory、find_files、search_text、tree_directory；有界迭代、扁平深度优先树、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；四个发现工具已由 ChatGPT Business“极高”验证，`manual-test-targets/` 提供分页、嵌套、Unicode、空文件和拒绝负例；R1 已补充单次调用打开文件/目录预算与不可推进游标防护 |
 | P07 | 第一增量完成 | MCP `bytes`/`lines`/`tail` 范围读取、受策略绑定的 `workspace_snapshot`、Windows 手工靶场；模型任务效果评测和强一致快照仍未完成 |
-| P08 | Windows 本地核心第二增量已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；profile 在配置期和执行期均只接受固定 version args，执行期从同一最终映像 guard handle 计算小写 SHA256；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、audit.v2 command producers、NET-01 networkguard contract/fake 已实现；WFP/broker/service、EnforcementCapability 铸造、审计接线、生产 supervisor 接线、MCP `run_probe` 与任意命令仍关闭 |
+| P08 | Windows 本地核心第二增量已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；profile 在配置期和执行期均只接受固定 version args，执行期从同一最终映像 guard handle 计算小写 SHA256；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8 个 ALE family 的 opaque plan 与跨平台 DisabledBackend 已实现；真实 WFP/broker/service、EnforcementCapability 铸造、审计接线、生产 supervisor 接线、MCP `run_probe` 与任意命令仍关闭 |
 | R1/R2/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、`get_environment`/`discover_tools`、R2 范围读取和 `workspace_snapshot` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed、强快照和真实 Business 复测仍未完成 |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
@@ -185,15 +185,42 @@ runtime 测试，也不把 workspace snapshot 宣称为强一致快照。
 - Windows 执行期 SHA256 从已经持有的最终映像 guard handle 读取，并在创建/恢复进程前复核
   deadline；不会对一个路径单独 hash 后再按路径启动。该摘要计算有界，且使用常量时间比较。
 
+### R4-NET-02 固定 WFP deny plan 与 disabled backend（2026-09-11）
+
+本阶段只完成了网络拒绝的**平台无关规划边界**，没有执行任何 Windows WFP/防火墙操作。
+`internal/networkguard/wfp` 现在提供不可由调用方注入的 opaque `Plan`，固定包含以下八个
+ALE family，并且每个 family 都固定为 `block`、`dynamic_only`、`target_app` 与
+`target_user` identity slots：
+
+- `AUTH_CONNECT_V4` / `AUTH_CONNECT_V6`；
+- `AUTH_RECV_ACCEPT_V4` / `AUTH_RECV_ACCEPT_V6`；
+- `AUTH_LISTEN_V4` / `AUTH_LISTEN_V6`；
+- `RESOURCE_ASSIGNMENT_V4` / `RESOURCE_ASSIGNMENT_V6`。
+
+这里把 `AUTH_LISTEN` 单独纳入固定计划，是因为仅覆盖主动 connect 和入站
+recv/accept 不能表达被动监听授权；`RESOURCE_ASSIGNMENT` 负责 bind 等资源申请，不能把
+listen 语义省略后再声称覆盖完整入站生命周期。计划不暴露 provider、GUID、地址、端口、
+权重、持久化/启动标志或 coverage 字段；JSON marshal/unmarshal 也不能构造或重放它。
+
+跨平台 `DisabledBackend` 只按 opaque lease 在内存中保存固定计划；`LaunchSuspended` 和
+`Activate` 永远 fail closed，`Activate` 永远返回零 coverage，`Revoke` 只做本地幂等清理。
+它不调用 `fwpuclnt.dll`，不打开 dynamic session，不安装过滤器，不启动进程或 service，
+不修改 Windows Firewall/WFP，也不铸造 `EnforcementCapability`。本阶段没有运行真实/手动
+网络测试，不能把该 plan 或 disabled backend 写成已断网证据。
+
 以下硬门仍未完成，因而不能称为 R4 完成或接入远程工具：
 
 - 没有已接入操作系统的 network deny 执行器；`network=deny` 仍只是 profile 的硬约束。
-  NET-01 的 `internal/networkguard` contract/fake 只提供平台无关的生命周期/coverage 约束，
-  不铸造 `commandprofile.EnforcementCapability`，不触碰 WFP/Windows Firewall，也不等于生产
-  network deny。仍没有 WFP adapter、低权限 broker/service 或可信 capability 铸造器。无法证明
-  时必须拒绝执行。网络设计和停止条件见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)。
+  NET-01 的 `internal/networkguard` contract/fake 与 R4-NET-02 的固定 plan/DisabledBackend
+  只提供平台无关的生命周期、固定规则形状和 fail-closed 边界，不铸造
+  `commandprofile.EnforcementCapability`，不触碰 WFP/Windows Firewall，也不等于生产
+  network deny。仍没有 `fwpuclnt.dll`/WFP ABI 适配器、dynamic session、过滤器安装、低权限
+  broker/service、管理员安装/ACL 流程或可信 capability 铸造器；无法证明时必须拒绝执行。
+  网络设计和停止条件见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)。
 - `internal/commandexec` 是本地核心 bridge，不等于生产 runtime wiring：CLI/supervisor 尚未
-  构造它、管理 capability 生命周期或把结果接入正式执行/恢复路径；MCP 仍不能调用它。
+  构造它、管理 capability 生命周期或把结果接入正式执行/恢复路径；MCP 仍不能调用它。当前
+  `internal/probe` 自己创建并恢复进程，尚未把“由 broker 创建、持有并在网络策略生效后恢复”的
+  挂起进程所有权交给 network backend，因此 R4-NET-02 不能提前接入现有 probe。
 - SHA256 已在 Windows 执行期按同一 guard handle 计算并比较，但尚无签名/Authenticode 校验，
   也没有对抗性 VM/网络证据。
 - `internal/audit` 已提供固定 schema 的 `command.admission`、`command.start`、
@@ -260,7 +287,7 @@ fail-closed；command producers 尚未接入 commandexec，network-tunnel、poli
 
 ## 五、下一执行者的明确入口
 
-P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R4 已补齐严格 version args、同一 guard handle 的执行期 SHA256、revision lease、local commandexec fail-closed bridge、audit.v2 command producers 和 NET-01 contract/fake；下一步从 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md) 的 WFP adapter 开始，随后再做低权限 broker/service、suspended Job integration、VM identity/network adversarial tests 和 audit/commandexec integration。硬门全部通过前不注册 MCP `run_probe`，也不开放模型自定义 command、args、cwd、env、timeout 或任何写入能力。
+P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R4 已补齐严格 version args、同一 guard handle 的执行期 SHA256、revision lease、local commandexec fail-closed bridge、audit.v2 command producers、NET-01 contract/fake 以及 R4-NET-02 固定 plan/DisabledBackend；下一步仍从 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md) 的真实 WFP ABI adapter 开始，随后再做低权限 broker/service、由 broker 持有的 suspended Job integration、VM identity/network adversarial tests 和 audit/commandexec integration。硬门全部通过前不注册 MCP `run_probe`，也不开放模型自定义 command、args、cwd、env、timeout 或任何写入能力。
 
 
 R5 受控 Git read actions、R6 P09/P10 多 connection/supervisor/recovery、R7 证据驱动的 index、R8 GUI/tray、R9 发布与独立审查依次推进；P14 写入始终独立。P04 的本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台仍按路线的停止条件跟踪，不把本地有界验证写成生产安全结论。
