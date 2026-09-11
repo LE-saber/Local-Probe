@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"sync"
 	"sync/atomic"
@@ -19,6 +18,14 @@ type Engine struct {
 func New(source Source, limits Limits) (*Engine, error) {
 	if source == nil {
 		return nil, fmt.Errorf("source is required")
+	}
+	// Keep callers that constructed pre-R2 Limits literals source-compatible;
+	// zero means the new bounded range defaults rather than unlimited scanning.
+	if limits.MaxScanBytes == 0 {
+		limits.MaxScanBytes = min(limits.MaxReadBytes, DefaultLimits().MaxScanBytes)
+	}
+	if limits.BlockBytes == 0 {
+		limits.BlockBytes = DefaultLimits().BlockBytes
 	}
 	if err := limits.validate(); err != nil {
 		return nil, err
@@ -41,19 +48,20 @@ func (e *Engine) ReadBatch(ctx context.Context, scope Scope, requests []Request)
 	}
 	requests = append([]Request(nil), requests...)
 	out.Items = make([]Result, len(requests))
-	demands := make([]int, len(requests))
+	outputDemands := make([]int, len(requests))
+	scanDemands := make([]int, len(requests))
 	for i, req := range requests {
-		if problem := validateRequest(req, scope, e.limits.MaxItemBytes); problem != nil {
+		if problem := validateRequest(req, scope, e.limits); problem != nil {
 			out.Items[i].Error = problem // Do not echo invalid/untrusted path metadata.
 			continue
 		}
-		out.Items[i] = Result{File: req.File, Offset: req.Offset}
-		demands[i] = req.MaxBytes
-		if demands[i] == 0 {
-			demands[i] = e.limits.MaxItemBytes
-		}
+		nr := normalizeRange(req, e.limits)
+		out.Items[i] = Result{File: req.File, Offset: req.Offset, RangeKind: nr.kind}
+		outputDemands[i] = outputDemand(req, e.limits)
+		scanDemands[i] = scanDemand(req, e.limits)
 	}
-	quotas := allocate(demands, min(e.limits.MaxOutputBytes, e.limits.MaxReadBytes))
+	outputQuotas := allocate(outputDemands, e.limits.MaxOutputBytes)
+	scanQuotas := allocate(scanDemands, e.limits.MaxReadBytes)
 	ctx, cancel := context.WithTimeout(ctx, e.limits.Timeout)
 	defer cancel()
 	var next atomic.Int64
@@ -70,16 +78,21 @@ func (e *Engine) ReadBatch(ctx context.Context, scope Scope, requests []Request)
 				if out.Items[i].Error != nil {
 					continue
 				}
-				out.Items[i] = e.readOne(ctx, scope, requests[i], quotas[i])
+				out.Items[i] = e.readOne(ctx, scope, requests[i], outputQuotas[i], scanQuotas[i])
 			}
 		}()
 	}
 	wg.Wait()
+	out.Complete = true
 	for _, item := range out.Items {
 		out.ReturnedBytes += len(item.Content)
 		out.BytesRead += item.BytesRead
+		out.ScannedBytes += item.ScannedBytes
 		if item.Error != nil {
 			out.Failed++
+			out.Complete = false
+		} else if !item.Complete {
+			out.Complete = false
 		}
 	}
 	return out, nil
@@ -107,14 +120,19 @@ func allocate(demands []int, total int) []int {
 	return quotas
 }
 
-func (e *Engine) readOne(ctx context.Context, scope Scope, req Request, quota int) (r Result) {
-	r = Result{File: req.File, Offset: req.Offset, AllocatedBytes: quota}
+func (e *Engine) readOne(ctx context.Context, scope Scope, req Request, outputQuota, scanQuota int) (r Result) {
+	nr := normalizeRange(req, e.limits)
+	allocated := outputQuota
+	if nr.kind == RangeBytes {
+		allocated = min(outputQuota, scanQuota)
+	}
+	r = Result{File: req.File, Offset: req.Offset, RangeKind: nr.kind, AllocatedBytes: allocated}
 	fail := func(problem *ItemError) Result { clearContent(&r, problem); return r }
 	if err := ctx.Err(); err != nil {
 		return fail(classify(err))
 	}
-	if quota == 0 {
-		return fail(issue("budget_exhausted", "no bytes allocated; use a smaller batch"))
+	if outputQuota == 0 || scanQuota == 0 {
+		return fail(issue("budget_exhausted", "read budget is exhausted; use a smaller batch"))
 	}
 	h, err := e.source.Open(ctx, scope, req.File)
 	if err != nil {
@@ -147,21 +165,22 @@ func (e *Engine) readOne(ctx context.Context, scope Scope, req Request, quota in
 	if req.ExpectedVersion != "" && req.ExpectedVersion != before.Version.Token {
 		return fail(issue("stale_version", "file version changed; restart the read"))
 	}
-	if req.Offset > before.Size {
-		return fail(issue("invalid_request", "offset exceeds file size"))
-	}
 	if err := ctx.Err(); err != nil {
 		return fail(classify(err))
 	}
-	length := int(min(int64(quota), before.Size-req.Offset))
-	buf := make([]byte, length)
-	var readErr error
-	if length > 0 {
-		r.BytesRead, readErr = h.ReadAt(buf, req.Offset)
-		if r.BytesRead < 0 || r.BytesRead > length {
-			r.BytesRead = length
-			return fail(issue("unavailable", "source violated ReaderAt contract"))
-		}
+	var data rangeData
+	var problem *ItemError
+	switch nr.kind {
+	case RangeLines:
+		data, problem = readLinesRange(ctx, h, before, nr, outputQuota, scanQuota, e.limits.BlockBytes)
+	case RangeTail:
+		data, problem = readTailRange(ctx, h, before, nr, outputQuota, scanQuota, e.limits.BlockBytes)
+	default:
+		data, problem = readBytesRange(ctx, h, before, req, min(outputQuota, scanQuota))
+	}
+	r.BytesRead, r.ScannedBytes = data.bytesRead, data.scanned
+	if problem != nil {
+		return fail(problem)
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(classify(err))
@@ -173,21 +192,10 @@ func (e *Engine) readOne(ctx context.Context, scope Scope, req Request, quota in
 	if !validMetadata(after) || before != after {
 		return fail(issue("stale_version", "file changed during read; content discarded"))
 	}
-	if r.BytesRead != length || readErr != nil && !errors.Is(readErr, io.EOF) {
-		return fail(issue("unavailable", "source returned an incomplete read"))
-	}
-	atEOF := req.Offset+int64(length) == before.Size
-	end, problem := textPrefix(buf, atEOF)
-	if problem != nil {
-		return fail(problem)
-	}
-	r.Content = string(buf[:end])
-	r.EndOffset = req.Offset + int64(end)
-	r.EOF = r.EndOffset == before.Size
-	if !r.EOF {
-		next := r.EndOffset
-		r.NextOffset = &next
-	}
+	r.Offset, r.EndOffset = data.offset, data.endOffset
+	r.StartLine, r.EndLine = data.startLine, data.endLine
+	r.Content = string(data.content)
+	r.EOF, r.Complete, r.NextOffset = data.eof, data.complete, data.nextOffset
 	return r
 }
 
@@ -223,7 +231,7 @@ func textPrefix(buf []byte, atEOF bool) (int, *ItemError) {
 
 func issue(code, message string) *ItemError { return &ItemError{Code: code, Message: message} }
 func clearContent(r *Result, err *ItemError) {
-	r.Error, r.Content, r.NextOffset, r.EOF, r.EndOffset = err, "", nil, false, 0
+	r.Error, r.Content, r.NextOffset, r.EOF, r.Complete, r.EndOffset = err, "", nil, false, false, 0
 }
 func classify(err error) *ItemError {
 	switch {

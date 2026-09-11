@@ -53,6 +53,13 @@ func helperPath(mode string) string {
 	return filepath.Join(helperDir, mode)
 }
 
+func requireProcessExecution(t *testing.T) {
+	t.Helper()
+	if !processExecutionSupported() {
+		t.Skip("fixed process probes are Windows-only until the fd-based Unix launcher is implemented")
+	}
+}
+
 func copyExecutable(t *testing.T, source, name string) string {
 	t.Helper()
 	destination := filepath.Join(t.TempDir(), name)
@@ -96,6 +103,7 @@ func TestCancelledContextDoesNotStartProcess(t *testing.T) {
 }
 
 func TestFixedVersionArgumentsAndParsers(t *testing.T) {
+	requireProcessExecution(t)
 	tests := []struct {
 		name    string
 		tool    ToolID
@@ -124,6 +132,7 @@ func TestFixedVersionArgumentsAndParsers(t *testing.T) {
 }
 
 func TestExactEnvironmentIgnoresCallerInjectionAndUsesPrivateCwd(t *testing.T) {
+	requireProcessExecution(t)
 	t.Setenv("LOCAL_PROBE_SECRET", "must-not-cross-boundary")
 	t.Setenv("PATH", "/tmp/LOCAL_PROBE_MALICIOUS")
 	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-env"))
@@ -140,6 +149,7 @@ func TestExactEnvironmentIgnoresCallerInjectionAndUsesPrivateCwd(t *testing.T) {
 }
 
 func TestOutputLimitsAreBounded(t *testing.T) {
+	requireProcessExecution(t)
 	for _, helper := range []string{"fake-overoutput", "fake-stderroveroutput"} {
 		t.Run(helper, func(t *testing.T) {
 			descriptor, err := AuditExecutable(ToolNode, helperPath(helper))
@@ -155,6 +165,7 @@ func TestOutputLimitsAreBounded(t *testing.T) {
 }
 
 func TestTimeoutKillsProcessTree(t *testing.T) {
+	requireProcessExecution(t)
 	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-timeout"))
 	if err != nil {
 		t.Fatalf("AuditExecutable: %v", err)
@@ -170,6 +181,7 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 }
 
 func TestTimeoutKillsDescendant(t *testing.T) {
+	requireProcessExecution(t)
 	cwd, err := makePrivateWorkdir()
 	if err != nil {
 		t.Fatal(err)
@@ -179,20 +191,19 @@ func TestTimeoutKillsDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := runFixedProcess(context.Background(), helperPath("fake-timeout"), []string{"--version"}, cwd, env)
+	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-timeout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := runFixedProcess(context.Background(), helperPath("fake-timeout"), []string{"--version"}, cwd, env, descriptor.identity)
 	if !errors.Is(err, ErrDeadlineExceeded) {
 		t.Fatalf("want ErrDeadlineExceeded, got %v", err)
 	}
-	pid := descendantPID(string(output.stdout))
-	if pid == 0 {
-		t.Fatalf("timeout helper did not report descendant pid")
+	if pid := descendantPID(string(output.stdout)); pid != 0 {
+		t.Fatalf("active-process job limit allowed a descendant process: %d", pid)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for processStillRunning(pid) && time.Now().Before(deadline) {
-		time.Sleep(25 * time.Millisecond)
-	}
-	if processStillRunning(pid) {
-		t.Fatalf("descendant process %d survived tree termination", pid)
+	if !strings.Contains(string(output.stderr), "child-start-failed") {
+		t.Fatalf("timeout helper did not report blocked child creation: %q", output.stderr)
 	}
 }
 
@@ -207,6 +218,7 @@ func descendantPID(output string) int {
 }
 
 func TestIdentityChangeFailsClosed(t *testing.T) {
+	requireProcessExecution(t)
 	path := copyExecutable(t, helperPath("fake-node"), executableName("target"))
 	descriptor, err := AuditExecutable(ToolNode, path)
 	if err != nil {
@@ -225,6 +237,7 @@ func TestIdentityChangeFailsClosed(t *testing.T) {
 }
 
 func TestInvalidInputsAndPathFreeErrors(t *testing.T) {
+	requireProcessExecution(t)
 	if _, err := AuditExecutable(ToolNode, "relative-node"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("relative path: want ErrInvalidInput, got %v", err)
 	}

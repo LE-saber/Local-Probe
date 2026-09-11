@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-11。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP；P08 固定进程探针核心尚未接入 MCP。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
+日期：2026-09-11。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4/P08 Windows 固定探针、command profile 和一次性确认本地核心已实现；这些进程能力尚未接入 MCP。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -22,14 +22,13 @@
 | P04 | 部分实现；平台有界验证完成 | `config`/`policy.BoundScope`、Go 1.25、基于 `os.Root` 的只读 rootfs、`readcore` bound adapter；Windows 本轮、WSL2 历史轮次已覆盖特殊文件、路径、symlink/junction swap 和临时 loopback SMB remote-root 边界；仍不是独立安全审查或发布结论 |
 | P05 | 最小 MCP 与真实 Cloudflare ingress 已验证 | 官方 MCP Go SDK v1.7.0、现代无状态/旧版有状态 Streamable HTTP 协商、本地 bearer 与 Cloudflare Access JWT/JWKS、Host 校验；ChatGPT“极高”实际调用 server_info/ping/read_file/batch_read 通过，Tunnel 重连后无需重新登录 |
 | P06 | 第一增量已实现并通过本机与真实链路验证；手工靶场已加入 | list_directory、find_files、search_text、tree_directory；有界迭代、扁平深度优先树、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；四个发现工具已由 ChatGPT Business“极高”验证，`manual-test-targets/` 提供分页、嵌套、Unicode、空文件和拒绝负例；R1 已补充单次调用打开文件/目录预算与不可推进游标防护 |
-| P07 | 未实现 | workspace snapshot、行范围与模型任务效果评测 |
-| P08 | 核心第一增量已实现，固定进程探针未接入 MCP | 固定 tool_exists/tool_version 核心、显式受信任可执行路径、私有环境、输出/超时限制与进程树终止；不提供任意 Shell，TOCTOU 安全复核和 MCP 接入待完成 |
-| R1/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、无进程 `get_environment`/`discover_tools` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed 和真实 Business 复测仍未完成 |
+| P07 | 第一增量完成 | MCP `bytes`/`lines`/`tail` 范围读取、受策略绑定的 `workspace_snapshot`、Windows 手工靶场；模型任务效果评测和强一致快照仍未完成 |
+| P08 | Windows 本地核心第一增量已实现，生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；command profile/developer mode 配置和一次性本地确认核心已实现；执行期 SHA256、network deny 执行器、profile→probe 接线、MCP `run_probe` 与任意命令仍关闭 |
+| R1/R2/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、`get_environment`/`discover_tools`、R2 范围读取和 `workspace_snapshot` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed、强快照和真实 Business 复测仍未完成 |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
 代码位置：`internal/config/`、`internal/environment/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
-
 ### P04 增量事实（2026-09-09）
 
 - `config`/`policy` 已修复配置上限、重复 key、显式 `enabled` 语义，并由 `policy.BoundScope` 绑定 connection/profile revision 和 root/path deny。
@@ -136,6 +135,56 @@ rootfs 的目录适配器按有界批次保留原生 `ReadDir(n)` 目录流顺�
 `open_directory_limit_no_continuation`，不再生成循环 continuation，调用方应把结果视为
 有界的部分结果。
 
+### R2 范围读取与工作区轮廓第一增量（2026-09-11）
+
+`read_file`/`batch_read` 保留原有 `offset`/`max_bytes` 输入，并可选接受严格的
+`range.kind`：`bytes`、`lines` 或 `tail`。行号从 1 开始；有换行符的记录保留原始换行
+字节；无尾部换行的最后一行仍是有效记录。`max_scan_bytes` 是 lines/tail 的硬扫描预算，
+结果同时给出 `range_kind`、行号、`complete` 和 `scanned_bytes`。MCP 层的输入 schema
+拒绝额外字段，旧版 byte-range 请求不需要改写。
+
+`workspace_snapshot` 使用与搜索服务相同的 `search.Binder` 和 `policy.BoundScope`，只做
+有界目录树、manifest 路径证据和语言统计，不执行源码或 manifest，也不接受模型传来的
+绝对根路径。profile allowlist、deny/ignore、cursor 和 wire response 上限仍由既有 MCP
+边界负责；审计仅记录固定 action 和预算计数，不记录 path、content、cursor 或请求参数。
+服务通过 CLI 以固定 `workspacesnapshot.DefaultLimits()` 启动，profile 仍决定是否暴露工具。
+
+本地 Windows MCP 集成测试覆盖旧 byte 输入、lines/tail、batch 混用、workspace snapshot
+相对路径脱敏、额外字段拒绝、第二 connection 的 allowlist 拒绝和 audit action 映射。
+`manual-test-targets/r2/` 提供 CRLF/UTF-8/无尾换行、4 KiB 小型长行、manifest 和 deny
+负例。当前仍需在 Windows 手工调用并在真实 Business“极高”会话中复测；本轮不做 Linux
+runtime 测试，也不把 workspace snapshot 宣称为强一致快照。
+
+### R4/P08 Windows 固定探针与 developer-mode 本地核心（2026-09-11）
+
+当前已经实现、但仅限可信本地调用方的部分包括：
+
+- `internal/probe` 只接受固定 `git`/`python`/`node` tool ID 和本地绝对 `.exe`；Windows
+  会拒绝 UNC/device/ADS/保留名/路径别名、reparse/symlink、非普通文件和非 PE 映像。
+- 执行前持有最终映像与父目录的句柄守卫，使用 `CREATE_SUSPENDED` 创建进程并立即加入
+  Job Object；恢复主线程前查询实际映像路径并核对句柄 identity。Job 限制为单进程、
+  kill-on-close，并保留无窗口、闭 stdin、私有 cwd、精简环境、输出/超时和回收边界。
+- `internal/commandprofile` 已实现本地不可变的 Windows `version_probe` profile 校验：
+  exact argv variant、固定 `.exe`、私有空 cwd、空环境、单进程、`network=deny` 声明、
+  `per_call` 本地确认和结构化 version 结果；不接受 raw command、任意后缀、任意参数、
+  任意 env/cwd/timeout。
+- `internal/confirmation` 已实现短期、一次性、绑定 connection/profile/revision/command/
+  variant/request nonce 的确认能力；模型在 MCP JSON 中提交布尔值或文本“确认”不能伪造它。
+
+以下硬门仍未完成，因而不能称为 R4 完成或接入远程工具：
+
+- 没有已接入操作系统的 network deny 执行器；`network=deny` 目前只是 profile 的硬约束，
+  未由配置、MCP 或任意调用方铸造 `EnforcementCapability`。无法证明时必须拒绝执行。
+- 配置层已能保存/校验 command profile，但 CLI/supervisor 尚未把 profile 安全地接到
+  `probe.AuditExecutable`/`ToolVersion` 的生产执行路径；没有 profile→probe 的完整运行时接线。
+- SHA256 目前只做 profile 字段格式校验；Windows 执行期使用路径、PE 和 handle identity
+  复核，尚未计算并比较配置的执行期 SHA256（也没有签名校验）。
+- `internal/mcpserver` 没有注册 `run_probe`，也没有远程 command/profile/confirmation schema。
+  ChatGPT、Cloudflare Tunnel 和其它远程入口继续只能使用已注册的只读文件/环境工具。
+
+本轮只安排 Windows 本地手测，步骤见 [`manual-test-targets/r4/README.md`](../manual-test-targets/r4/README.md)。
+不据此宣称 Linux 或其它 Unix 运行时通过；Unix fd-based launcher 仍是后续硬门。
+
 ### R3 无进程环境发现 MCP 增量（2026-09-11）
 
 `internal/environment` 的无进程 `GetEnvironment`/`DiscoverTools` 已由
@@ -169,15 +218,15 @@ fail-closed；command、network-tunnel、policy、fs-search 事件生产者、�
 - Cloudflare Access JWT/JWKS 与 ChatGPT 身份链路已经过一次真实账号验证；该证据不等于多账号、长期稳定性或 Cloudflare/OpenAI 后端兼容性保证。Scope 仍只能由可信代码创建。
 - 已有最小生产 rootfs adapter：使用 `os.Root`、逐组件 symlink/reparse 拒绝、普通文件检查、handle identity/link-count 检查和 bound adapter。Windows 本轮、WSL2 历史轮次已完成明确次数的特殊文件、路径、symlink/junction swap 及临时 loopback SMB remote-root 有界验证；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台和完整 TOCTOU/OS 攻击覆盖仍是残余风险。
 - P06 已有绑定 connection/profile/revision/root/query/预算的短期 HMAC cursor；仍没有全局多连接公平调度、完整 MCP wire 限额或强快照。默认 cursor key 为进程随机值，因此重启后旧 cursor 会安全失效。
-- byte offset 的 continuation 不能直接作为可跨账号转移的授权凭证。
+- R2 的 workspace snapshot 是 live、有界的目录/路径证据，不是跨文件强一致快照；其 continuation 仍需绑定当前 connection/profile/root/generation，不能直接作为可跨账号转移的授权凭证。
 - Metadata 版本是弱证据，无法检测保持相同元数据的内容更改；batch 也不是全仓快照。
 - 暂不回收短文件/错误项的剩余配额；优先保证可解释和确定性。
-- 不能强制取消任意阻塞 OS I/O；当前 Source 约束与未来平台测试必须明确。
 - 已验证实际 ChatGPT Business 插件、用户指定的“极高”推理档位、Cloudflare Tunnel 与一次自动重连；尚未验证两个真实账号并发、长时间运行和账号策略差异，本轮明确不以 Pro 模式替代。
-- 未完成独立审查、生产发布或任意命令开放；R3 仅暴露无进程环境查询，P08 固定进程动作仍在安全复核和 MCP 接入前不对远程客户端暴露。
+- 未完成独立审查、生产发布或任意命令开放；R4/P08 虽已有 Windows 固定映像/句柄守卫、单进程 Job、command profile 和一次性确认本地核心，但 network deny 执行器、profile→probe 生产接线、执行期 SHA256/签名校验和 MCP `run_probe` 均未完成，远程命令必须保持关闭。
 
 ## 五、下一执行者的明确入口
 
-P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、literal 搜索、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1 和 R3 的无进程 `discover_tools`/`get_environment` 已完成本地 MCP 接入、脱敏/allowlist 测试，但尚未声称新增工具的真实 Business 复测。下一步按 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md) 推进 R2 的 lines/tail/snapshot 与 R4 的 P08 TOCTOU 修复和固定探针；后者必须通过 Windows/Unix 硬门后才可考虑 MCP 暴露。不开放模型自定义 command、args、cwd、env 或 timeout。
+P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R4 下一步只做 Windows 本地硬门复核和 profile→probe/network/SHA256 缺口补齐；在这些条件完成前不注册 MCP `run_probe`，也不开放模型自定义 command、args、cwd、env、timeout 或任何写入能力。
+
 
 R5 受控 Git read actions、R6 P09/P10 多 connection/supervisor/recovery、R7 证据驱动的 index、R8 GUI/tray、R9 发布与独立审查依次推进；P14 写入始终独立。P04 的本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台仍按路线的停止条件跟踪，不把本地有界验证写成生产安全结论。

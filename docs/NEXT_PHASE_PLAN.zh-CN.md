@@ -4,7 +4,7 @@
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证；P08 只有固定探针核心，尚未接入远程 MCP。P09/P10 及发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、command profile 和一次性确认本地核心，但尚未完成 network deny 执行器、profile→probe 生产接线、执行期 SHA256 或远程 MCP `run_probe`。P09/P10 及发布级审查仍未完成。
 
 ## 一、能力分层与不变边界
 
@@ -55,7 +55,7 @@ Git、解释器、网络、写入和可产生项目状态的动作必须单独�
     {
       "id": "codex_version",
       "kind": "version_probe",
-      "platform": ["windows", "linux", "darwin"],
+      "platform": ["windows"],
       "executable": "C:\\Program Files\\Vendor\\codex.exe",
       "identity": {
         "require_regular": true,
@@ -116,7 +116,9 @@ Git、解释器、网络、写入和可产生项目状态的动作必须单独�
 
 契约约束：
 
-- `executable` 必须是绝对路径；运行时还要重新检查 regular file、reparse/symlink、identity、可选 hash/签名。模型不能传路径。
+- `executable` 必须是绝对路径；Windows 本地核心会重新检查 regular file、PE、reparse/symlink、
+  handle identity 和挂起进程实际映像。当前 profile 的 `sha256` 只做格式校验，执行期摘要/签名
+  校验尚未接入；模型不能传路径。
 - `argv.variants[].exact` 是服务端拥有的完整参数序列；远端只能引用已配置的 `variant_id`。slot 只允许枚举、受限路径或有界整数，不能允许自由字符串。路径必须是 `root_id + relative path`，不能拼接 OS 绝对路径。
 - `kind`、variants、exact argv 和 slot 定义均不可由 MCP 修改；规则 revision 改变后旧授权失效。
 - `cwd` 只允许 `private_empty` 或已授权 root-relative 目录。cwd 本身不是文件系统沙箱；没有 OS 级隔离时不得声称子进程只能访问该 root。
@@ -125,18 +127,22 @@ Git、解释器、网络、写入和可产生项目状态的动作必须单独�
 - `confirmation` 必须由本地 UI/CLI 产生一次性、短期、绑定 request/command revision 的授权；模型文本中的“我确认”不算确认。
 - `result` 优先是 `version`、`exists`、受限 `paths`、`exit_status` 等结构化结果。绝对路径、完整 argv、原始输出默认不出远程端。
 
-## 三、P08 前置硬门：先解决 executable launch TOCTOU
+## 三、P08 前置硬门：Windows 本地 TOCTOU 核心已实现，生产硬门仍未全部通过
 
-当前 audit-by-path 到 execute-by-path 存在窗口：`ToolVersion` 在启动前和结束后检查 identity，但路径检查和真正创建进程之间仍可能被替换。Windows 当前虽使用 suspended process 和 Job Object，仍需在恢复主线程前验证实际映像；Unix 当前按路径启动，不能仅靠事后检查保证执行的是被审计文件。
+Windows 本地 launcher 已使用固定路径/PE 检查、父目录与最终映像句柄守卫、挂起进程、Job
+Object 和 resume 前实际映像复核，不能再把它描述成单纯 audit-by-path→execute-by-path。
+但 R4 仍未完成：执行期 SHA256/签名校验、OS network deny 执行器、profile→probe 生产接线、
+完整 command/network/policy audit 和 MCP 暴露均缺失。Unix 当前按路径启动，不能仅靠事后检查
+保证执行的是被审计文件；本轮不做 Linux 测试。
 
 ### Windows 硬门
 
-1. 使用显式 application name，不让命令行解析决定实际 executable。
-2. 只允许经过检查的 PE executable；首版拒绝 `.cmd`、`.bat`、`.ps1`、`.lnk`、`.url` 等 wrapper/脚本。
-3. 以 `CREATE_SUSPENDED` 创建并立即加入 Job Object。
-4. 在 resume 前查询实际进程映像，比较 file identity、路径及需要时的 hash/签名。
-5. 验证失败终止 Job；验证通过才恢复主线程。
-6. 保留 Job Object kill-on-close、无窗口、输出/超时和完整子进程回收。
+1. **已实现（Windows 核心）**：使用显式 application name，不让命令行解析决定实际 executable。
+2. **已实现（Windows 核心）**：只允许经过检查的 PE executable；拒绝 `.cmd`、`.bat`、`.ps1`、`.lnk`、`.url` 等 wrapper/脚本。
+3. **已实现（Windows 核心）**：以 `CREATE_SUSPENDED` 创建并立即加入 Job Object。
+4. **部分实现**：resume 前查询实际进程映像并比较路径/handle identity；配置的 SHA256/签名尚未在执行期核对。
+5. **已实现（Windows 核心）**：验证失败终止 Job；验证通过才恢复主线程。
+6. **已实现（Windows 核心）**：保留 Job Object kill-on-close、单进程限制、无窗口、输出/超时和完整子进程回收。
 
 ### Unix 硬门
 
@@ -265,7 +271,13 @@ GUI 页面后端先定义：overview、connections、roots/profile/egress previe
 
 ### R4：P08 TOCTOU 与固定 command profiles/developer mode
 
-依赖：R0、P04/P05；可与 R1/R3 并行，但远程暴露必须等其硬门全部通过。产物：Windows suspended-image 验证、Unix fd-based launcher、固定 probe profiles、developer mode 本地确认、结构化输出和 audit 事件。验收：替换/脚本/wrapper/环境注入/子进程/超时/网络测试通过；无法证明的 OS fail closed。停止条件：仍只能 audit-by-path 到 execute-by-path、无法证明 network deny、或原始输出会泄露秘密时不接 MCP。
+状态：Windows 固定路径/PE/句柄守卫、挂起映像复核、单进程 Job、私有环境/cwd/输出/超时、
+固定 command profile 校验和一次性确认核心已实现；仍属于 local-only，不能接入远程 MCP。
+依赖：R0、P04/P05；可与 R1/R2/R3 的非进程部分并行，但远程暴露必须等全部硬门通过。
+剩余产物：OS network deny 执行器、profile→probe 生产接线、执行期 SHA256/签名校验、Unix
+fd-based launcher、结构化 probe/audit 事件和 Windows 本地手测证据。验收：替换/脚本/wrapper/
+环境注入/子进程/超时/网络测试通过；无法证明的 OS fail closed。停止条件：network deny
+无法证明、profile 仍未安全接线、SHA256/签名约束未执行、或原始输出会泄露秘密时不接 MCP。
 
 ### R5：受控 Git read actions
 
@@ -291,8 +303,8 @@ GUI 页面后端先定义：overview、connections、roots/profile/egress previe
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；R5 与 R6 可在 R4 通过后分别推进；R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据。
 
-现在做：先执行 R0 文档/契约冻结，再做 R1 direct 读取和资源边界、R3 无进程环境发现；随后按证据推进 R2 和 R4。日志、审计和资源预算从 R1 起成为基础设施。
+现在做：先完成 Windows R4 本地手测和文档/契约冻结，再补 network deny、profile→probe、执行期 SHA256/签名与审计接线；在硬门全部通过前保持 MCP `run_probe` 不注册。R1/R2/R3 的读取、搜索和无进程环境能力继续按既有边界演进。日志、审计和资源预算从 R1 起成为基础设施。
 
-暂不做：raw command line、Shell、allow_any_suffix、模型自定义 args/env/cwd/timeout、未经隔离的 `codex -v`、把 root 直接交给 rg、默认开启 index、统一 workspace_query、自动执行项目脚本、GUI 绕过后端权限以及任何写入能力。
+暂不做：MCP `run_probe`、raw command line、Shell、allow_any_suffix、模型自定义 args/env/cwd/timeout、未经 network deny/生产接线/SHA256 硬门的 `codex -v`、把 root 直接交给 rg、默认开启 index、统一 workspace_query、自动执行项目脚本、GUI 绕过后端权限以及任何写入能力。
 
 对用户提出的四项调整，当前裁决是：自定义命令可以做，但语义只能是本地规则模板；优先提升 direct 读取能力，索引后置；日志立即建设；GUI/tray 后置，但先冻结 supervisor、audit、权限和配置边界。

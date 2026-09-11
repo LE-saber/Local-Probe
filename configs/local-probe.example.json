@@ -4,7 +4,7 @@
     {
       "id": "project",
       "path": "D:/replace/with/an/absolute/project/path",
-      "deny_patterns": [".env", ".env.*", "secrets/**", "manual-test-targets/denied/**"],
+      "deny_patterns": [".env", ".env.*", "secrets/**", "manual-test-targets/denied/**", "manual-test-targets/r2/denied/**"],
       "ignore_patterns": [".git/**", "node_modules/**", "vendor/**", "*.tmp"]
     }
   ],
@@ -22,7 +22,8 @@
         "search_text",
         "tree_directory",
         "get_environment",
-        "discover_tools"
+        "discover_tools",
+        "workspace_snapshot"
       ],
       "deny_patterns": [],
       "ignore_patterns": [],

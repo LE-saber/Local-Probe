@@ -49,13 +49,33 @@ func ValidPath(p string) bool {
 	return true
 }
 
-func validateRequest(r Request, scope Scope, maxBytes int) *ItemError {
+func validateRequest(r Request, scope Scope, limits Limits) *ItemError {
 	if !validID(r.File.RootID) || !ValidPath(r.File.Path) || r.Offset < 0 ||
-		r.MaxBytes < 0 || r.MaxBytes > maxBytes || len(r.ExpectedVersion) > 256 || !utf8.ValidString(r.ExpectedVersion) {
-		return issue("invalid_request", "use a canonical relative path and a bounded nonnegative byte range")
+		r.MaxBytes < 0 || r.MaxBytes > limits.MaxItemBytes || len(r.ExpectedVersion) > 256 || !utf8.ValidString(r.ExpectedVersion) {
+		return issue("invalid_request", "use a canonical relative path and a bounded read range")
 	}
 	if !scope.Allows(r.File.RootID) {
 		return issue("denied", "root is not authorized for this connection")
+	}
+	if r.Range.Kind != "" && r.Range.Kind != RangeBytes && r.Range.Kind != RangeLines && r.Range.Kind != RangeTail {
+		return issue("invalid_request", "range kind must be bytes, lines, or tail")
+	}
+	switch r.Range.Kind {
+	case RangeLines:
+		if r.Offset != 0 || r.Range.StartLine < 1 || r.Range.MaxLines < 1 || r.Range.MaxLines > 1<<20 || r.Range.TailLines != 0 {
+			return issue("invalid_request", "lines requires a positive one-based start_line and max_lines")
+		}
+	case RangeTail:
+		if r.Offset != 0 || r.Range.TailLines < 1 || r.Range.TailLines > 1<<20 || r.Range.StartLine != 0 || r.Range.MaxLines != 0 {
+			return issue("invalid_request", "tail requires a positive tail_lines count")
+		}
+	default:
+		if r.Range.StartLine != 0 || r.Range.MaxLines != 0 || r.Range.TailLines != 0 || r.Range.MaxScanBytes != 0 {
+			return issue("invalid_request", "byte ranges cannot contain line or scan options")
+		}
+	}
+	if r.Range.MaxScanBytes < 0 || r.Range.MaxScanBytes > limits.MaxScanBytes {
+		return issue("invalid_request", "max_scan_bytes exceeds the configured scan budget")
 	}
 	return nil
 }

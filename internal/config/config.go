@@ -14,6 +14,8 @@ import (
 	"sync"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/LE-saber/Local-Probe/internal/commandprofile"
 )
 
 const SchemaVersionV1 = "local-probe.config.v1"
@@ -135,6 +137,8 @@ type Config struct {
 	connections      []Connection
 	credentials      []CredentialRef
 	environmentTools []EnvironmentTool
+	developerMode    commandprofile.DeveloperMode
+	commandProfiles  []commandprofile.Profile
 }
 
 func NewRoot(id, rootPath string, denyPatterns []string) (Root, error) {
@@ -184,6 +188,26 @@ func New(schemaVersion string, roots []Root, profiles []Profile, connections []C
 	return NewWithEnvironmentTools(schemaVersion, roots, profiles, connections, credentials, nil)
 }
 
+// NewWithCommandProfiles extends the trusted local configuration with the
+// developer-mode command profile layer. Command profiles are immutable and
+// are never accepted from MCP request parameters.
+func NewWithCommandProfiles(schemaVersion string, roots []Root, profiles []Profile, connections []Connection, credentials []CredentialRef, environmentTools []EnvironmentTool, developerMode commandprofile.DeveloperMode, commandProfiles []commandprofile.Profile) (Config, error) {
+	c := Config{
+		schemaVersion:    schemaVersion,
+		roots:            cloneRoots(roots),
+		profiles:         cloneProfiles(profiles),
+		connections:      append([]Connection(nil), connections...),
+		credentials:      append([]CredentialRef(nil), credentials...),
+		environmentTools: cloneEnvironmentTools(environmentTools),
+		developerMode:    developerMode.Clone(),
+		commandProfiles:  cloneCommandProfiles(commandProfiles),
+	}
+	if err := c.validate(); err != nil {
+		return Config{}, err
+	}
+	return c, nil
+}
+
 func (c Config) SchemaVersion() string { return c.schemaVersion }
 
 func (c Config) Roots() []Root {
@@ -200,6 +224,23 @@ func (c Config) Connections() []Connection {
 
 func (c Config) Credentials() []CredentialRef {
 	return append([]CredentialRef(nil), c.credentials...)
+}
+
+func (c Config) DeveloperMode() commandprofile.DeveloperMode {
+	return c.developerMode.Clone()
+}
+
+func (c Config) CommandProfiles() []commandprofile.Profile {
+	return cloneCommandProfiles(c.commandProfiles)
+}
+
+func (c Config) CommandProfile(id string) (commandprofile.Profile, bool) {
+	for _, profile := range c.commandProfiles {
+		if profile.ID() == id {
+			return profile.Clone(), true
+		}
+	}
+	return commandprofile.Profile{}, false
 }
 
 func (c Config) Root(id string) (Root, bool) {
@@ -246,6 +287,8 @@ func (c Config) Clone() Config {
 		connections:      append([]Connection(nil), c.connections...),
 		credentials:      append([]CredentialRef(nil), c.credentials...),
 		environmentTools: cloneEnvironmentTools(c.environmentTools),
+		developerMode:    c.developerMode.Clone(),
+		commandProfiles:  cloneCommandProfiles(c.commandProfiles),
 	}
 }
 
@@ -299,6 +342,15 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		Connections:      make([]rawConnection, len(c.connections)),
 		Credentials:      make([]rawCredential, len(c.credentials)),
 		EnvironmentTools: make([]rawEnvironmentTool, len(c.environmentTools)),
+	}
+	if c.developerMode.Enabled() || len(c.developerMode.AllowedConnections()) > 0 || len(c.commandProfiles) > 0 {
+		raw.DeveloperMode = marshalDeveloperMode(c.developerMode)
+	}
+	if len(c.commandProfiles) > 0 {
+		raw.CommandProfiles = make([]rawCommandProfile, len(c.commandProfiles))
+		for i, profile := range c.commandProfiles {
+			raw.CommandProfiles[i] = marshalCommandProfile(profile)
+		}
 	}
 	for i, root := range c.roots {
 		raw.Roots[i] = rawRoot{ID: root.id, Path: root.path, DenyPatterns: append([]string(nil), root.denyPatterns...), IgnorePatterns: append([]string(nil), root.ignorePatterns...)}
@@ -414,6 +466,8 @@ type rawConfig struct {
 	Connections      []rawConnection      `json:"connections"`
 	Credentials      []rawCredential      `json:"credentials"`
 	EnvironmentTools []rawEnvironmentTool `json:"environment_tools,omitempty"`
+	DeveloperMode    *rawDeveloperMode    `json:"developer_mode,omitempty"`
+	CommandProfiles  []rawCommandProfile  `json:"command_profiles,omitempty"`
 }
 
 type rawRoot struct {
@@ -447,6 +501,14 @@ type rawCredential struct {
 
 func fromRaw(raw rawConfig) (Config, error) {
 	c := Config{schemaVersion: raw.SchemaVersion}
+	c.developerMode = commandprofile.DefaultDeveloperMode()
+	if raw.DeveloperMode != nil {
+		mode, err := parseDeveloperMode(*raw.DeveloperMode)
+		if err != nil {
+			return Config{}, err
+		}
+		c.developerMode = mode
+	}
 	c.roots = make([]Root, len(raw.Roots))
 	for i, root := range raw.Roots {
 		c.roots[i] = Root{id: root.ID, path: root.Path, denyPatterns: append([]string(nil), root.DenyPatterns...), ignorePatterns: append([]string(nil), root.IgnorePatterns...)}
@@ -492,6 +554,16 @@ func fromRaw(raw rawConfig) (Config, error) {
 				candidateFiles: append([]string(nil), tool.CandidateFiles...),
 				candidateDirs:  append([]string(nil), tool.CandidateDirs...),
 			}
+		}
+	}
+	if raw.CommandProfiles != nil {
+		c.commandProfiles = make([]commandprofile.Profile, len(raw.CommandProfiles))
+		for i, rawProfile := range raw.CommandProfiles {
+			profile, err := parseCommandProfile(rawProfile)
+			if err != nil {
+				return Config{}, fmt.Errorf("%w: command_profiles[%d]: %v", ErrInvalid, i, err)
+			}
+			c.commandProfiles[i] = profile
 		}
 	}
 	if err := c.validate(); err != nil {
@@ -558,7 +630,13 @@ func (c Config) validate() error {
 			return invalid(field+".credential_ref", "unknown credential reference")
 		}
 	}
-	return validateEnvironmentTools(c.environmentTools)
+	if err := validateEnvironmentTools(c.environmentTools); err != nil {
+		return err
+	}
+	if err := commandprofile.ValidateProfiles(c.commandProfiles); err != nil {
+		return err
+	}
+	return validateDeveloperModeConnections(c.developerMode, connectionIDs)
 }
 
 func validateRoot(root Root, field string) error {

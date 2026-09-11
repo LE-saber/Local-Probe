@@ -20,6 +20,29 @@ type Metadata struct {
 	Version Version
 }
 
+// RangeKind selects the bounded read strategy. An empty kind is the legacy
+// byte-range request and is treated as bytes by Engine.
+type RangeKind string
+
+const (
+	RangeBytes RangeKind = "bytes"
+	RangeLines RangeKind = "lines"
+	RangeTail  RangeKind = "tail"
+)
+
+// RangeSpec extends the original byte request without changing its wire
+// fields. Lines are one-based and include the terminating newline when one is
+// present. TailLines returns the last N newline-delimited records, preserving
+// the original bytes. MaxScanBytes is a hard scan/IO bound for lines and tail;
+// it never causes an implicit whole-file read.
+type RangeSpec struct {
+	Kind         RangeKind `json:"kind,omitempty"`
+	StartLine    int64     `json:"start_line,omitempty"`
+	MaxLines     int       `json:"max_lines,omitempty"`
+	TailLines    int       `json:"tail_lines,omitempty"`
+	MaxScanBytes int       `json:"max_scan_bytes,omitempty"`
+}
+
 // Handle must refer to the SAME opened regular file for its entire lifetime.
 // Metadata must be bounded and must not hash/read the entire file on every call.
 // Implementations must honor context cancellation where the OS permits it.
@@ -69,10 +92,11 @@ func (s Scope) ProfileRevision() string { return s.revision }
 func (s Scope) Allows(root string) bool { _, ok := s.roots[root]; return ok }
 
 type Request struct {
-	File            FileRef `json:"file"`
-	Offset          int64   `json:"offset"`
-	MaxBytes        int     `json:"max_bytes"` // zero uses the configured per-item maximum
-	ExpectedVersion string  `json:"expected_version,omitempty"`
+	File            FileRef   `json:"file"`
+	Offset          int64     `json:"offset"`
+	MaxBytes        int       `json:"max_bytes"` // zero uses the configured per-item maximum
+	ExpectedVersion string    `json:"expected_version,omitempty"`
+	Range           RangeSpec `json:"range,omitempty"`
 }
 
 type ItemError struct {
@@ -88,11 +112,16 @@ type Result struct {
 	EndOffset      int64      `json:"end_offset"`
 	SizeBytes      int64      `json:"size_bytes"`
 	Version        Version    `json:"version"`
+	RangeKind      RangeKind  `json:"range_kind,omitempty"`
+	StartLine      int64      `json:"start_line,omitempty"`
+	EndLine        int64      `json:"end_line,omitempty"`
 	Content        string     `json:"content,omitempty"`
 	EOF            bool       `json:"eof"`
+	Complete       bool       `json:"complete"`
 	NextOffset     *int64     `json:"next_offset,omitempty"`
 	AllocatedBytes int        `json:"allocated_bytes"`
 	BytesRead      int        `json:"bytes_read"`
+	ScannedBytes   int        `json:"scanned_bytes"`
 	Error          *ItemError `json:"error,omitempty"`
 }
 
@@ -101,7 +130,9 @@ type BatchResult struct {
 	Items         []Result `json:"items"`
 	ReturnedBytes int      `json:"returned_bytes"`
 	BytesRead     int      `json:"bytes_read"`
+	ScannedBytes  int      `json:"scanned_bytes"`
 	Failed        int      `json:"failed"`
+	Complete      bool     `json:"complete"`
 }
 
 // Limits constrain kernel payload/I/O only. MCP must separately bound request
@@ -112,12 +143,15 @@ type Limits struct {
 	MaxItemBytes   int
 	MaxOutputBytes int
 	MaxReadBytes   int
+	MaxScanBytes   int
+	BlockBytes     int
 	Timeout        time.Duration
 }
 
 func DefaultLimits() Limits {
 	return Limits{MaxItems: 32, Workers: 4, MaxItemBytes: 32 << 10,
-		MaxOutputBytes: 128 << 10, MaxReadBytes: 8 << 20, Timeout: 10 * time.Second}
+		MaxOutputBytes: 128 << 10, MaxReadBytes: 8 << 20, MaxScanBytes: 8 << 20,
+		BlockBytes: 32 << 10, Timeout: 10 * time.Second}
 }
 
 func (l Limits) validate() error {
@@ -125,6 +159,8 @@ func (l Limits) validate() error {
 		l.MaxItemBytes < 1 || l.MaxItemBytes > 1<<20 ||
 		l.MaxOutputBytes < 1 || l.MaxOutputBytes > 8<<20 ||
 		l.MaxReadBytes < 1 || l.MaxReadBytes > 16<<20 ||
+		l.MaxScanBytes < 1 || l.MaxScanBytes > 64<<20 ||
+		l.BlockBytes < 1 || l.BlockBytes > 1<<20 ||
 		l.Timeout <= 0 || l.Timeout > 30*time.Second {
 		return fmt.Errorf("limits exceed kernel safety bounds")
 	}

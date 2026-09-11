@@ -42,7 +42,9 @@ func main() {
 			childCommand := exec.Command(os.Args[0], "child")
 			childCommand.Stdout = os.Stdout
 			childCommand.Stderr = os.Stderr
-			_ = childCommand.Start()
+			if err := childCommand.Start(); err != nil {
+				fmt.Fprintln(os.Stderr, "child-start-failed")
+			}
 		}
 		if child {
 			fmt.Fprintln(os.Stdout, os.Getpid())

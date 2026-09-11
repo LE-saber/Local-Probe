@@ -26,6 +26,7 @@ import (
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/readcore"
 	"github.com/LE-saber/Local-Probe/internal/search"
+	"github.com/LE-saber/Local-Probe/internal/workspacesnapshot"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -35,17 +36,18 @@ const (
 	ServerName    = "local-probe"
 	ServerVersion = "0.1.0-alpha"
 
-	ToolServerInfo     = "server_info"
-	ToolPing           = "ping"
-	ToolReadFile       = "read_file"
-	ToolBatchRead      = "batch_read"
-	ToolListDirectory  = "list_directory"
-	ToolFindFiles      = "find_files"
-	ToolSearchText     = "search_text"
-	ToolTreeDirectory  = "tree_directory"
-	ToolGetEnvironment = "get_environment"
-	ToolDiscoverTools  = "discover_tools"
-	LocalTokenHeader   = "X-Local-Probe-Token"
+	ToolServerInfo        = "server_info"
+	ToolPing              = "ping"
+	ToolReadFile          = "read_file"
+	ToolBatchRead         = "batch_read"
+	ToolListDirectory     = "list_directory"
+	ToolFindFiles         = "find_files"
+	ToolSearchText        = "search_text"
+	ToolTreeDirectory     = "tree_directory"
+	ToolGetEnvironment    = "get_environment"
+	ToolDiscoverTools     = "discover_tools"
+	ToolWorkspaceSnapshot = "workspace_snapshot"
+	LocalTokenHeader      = "X-Local-Probe-Token"
 
 	// CloudflareAccessHeader is re-exported for callers that need to construct
 	// a local integration test request without depending on the cfaccess
@@ -96,12 +98,13 @@ type Options struct {
 	// CloudflareAccess selects the explicit Cloudflare Access ingress. When it
 	// is non-nil, local Credentials must be empty and every request must carry
 	// a valid Cf-Access-Jwt-Assertion plus a trusted public Host.
-	CloudflareAccess      *cfaccess.Verifier
-	CloudflarePublicHosts []string
-	Limits                readcore.Limits
-	SearchLimits          search.Limits
-	SearchCursorKey       []byte
-	MaxBodyBytes          int64
+	CloudflareAccess        *cfaccess.Verifier
+	CloudflarePublicHosts   []string
+	Limits                  readcore.Limits
+	SearchLimits            search.Limits
+	SearchCursorKey         []byte
+	WorkspaceSnapshotLimits workspacesnapshot.Limits
+	MaxBodyBytes            int64
 	// MaxResponseBytes bounds the serialized MCP CallToolResult content. The
 	// JSON-RPC envelope adds a small amount of transport overhead; callers that
 	// impose a hard wire cap should leave room for that envelope.
@@ -126,6 +129,7 @@ type Server struct {
 	auditID             atomic.Uint64
 	handler             http.Handler
 	search              *search.Service
+	snapshot            *workspacesnapshot.Engine
 }
 
 type credential struct {
@@ -229,6 +233,11 @@ func New(opts Options) (*Server, error) {
 			return nil, fmt.Errorf("%w: invalid search options", ErrInvalidOptions)
 		}
 		s.search = searchService
+		snapshot, snapshotErr := workspacesnapshot.NewWithBinder(binder, opts.WorkspaceSnapshotLimits)
+		if snapshotErr != nil {
+			return nil, fmt.Errorf("%w: invalid workspace snapshot options", ErrInvalidOptions)
+		}
+		s.snapshot = snapshot
 	}
 	s.handler = s.buildHandler()
 	return s, nil
@@ -282,14 +291,14 @@ func (s *Server) buildHandler() http.Handler {
 	}, s.handlePing)
 	addTool(server, &mcp.Tool{
 		Name:         ToolReadFile,
-		Description:  "Read one bounded UTF-8 byte range from an authorized regular file.",
+		Description:  "Read one bounded UTF-8 byte, line, or tail range from an authorized regular file.",
 		InputSchema:  readFileInputSchema,
 		OutputSchema: readFileOutputSchema,
 		Annotations:  readOnlyAnnotations(),
 	}, s.handleReadFile)
 	addTool(server, &mcp.Tool{
 		Name:         ToolBatchRead,
-		Description:  "Read a bounded batch of authorized UTF-8 byte ranges with deterministic partial results.",
+		Description:  "Read a bounded batch of authorized UTF-8 byte, line, or tail ranges with deterministic partial results.",
 		InputSchema:  batchReadInputSchema,
 		OutputSchema: batchReadOutputSchema,
 		Annotations:  readOnlyAnnotations(),
@@ -336,6 +345,13 @@ func (s *Server) buildHandler() http.Handler {
 		OutputSchema: discoverToolsOutputSchema,
 		Annotations:  readOnlyAnnotations(),
 	}, s.handleDiscoverTools)
+	addTool(server, &mcp.Tool{
+		Name:         ToolWorkspaceSnapshot,
+		Description:  "Return a bounded, path-evidenced workspace outline without executing project files or claiming a strong snapshot.",
+		InputSchema:  workspaceSnapshotInputSchema,
+		OutputSchema: workspaceSnapshotOutputSchema,
+		Annotations:  readOnlyAnnotations(),
+	}, s.handleWorkspaceSnapshot)
 
 	streamableOptions := func(stateless bool) *mcp.StreamableHTTPOptions {
 		return &mcp.StreamableHTTPOptions{
@@ -722,7 +738,8 @@ func auditResultBytes(result mcp.Result) int64 {
 func isRegisteredAuditAction(value string) bool {
 	switch value {
 	case ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory,
-		ToolFindFiles, ToolSearchText, ToolTreeDirectory, ToolGetEnvironment, ToolDiscoverTools:
+		ToolFindFiles, ToolSearchText, ToolTreeDirectory, ToolGetEnvironment, ToolDiscoverTools,
+		ToolWorkspaceSnapshot:
 		return true
 	default:
 		// Never copy an arbitrary client-supplied tool name into an audit record.
@@ -766,19 +783,21 @@ func (s *Server) engine(ctx context.Context, tool string) (*readcore.Engine, rea
 }
 
 type readFileInput struct {
-	RootID          string `json:"root_id"`
-	Path            string `json:"path"`
-	Offset          int64  `json:"offset,omitempty"`
-	MaxBytes        int    `json:"max_bytes,omitempty"`
-	ExpectedVersion string `json:"expected_version,omitempty"`
+	RootID          string             `json:"root_id"`
+	Path            string             `json:"path"`
+	Offset          int64              `json:"offset,omitempty"`
+	MaxBytes        int                `json:"max_bytes,omitempty"`
+	ExpectedVersion string             `json:"expected_version,omitempty"`
+	Range           readcore.RangeSpec `json:"range,omitempty"`
 }
 
 type batchReadItem struct {
-	RootID          string `json:"root_id"`
-	Path            string `json:"path"`
-	Offset          int64  `json:"offset,omitempty"`
-	MaxBytes        int    `json:"max_bytes,omitempty"`
-	ExpectedVersion string `json:"expected_version,omitempty"`
+	RootID          string             `json:"root_id"`
+	Path            string             `json:"path"`
+	Offset          int64              `json:"offset,omitempty"`
+	MaxBytes        int                `json:"max_bytes,omitempty"`
+	ExpectedVersion string             `json:"expected_version,omitempty"`
+	Range           readcore.RangeSpec `json:"range,omitempty"`
 }
 
 type batchReadInput struct {
@@ -831,7 +850,33 @@ type batchReadOutput struct {
 	Items         []readcore.Result `json:"items"`
 	ReturnedBytes int               `json:"returned_bytes"`
 	BytesRead     int               `json:"bytes_read"`
+	ScannedBytes  int               `json:"scanned_bytes"`
 	Failed        int               `json:"failed"`
+	Complete      bool              `json:"complete"`
+}
+
+type workspaceSnapshotInput struct {
+	RootID       string `json:"root_id"`
+	Path         string `json:"path,omitempty"`
+	MaxDepth     int    `json:"max_depth,omitempty"`
+	MaxEntries   int    `json:"max_entries,omitempty"`
+	MaxReadBytes int    `json:"max_read_bytes,omitempty"`
+	Cursor       string `json:"cursor,omitempty"`
+}
+
+type workspaceSnapshotOutput struct {
+	SchemaVersion      string                                `json:"schema_version"`
+	RequestID          string                                `json:"request_id"`
+	RootID             string                                `json:"root_id"`
+	Path               string                                `json:"path"`
+	Outline            []workspacesnapshot.OutlineEntry      `json:"outline"`
+	ManifestCandidates []workspacesnapshot.ManifestCandidate `json:"manifest_candidates"`
+	LanguageStats      []workspacesnapshot.LanguageStat      `json:"language_stats"`
+	EvidencePaths      []workspacesnapshot.EvidencePath      `json:"evidence_paths"`
+	Coverage           workspacesnapshot.Coverage            `json:"coverage"`
+	Warnings           []string                              `json:"warnings,omitempty"`
+	Budget             workspacesnapshot.Budget              `json:"budget"`
+	Continuation       string                                `json:"continuation,omitempty"`
 }
 
 func (s *Server) searchErrorResult(err error) *mcp.CallToolResult {
@@ -1103,8 +1148,8 @@ func (s *Server) handleServerInfo(ctx context.Context, _ *mcp.CallToolRequest) (
 	if err != nil {
 		return errorResult("unauthorized", "authentication is required"), nil
 	}
-	tools := make([]string, 0, 10)
-	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText, ToolTreeDirectory, ToolGetEnvironment, ToolDiscoverTools} {
+	tools := make([]string, 0, 11)
+	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText, ToolTreeDirectory, ToolGetEnvironment, ToolDiscoverTools, ToolWorkspaceSnapshot} {
 		if bound.AllowsTool(name) {
 			tools = append(tools, name)
 		}
@@ -1143,6 +1188,7 @@ func (s *Server) handleReadFile(ctx context.Context, req *mcp.CallToolRequest) (
 		Offset:          input.Offset,
 		MaxBytes:        input.MaxBytes,
 		ExpectedVersion: input.ExpectedVersion,
+		Range:           input.Range,
 	}})
 	if err != nil {
 		return errorResult("invalid_request", "read request was rejected"), nil
@@ -1170,6 +1216,7 @@ func (s *Server) handleBatchRead(ctx context.Context, req *mcp.CallToolRequest) 
 			Offset:          item.Offset,
 			MaxBytes:        item.MaxBytes,
 			ExpectedVersion: item.ExpectedVersion,
+			Range:           item.Range,
 		}
 	}
 	engine, scope, err := s.engine(ctx, ToolBatchRead)
@@ -1186,8 +1233,67 @@ func (s *Server) handleBatchRead(ctx context.Context, req *mcp.CallToolRequest) 
 		Items:         result.Items,
 		ReturnedBytes: result.ReturnedBytes,
 		BytesRead:     result.BytesRead,
+		ScannedBytes:  result.ScannedBytes,
 		Failed:        result.Failed,
+		Complete:      result.Complete,
 	}), nil
+}
+
+func (s *Server) handleWorkspaceSnapshot(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var input workspaceSnapshotInput
+	if err := decodeArguments(req, &input); err != nil {
+		return errorResult("invalid_request", "arguments must be a JSON object with supported fields"), nil
+	}
+	bound, err := s.boundScope(ctx)
+	if err != nil {
+		return errorResult("unauthorized", "authentication is required"), nil
+	}
+	if !bound.AllowsTool(ToolWorkspaceSnapshot) {
+		return deniedToolResult(), nil
+	}
+	if s.snapshot == nil {
+		return errorResult("unavailable", "workspace snapshot is unavailable"), nil
+	}
+	out, err := s.snapshot.Snapshot(ctx, bound, workspacesnapshot.Request{
+		RootID: input.RootID, Path: input.Path, MaxDepth: input.MaxDepth,
+		MaxEntries: input.MaxEntries, MaxReadBytes: input.MaxReadBytes, Cursor: input.Cursor,
+	})
+	if err != nil {
+		return workspaceSnapshotErrorResult(err), nil
+	}
+	return s.jsonResult(workspaceSnapshotOutput{
+		SchemaVersion:      out.SchemaVersion,
+		RequestID:          s.nextRequestID(),
+		RootID:             out.RootID,
+		Path:               out.Path,
+		Outline:            out.Outline,
+		ManifestCandidates: out.ManifestCandidates,
+		LanguageStats:      out.LanguageStats,
+		EvidencePaths:      out.EvidencePaths,
+		Coverage:           out.Coverage,
+		Warnings:           out.Warnings,
+		Budget:             out.Budget,
+		Continuation:       out.Continuation,
+	}), nil
+}
+
+func workspaceSnapshotErrorResult(err error) *mcp.CallToolResult {
+	code, message := "unavailable", "workspace snapshot is unavailable"
+	switch {
+	case errors.Is(err, workspacesnapshot.ErrInvalidRequest):
+		code, message = "invalid_request", "workspace snapshot arguments are invalid or exceed its budget"
+	case errors.Is(err, workspacesnapshot.ErrBudgetExceeded):
+		code, message = "budget_exhausted", "workspace snapshot exceeded its bounded output budget"
+	case errors.Is(err, workspacesnapshot.ErrDenied):
+		code, message = "denied", "workspace snapshot access is not authorized"
+	case errors.Is(err, workspacesnapshot.ErrStale):
+		code, message = "stale_version", "the workspace changed; restart the snapshot"
+	case errors.Is(err, context.Canceled):
+		code, message = "cancelled", "workspace snapshot was cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		code, message = "deadline_exceeded", "workspace snapshot deadline exceeded"
+	}
+	return errorResult(code, message)
 }
 
 func (s *Server) nextRequestID() string {
@@ -1353,11 +1459,12 @@ var readFileInputSchema = map[string]any{
 	"additionalProperties": false,
 	"required":             []string{"root_id", "path"},
 	"properties": map[string]any{
-		"root_id":          map[string]any{"type": "string", "minLength": 1},
-		"path":             map[string]any{"type": "string", "minLength": 1},
+		"root_id":          map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+		"path":             map[string]any{"type": "string", "minLength": 1, "maxLength": 4096},
 		"offset":           map[string]any{"type": "integer", "minimum": 0},
 		"max_bytes":        map[string]any{"type": "integer", "minimum": 0},
 		"expected_version": map[string]any{"type": "string"},
+		"range":            readRangeInputSchema,
 	},
 }
 
@@ -1375,11 +1482,12 @@ var batchReadInputSchema = map[string]any{
 				"additionalProperties": false,
 				"required":             []string{"root_id", "path"},
 				"properties": map[string]any{
-					"root_id":          map[string]any{"type": "string", "minLength": 1},
-					"path":             map[string]any{"type": "string", "minLength": 1},
+					"root_id":          map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+					"path":             map[string]any{"type": "string", "minLength": 1, "maxLength": 4096},
 					"offset":           map[string]any{"type": "integer", "minimum": 0},
 					"max_bytes":        map[string]any{"type": "integer", "minimum": 0},
 					"expected_version": map[string]any{"type": "string"},
+					"range":            readRangeInputSchema,
 				},
 			},
 		},
@@ -1422,8 +1530,192 @@ var discoverToolsOutputSchema = map[string]any{
 		},
 	},
 }
-var readFileOutputSchema = map[string]any{"type": "object"}
-var batchReadOutputSchema = map[string]any{"type": "object"}
+var readRangeInputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"kind"},
+	"properties": map[string]any{
+		"kind":           map[string]any{"type": "string", "enum": []string{"bytes", "lines", "tail"}},
+		"start_line":     map[string]any{"type": "integer", "minimum": 1, "maximum": 1048576},
+		"max_lines":      map[string]any{"type": "integer", "minimum": 1, "maximum": 1048576},
+		"tail_lines":     map[string]any{"type": "integer", "minimum": 1, "maximum": 1048576},
+		"max_scan_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 67108864},
+	},
+}
+
+var readResultSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"file", "offset", "end_offset", "size_bytes", "version", "eof", "complete", "allocated_bytes", "bytes_read", "scanned_bytes"},
+	"properties": map[string]any{
+		"file": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"root_id", "path"},
+			"properties": map[string]any{
+				"root_id": map[string]any{"type": "string"},
+				"path":    map[string]any{"type": "string"},
+			},
+		},
+		"offset":     map[string]any{"type": "integer", "minimum": 0},
+		"end_offset": map[string]any{"type": "integer", "minimum": 0},
+		"size_bytes": map[string]any{"type": "integer", "minimum": 0},
+		"version": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"token":    map[string]any{"type": "string"},
+				"strength": map[string]any{"type": "string", "enum": []string{"", "metadata", "snapshot"}},
+			},
+		},
+		"range_kind":      map[string]any{"type": "string", "enum": []string{"bytes", "lines", "tail"}},
+		"start_line":      map[string]any{"type": "integer", "minimum": 1},
+		"end_line":        map[string]any{"type": "integer", "minimum": 1},
+		"content":         map[string]any{"type": "string"},
+		"eof":             map[string]any{"type": "boolean"},
+		"complete":        map[string]any{"type": "boolean"},
+		"next_offset":     map[string]any{"type": []string{"integer", "null"}, "minimum": 0},
+		"allocated_bytes": map[string]any{"type": "integer", "minimum": 0},
+		"bytes_read":      map[string]any{"type": "integer", "minimum": 0},
+		"scanned_bytes":   map[string]any{"type": "integer", "minimum": 0},
+		"error": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"code", "message"},
+			"properties": map[string]any{
+				"code":    map[string]any{"type": "string"},
+				"message": map[string]any{"type": "string"},
+			},
+		},
+	},
+}
+
+var readFileOutputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"schema_version", "request_id", "item"},
+	"properties": map[string]any{
+		"schema_version": map[string]any{"type": "string"},
+		"request_id":     map[string]any{"type": "string"},
+		"item":           readResultSchema,
+	},
+}
+
+var batchReadOutputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"schema_version", "request_id", "items", "returned_bytes", "bytes_read", "scanned_bytes", "failed", "complete"},
+	"properties": map[string]any{
+		"schema_version": map[string]any{"type": "string"},
+		"request_id":     map[string]any{"type": "string"},
+		"items":          map[string]any{"type": "array", "items": readResultSchema},
+		"returned_bytes": map[string]any{"type": "integer", "minimum": 0},
+		"bytes_read":     map[string]any{"type": "integer", "minimum": 0},
+		"scanned_bytes":  map[string]any{"type": "integer", "minimum": 0},
+		"failed":         map[string]any{"type": "integer", "minimum": 0},
+		"complete":       map[string]any{"type": "boolean"},
+	},
+}
+
+var workspaceSnapshotInputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"root_id"},
+	"properties": map[string]any{
+		"root_id":        map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+		"path":           map[string]any{"type": "string", "maxLength": 4096},
+		"max_depth":      map[string]any{"type": "integer", "minimum": 0, "maximum": 32},
+		"max_entries":    map[string]any{"type": "integer", "minimum": 1, "maximum": 1024},
+		"max_read_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 67108864},
+		"cursor":         map[string]any{"type": "string", "maxLength": 262144},
+	},
+}
+
+var workspaceSnapshotOutputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"schema_version", "request_id", "root_id", "path", "outline", "manifest_candidates", "language_stats", "evidence_paths", "coverage", "budget"},
+	"properties": map[string]any{
+		"schema_version": map[string]any{"type": "string"},
+		"request_id":     map[string]any{"type": "string"},
+		"root_id":        map[string]any{"type": "string"},
+		"path":           map[string]any{"type": "string"},
+		"outline": map[string]any{"type": "array", "items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"path", "name", "type", "depth"},
+			"properties": map[string]any{
+				"path":       map[string]any{"type": "string"},
+				"name":       map[string]any{"type": "string"},
+				"type":       map[string]any{"type": "string"},
+				"depth":      map[string]any{"type": "integer", "minimum": 0},
+				"size_bytes": map[string]any{"type": "integer", "minimum": 0},
+			},
+		}},
+		"manifest_candidates": map[string]any{"type": "array", "items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"path", "kind", "evidence"},
+			"properties": map[string]any{
+				"path":     map[string]any{"type": "string"},
+				"kind":     map[string]any{"type": "string"},
+				"evidence": map[string]any{"type": "string"},
+			},
+		}},
+		"language_stats": map[string]any{"type": "array", "items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"language", "files", "bytes"},
+			"properties": map[string]any{
+				"language": map[string]any{"type": "string"},
+				"files":    map[string]any{"type": "integer", "minimum": 0},
+				"bytes":    map[string]any{"type": "integer", "minimum": 0},
+			},
+		}},
+		"evidence_paths": map[string]any{"type": "array", "items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"path", "reason"},
+			"properties": map[string]any{
+				"path":   map[string]any{"type": "string"},
+				"reason": map[string]any{"type": "string"},
+			},
+		}},
+		"coverage": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"complete", "scanned_entries", "returned_entries", "opened_files", "opened_directories", "read_bytes", "returned_bytes", "depth_limited_entries", "denied_entries", "ignored_entries", "unsupported_entries"},
+			"properties": map[string]any{
+				"complete":              map[string]any{"type": "boolean"},
+				"scanned_entries":       map[string]any{"type": "integer", "minimum": 0},
+				"returned_entries":      map[string]any{"type": "integer", "minimum": 0},
+				"opened_files":          map[string]any{"type": "integer", "minimum": 0},
+				"opened_directories":    map[string]any{"type": "integer", "minimum": 0},
+				"read_bytes":            map[string]any{"type": "integer", "minimum": 0},
+				"returned_bytes":        map[string]any{"type": "integer", "minimum": 0},
+				"depth_limited_entries": map[string]any{"type": "integer", "minimum": 0},
+				"denied_entries":        map[string]any{"type": "integer", "minimum": 0},
+				"ignored_entries":       map[string]any{"type": "integer", "minimum": 0},
+				"unsupported_entries":   map[string]any{"type": "integer", "minimum": 0},
+			},
+		},
+		"warnings": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"budget": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"max_depth", "max_entries", "max_read_bytes", "max_output_bytes", "max_open_files", "max_open_directories"},
+			"properties": map[string]any{
+				"max_depth":            map[string]any{"type": "integer", "minimum": 0},
+				"max_entries":          map[string]any{"type": "integer", "minimum": 1},
+				"max_read_bytes":       map[string]any{"type": "integer", "minimum": 1},
+				"max_output_bytes":     map[string]any{"type": "integer", "minimum": 1},
+				"max_open_files":       map[string]any{"type": "integer", "minimum": 1},
+				"max_open_directories": map[string]any{"type": "integer", "minimum": 1},
+			},
+		},
+		"continuation": map[string]any{"type": "string"},
+	},
+}
 
 var listDirectoryInputSchema = map[string]any{
 	"type": "object", "additionalProperties": false,

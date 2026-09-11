@@ -59,3 +59,46 @@ func TestWindowsRejectsSymlinkExecutable(t *testing.T) {
 		t.Fatalf("symlink: want ErrRejected, got %v", err)
 	}
 }
+
+func TestWindowsRejectsWrapperAndNonPEExecutables(t *testing.T) {
+	directory := t.TempDir()
+	data, err := os.ReadFile(helperPath("fake-node"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, extension := range []string{".cmd", ".bat", ".ps1", ".lnk", ".url", ".txt"} {
+		path := filepath.Join(directory, "candidate"+extension)
+		if err := os.WriteFile(path, data, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AuditExecutable(ToolNode, path); !errors.Is(err, ErrRejected) {
+			t.Errorf("%s: want ErrRejected, got %v", extension, err)
+		}
+	}
+}
+
+func TestWindowsExecutionGuardBlocksReplacementBeforeCreateProcess(t *testing.T) {
+	path := copyExecutable(t, helperPath("fake-node"), executableName("guarded"))
+	descriptor, err := AuditExecutable(ToolNode, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swappedPath := filepath.Join(filepath.Dir(path), "guarded-swap.exe")
+	guard, err := openWindowsExecutionGuard(path, descriptor.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renameErr := os.Rename(path, swappedPath)
+	writeErr := os.WriteFile(path, []byte("replacement"), 0600)
+	deleteErr := os.Remove(path)
+	guard.close()
+	if renameErr == nil {
+		t.Fatal("replacement rename succeeded while launch guard was held")
+	}
+	if writeErr == nil {
+		t.Fatal("replacement write succeeded while launch guard was held")
+	}
+	if deleteErr == nil {
+		t.Fatal("replacement delete succeeded while launch guard was held")
+	}
+}

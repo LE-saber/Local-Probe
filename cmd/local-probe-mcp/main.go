@@ -26,6 +26,7 @@ import (
 	"github.com/LE-saber/Local-Probe/internal/mcpserver"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/rootfs"
+	"github.com/LE-saber/Local-Probe/internal/workspacesnapshot"
 )
 
 const defaultListenAddr = "127.0.0.1:8787"
@@ -125,10 +126,11 @@ func run(args []string, stdout, stderr *os.File) error {
 		}
 	}()
 	options := mcpserver.Options{
-		Manager:          manager,
-		Source:           source,
-		EnvironmentTools: environmentToolSpecs(cfg),
-		Audit:            auditSink,
+		Manager:                 manager,
+		Source:                  source,
+		EnvironmentTools:        environmentToolSpecs(cfg),
+		WorkspaceSnapshotLimits: workspacesnapshot.DefaultLimits(),
+		Audit:                   auditSink,
 	}
 	if mode == ingressLocalToken {
 		options.Credentials = []mcpserver.Credential{{ConnectionID: *connectionID, Token: token}}

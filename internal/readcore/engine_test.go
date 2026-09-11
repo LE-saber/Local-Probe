@@ -158,17 +158,105 @@ func TestByteRangeAndContinuation(t *testing.T) {
 	source := &fixtureSource{files: map[string]fixture{"f.txt": {text: "abcdefghijkl"}}}
 	engine := engineFor(t, source, DefaultLimits())
 	first := read(t, engine, context.Background(), request("f.txt", 2, 4)).Items[0]
-	if first.Error != nil || first.Content != "cdef" || first.EndOffset != 6 || first.EOF || first.NextOffset == nil || *first.NextOffset != 6 {
+	if first.Error != nil || first.Content != "cdef" || first.EndOffset != 6 || first.EOF || first.Complete || first.NextOffset == nil || *first.NextOffset != 6 {
 		t.Fatalf("bad first page: %+v", first)
 	}
 	req := request("f.txt", *first.NextOffset, 10)
 	req.ExpectedVersion = first.Version.Token
 	last := read(t, engine, context.Background(), req).Items[0]
-	if last.Error != nil || last.Content != "ghijkl" || !last.EOF || last.NextOffset != nil {
+	if last.Error != nil || last.Content != "ghijkl" || !last.EOF || !last.Complete || last.NextOffset != nil {
 		t.Fatalf("bad last page: %+v", last)
 	}
 	if source.opens.Load() != 2 || source.closes.Load() != 2 {
 		t.Fatal("handle leak")
+	}
+}
+
+func TestBatchCompleteRequiresEveryItemToReachEOF(t *testing.T) {
+	source := &fixtureSource{files: map[string]fixture{"f.txt": {text: "abcdefghijkl"}}}
+	engine := engineFor(t, source, DefaultLimits())
+	result := read(t, engine, context.Background(), request("f.txt", 0, 4), request("f.txt", 8, 4))
+	if result.Failed != 0 || result.Items[0].Complete || !result.Items[1].Complete || result.Complete {
+		t.Fatalf("batch completeness ignored item continuation: %+v", result)
+	}
+	complete := read(t, engine, context.Background(), request("f.txt", 0, 12), request("f.txt", 8, 4))
+	if complete.Failed != 0 || !complete.Complete {
+		t.Fatalf("fully complete batch was marked incomplete: %+v", complete)
+	}
+}
+
+func TestLineRangeIncludesNewlinesAndReportsCoverage(t *testing.T) {
+	text := "one\n你好\nthree\nlast"
+	source := &fixtureSource{files: map[string]fixture{"f.txt": {text: text}}}
+	engine := engineFor(t, source, DefaultLimits())
+	req := request("f.txt", 0, 128)
+	req.Range = RangeSpec{Kind: RangeLines, StartLine: 2, MaxLines: 2}
+	item := read(t, engine, context.Background(), req).Items[0]
+	if item.Error != nil || item.Content != "你好\nthree\n" || item.StartLine != 2 || item.EndLine != 3 || item.Offset != 4 || item.EndOffset != 17 || item.EOF || !item.Complete {
+		t.Fatalf("bad line range: %+v", item)
+	}
+	if item.ScannedBytes != len(text) || item.BytesRead != len(text) {
+		t.Fatalf("line scan coverage was not reported: %+v", item)
+	}
+}
+
+func TestLineRangeLongLineIsBounded(t *testing.T) {
+	limits := DefaultLimits()
+	limits.BlockBytes = 8
+	limits.MaxScanBytes = 24
+	source := &fixtureSource{files: map[string]fixture{"long": {text: strings.Repeat("x", 128) + "\n"}}}
+	engine := engineFor(t, source, limits)
+	req := request("long", 0, 16)
+	req.Range = RangeSpec{Kind: RangeLines, StartLine: 1, MaxLines: 1}
+	item := read(t, engine, context.Background(), req).Items[0]
+	expectCode(t, item, "budget_exhausted")
+	if item.BytesRead > limits.MaxScanBytes || item.ScannedBytes != item.BytesRead || item.BytesRead == 0 {
+		t.Fatalf("long line escaped scan budget: %+v", item)
+	}
+}
+
+func TestTailUsesReverseBoundedScan(t *testing.T) {
+	text := "one\ntwo\nthree\nfour"
+	source := &fixtureSource{files: map[string]fixture{"log": {text: text}}}
+	limits := DefaultLimits()
+	limits.BlockBytes = 4
+	engine := engineFor(t, source, limits)
+	req := request("log", 0, 64)
+	req.Range = RangeSpec{Kind: RangeTail, TailLines: 2}
+	item := read(t, engine, context.Background(), req).Items[0]
+	if item.Error != nil || item.Content != "three\nfour" || item.Offset != 8 || item.EndOffset != int64(len(text)) || !item.EOF || !item.Complete {
+		t.Fatalf("bad tail: %+v", item)
+	}
+	if item.ScannedBytes >= len(text) {
+		t.Fatalf("tail did not scan from the end: %+v", item)
+	}
+
+	limits = DefaultLimits()
+	limits.BlockBytes = 4
+	limits.MaxScanBytes = 4
+	limited := engineFor(t, source, limits)
+	req.Range.MaxScanBytes = 4
+	item = read(t, limited, context.Background(), req).Items[0]
+	expectCode(t, item, "budget_exhausted")
+	if item.Content != "" || item.BytesRead > 4 || item.Complete {
+		t.Fatalf("bounded tail leaked partial result: %+v", item)
+	}
+}
+
+func TestLineAndTailDiscardChangedContent(t *testing.T) {
+	for _, kind := range []RangeKind{RangeLines, RangeTail} {
+		source := &fixtureSource{files: map[string]fixture{"f": {text: "first\nsecond", change: true}}}
+		req := request("f", 0, 128)
+		if kind == RangeLines {
+			req.Range = RangeSpec{Kind: kind, StartLine: 1, MaxLines: 1}
+		} else {
+			req.Range = RangeSpec{Kind: kind, TailLines: 1}
+		}
+		item := read(t, engineFor(t, source, DefaultLimits()), context.Background(), req).Items[0]
+		expectCode(t, item, "stale_version")
+		if item.Content != "" || item.BytesRead == 0 {
+			t.Fatalf("changed %s range was returned: %+v", kind, item)
+		}
 	}
 }
 

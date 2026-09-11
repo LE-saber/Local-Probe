@@ -22,6 +22,7 @@ import (
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/rootfs"
 	"github.com/LE-saber/Local-Probe/internal/search"
+	"github.com/LE-saber/Local-Probe/internal/workspacesnapshot"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -191,6 +192,192 @@ func TestSearchToolsAreMCPScopedAndUseStructuredResults(t *testing.T) {
 	if len(tree.Entries) < 2 || tree.Entries[0].Path != "" || tree.Entries[0].Depth != 0 || tree.Entries[1].Path != "hello.txt" || tree.Entries[1].Depth != 1 {
 		t.Fatalf("tree_directory = %#v", tree)
 	}
+}
+
+func TestR2ReadRangesAndWorkspaceSnapshotAreScoped(t *testing.T) {
+	fixture := newFixture(t)
+	defer fixture.close()
+	fixture.profileOneTools = []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolWorkspaceSnapshot}
+	fixture.profileTwoTools = []string{ToolServerInfo}
+	if err := os.MkdirAll(filepath.Join(fixture.root, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lineData := []byte("one\r\n你好\r\nthree\r\nlast")
+	if err := os.WriteFile(filepath.Join(fixture.root, "lines.txt"), lineData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "go.mod"), []byte("module example.test\n\ngo 1.25\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "src", "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := newTestServer(t, fixture, []Credential{
+		{ConnectionID: "connection-one", Token: testTokenOne},
+		{ConnectionID: "connection-two", Token: testTokenTwo},
+	})
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "r2-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: &testTokenTransport{token: testTokenOne}},
+		DisableStandaloneSSE: true, MaxRetries: -1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsTool(tools.Tools, ToolWorkspaceSnapshot) {
+		t.Fatalf("tools/list did not expose workspace_snapshot: %v", toolNames(tools.Tools))
+	}
+
+	lineResult := callTool(t, ctx, session, ToolReadFile, map[string]any{
+		"root_id": "workspace", "path": "lines.txt", "max_bytes": 128,
+		"range": map[string]any{"kind": "lines", "start_line": 2, "max_lines": 2},
+	})
+	var lineOutput readFileOutput
+	decodeToolJSON(t, lineResult, &lineOutput)
+	if lineOutput.Item.Content != "你好\r\nthree\r\n" || lineOutput.Item.RangeKind != "lines" ||
+		lineOutput.Item.StartLine != 2 || lineOutput.Item.EndLine != 3 ||
+		!lineOutput.Item.Complete || lineOutput.Item.Error != nil || lineOutput.Item.ScannedBytes == 0 {
+		t.Fatalf("line range = %#v", lineOutput.Item)
+	}
+
+	tailResult := callTool(t, ctx, session, ToolReadFile, map[string]any{
+		"root_id": "workspace", "path": "lines.txt", "max_bytes": 128,
+		"range": map[string]any{"kind": "tail", "tail_lines": 2},
+	})
+	var tailOutput readFileOutput
+	decodeToolJSON(t, tailResult, &tailOutput)
+	if tailOutput.Item.Content != "three\r\nlast" || tailOutput.Item.RangeKind != "tail" ||
+		!tailOutput.Item.Complete || tailOutput.Item.Error != nil || tailOutput.Item.ScannedBytes == 0 {
+		t.Fatalf("tail range = %#v", tailOutput.Item)
+	}
+
+	batchResult := callTool(t, ctx, session, ToolBatchRead, map[string]any{
+		"requests": []any{
+			map[string]any{"root_id": "workspace", "path": "lines.txt", "max_bytes": 5},
+			map[string]any{"root_id": "workspace", "path": "lines.txt", "max_bytes": 128,
+				"range": map[string]any{"kind": "tail", "tail_lines": 1}},
+		},
+	})
+	var batch batchReadOutput
+	decodeToolJSON(t, batchResult, &batch)
+	if len(batch.Items) != 2 || batch.Items[0].Content != "one\r\n" || batch.Items[1].Content != "last" ||
+		batch.Failed != 0 || batch.Complete || batch.Items[0].Complete || !batch.Items[1].Complete || batch.ScannedBytes == 0 {
+		t.Fatalf("ranged batch_read = %#v", batch)
+	}
+
+	snapshotResult := callTool(t, ctx, session, ToolWorkspaceSnapshot, map[string]any{
+		"root_id": "workspace", "max_depth": 2, "max_entries": 64,
+	})
+	var snapshot workspaceSnapshotOutput
+	decodeToolJSON(t, snapshotResult, &snapshot)
+	if snapshot.RequestID == "" || snapshot.RootID != "workspace" || !snapshot.Coverage.Complete ||
+		!containsSnapshotPath(snapshot.ManifestCandidates, "go.mod") || !containsSnapshotEvidence(snapshot.EvidencePaths, "go.mod") {
+		t.Fatalf("workspace_snapshot = %#v", snapshot)
+	}
+	if resultContainsString(snapshotResult, fixture.root) || resultContainsString(snapshotResult, filepath.Join(fixture.root, "lines.txt")) {
+		t.Fatalf("workspace_snapshot exposed an absolute path: %s", structuredResultBytes(snapshotResult))
+	}
+
+	badRange := callTool(t, ctx, session, ToolReadFile, map[string]any{
+		"root_id": "workspace", "path": "lines.txt", "range": map[string]any{
+			"kind": "lines", "start_line": 1, "max_lines": 1, "unexpected": "nope",
+		},
+	})
+	if !badRange.IsError || resultContainsString(badRange, fixture.root) {
+		t.Fatalf("invalid range was accepted or leaked a path: %#v", badRange)
+	}
+
+	secondClient := mcp.NewClient(&mcp.Implementation{Name: "r2-scoped-client", Version: "test"}, nil)
+	secondSession, err := secondClient.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: &testTokenTransport{token: testTokenTwo}},
+		DisableStandaloneSSE: true, MaxRetries: -1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondSession.Close()
+	secondSnapshot := callTool(t, ctx, secondSession, ToolWorkspaceSnapshot, map[string]any{"root_id": "workspace"})
+	if !secondSnapshot.IsError || !strings.Contains(toolText(t, secondSnapshot), "denied") {
+		t.Fatalf("workspace_snapshot escaped profile allowlist: %#v", secondSnapshot)
+	}
+}
+
+func TestWorkspaceSnapshotBudgetErrorIsStable(t *testing.T) {
+	result := workspaceSnapshotErrorResult(workspacesnapshot.ErrBudgetExceeded)
+	if !result.IsError {
+		t.Fatal("budget error result is not marked as an error")
+	}
+	var envelope struct {
+		SchemaVersion string `json:"schema_version"`
+		Error         struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(toolText(t, result)), &envelope); err != nil {
+		t.Fatalf("decode budget error result: %v", err)
+	}
+	if envelope.SchemaVersion != SchemaVersion {
+		t.Fatalf("schema_version = %q, want %q", envelope.SchemaVersion, SchemaVersion)
+	}
+	if envelope.Error.Code != "budget_exhausted" {
+		t.Fatalf("error code = %q, want budget_exhausted", envelope.Error.Code)
+	}
+	if envelope.Error.Message != "workspace snapshot exceeded its bounded output budget" {
+		t.Fatalf("error message = %q, want stable redacted message", envelope.Error.Message)
+	}
+	if strings.Contains(envelope.Error.Message, "workspace snapshot output budget exceeded") {
+		t.Fatal("budget error leaked the internal error text")
+	}
+}
+
+func containsTool(tools []*mcp.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool != nil && tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func toolNames(tools []*mcp.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil {
+			names = append(names, tool.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func containsSnapshotPath(entries []workspacesnapshot.ManifestCandidate, path string) bool {
+	for _, entry := range entries {
+		if entry.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSnapshotEvidence(entries []workspacesnapshot.EvidencePath, path string) bool {
+	for _, entry := range entries {
+		if entry.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEnvironmentToolsAreScopedAndPathFree(t *testing.T) {
@@ -670,6 +857,7 @@ func TestResolveToken(t *testing.T) {
 func TestAuditMCPCallsContainActionOnly(t *testing.T) {
 	fixture := newFixture(t)
 	defer fixture.close()
+	fixture.profileOneTools = []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolWorkspaceSnapshot}
 	auditDir := t.TempDir()
 	sink, err := audit.New(audit.Config{Directory: auditDir, MaxFileBytes: 64 << 10, MaxFiles: 4, QueueSize: 64, InstanceID: "mcp-audit-test"})
 	if err != nil {
@@ -695,6 +883,7 @@ func TestAuditMCPCallsContainActionOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	callTool(t, ctx, session, ToolPing, map[string]any{"path": "sentinel-path-query-token"})
+	callTool(t, ctx, session, ToolWorkspaceSnapshot, map[string]any{"root_id": "workspace", "max_entries": 1})
 	invalid := callTool(t, ctx, session, ToolReadFile, map[string]any{
 		"path":       "sentinel-invalid-path",
 		"unexpected": "sentinel-invalid-argument",
@@ -712,7 +901,7 @@ func TestAuditMCPCallsContainActionOnly(t *testing.T) {
 	}
 
 	data := bytes.Join(readAuditFiles(t, auditDir), []byte{'\n'})
-	if !bytes.Contains(data, []byte(`"action":"tools/list"`)) || !bytes.Contains(data, []byte(`"action":"ping"`)) {
+	if !bytes.Contains(data, []byte(`"action":"tools/list"`)) || !bytes.Contains(data, []byte(`"action":"ping"`)) || !bytes.Contains(data, []byte(`"action":"workspace_snapshot"`)) {
 		t.Fatalf("audit actions missing: %s", data)
 	}
 	if !bytes.Contains(data, []byte(`"outcome":"rejected"`)) || !bytes.Contains(data, []byte(`"error_code":"denied"`)) {

@@ -42,6 +42,7 @@ const (
 	CodeDeadlineExceeded ErrorCode = "deadline_exceeded"
 	CodeCancelled        ErrorCode = "cancelled"
 	CodeInvalidOutput    ErrorCode = "invalid_output"
+	CodeUnsupported      ErrorCode = "unsupported_platform"
 )
 
 // Error is intentionally path-free.  In particular, callers may safely
@@ -69,6 +70,7 @@ var (
 	ErrDeadlineExceeded = &Error{Code: CodeDeadlineExceeded}
 	ErrCancelled        = &Error{Code: CodeCancelled}
 	ErrInvalidOutput    = &Error{Code: CodeInvalidOutput}
+	ErrUnsupported      = &Error{Code: CodeUnsupported}
 )
 
 // ExecutableDescriptor is an audited absolute executable.  Path is input
@@ -168,6 +170,9 @@ func ToolVersion(ctx context.Context, descriptor ExecutableDescriptor) (ToolVers
 	if err := ctx.Err(); err != nil {
 		return result, ErrCancelled
 	}
+	if !processExecutionSupported() {
+		return result, ErrUnsupported
+	}
 
 	before, err := captureIdentity(descriptor.Path)
 	if err != nil {
@@ -191,7 +196,7 @@ func ToolVersion(ctx context.Context, descriptor ExecutableDescriptor) (ToolVers
 	if !ok {
 		return result, ErrInvalidInput
 	}
-	run, runErr := runFixedProcess(ctx, descriptor.Path, args, cwd, env)
+	run, runErr := runFixedProcess(ctx, descriptor.Path, args, cwd, env, descriptor.identity)
 
 	// The identity check is performed even when the child timed out or failed;
 	// a replacement must never be hidden by an unrelated process error.
@@ -269,9 +274,9 @@ type streamResult struct {
 	err  error
 }
 
-func runFixedProcess(ctx context.Context, path string, args []string, cwd string, env []string) (processOutput, error) {
+func runFixedProcess(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity) (processOutput, error) {
 	var result processOutput
-	process, err := startFixedProcess(path, args, cwd, env)
+	process, err := startFixedProcess(path, args, cwd, env, expected)
 	if err != nil {
 		return result, err
 	}

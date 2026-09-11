@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/LE-saber/Local-Probe/internal/commandprofile"
 )
 
 const (
@@ -59,18 +61,7 @@ func (t EnvironmentTool) CandidateDirs() []string {
 // NewWithEnvironmentTools preserves New's original signature while allowing
 // trusted local callers to opt into configured environment discovery entries.
 func NewWithEnvironmentTools(schemaVersion string, roots []Root, profiles []Profile, connections []Connection, credentials []CredentialRef, environmentTools []EnvironmentTool) (Config, error) {
-	c := Config{
-		schemaVersion:    schemaVersion,
-		roots:            cloneRoots(roots),
-		profiles:         cloneProfiles(profiles),
-		connections:      append([]Connection(nil), connections...),
-		credentials:      append([]CredentialRef(nil), credentials...),
-		environmentTools: cloneEnvironmentTools(environmentTools),
-	}
-	if err := c.validate(); err != nil {
-		return Config{}, err
-	}
-	return c, nil
+	return NewWithCommandProfiles(schemaVersion, roots, profiles, connections, credentials, environmentTools, commandprofile.DefaultDeveloperMode(), nil)
 }
 
 func (c Config) EnvironmentTools() []EnvironmentTool {

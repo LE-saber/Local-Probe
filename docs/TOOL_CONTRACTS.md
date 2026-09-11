@@ -55,7 +55,21 @@ BatchResult 包含 schema_version、按输入排序的 items、returned_bytes、
 
 小到不足一个字符的预算返回 budget_exhausted，提示缩小 batch 或提高页预算；不会无限返回相同的零进展 continuation。空文件和恰好到 EOF 返回成功且没有 continuation。
 
-对于本节的 readcore 直接调用，当前仍是 byte-range，不含按行定位、日志 tail、目录遍历和内容搜索；MCP 产品层的 P06 发现/搜索工具见第八节。
+readcore 直接调用和 MCP 的 `read_file`/`batch_read` 现在兼容旧的 byte-range 字段，并可选
+增加严格的 `range` 对象。`range.kind` 只能是 `bytes`、`lines` 或 `tail`：
+
+```json
+{"range": {"kind": "lines", "start_line": 17, "max_lines": 8, "max_scan_bytes": 1048576}}
+{"range": {"kind": "tail", "tail_lines": 50, "max_scan_bytes": 1048576}}
+```
+
+`lines` 使用 1-based 行号，保留原始 UTF-8/CRLF 字节和存在的换行符；文件末尾没有换行
+时，最后一段仍算一行。`tail` 从文件末端倒向扫描，返回最后 N 个换行分隔记录，不把尾部
+换行误算成额外空行。两者都受 `max_scan_bytes`、单项输出和 batch 总预算限制，不能因
+请求一个远处行号而隐式读取无界文件。结果额外返回 `range_kind`、可选 `start_line`/
+`end_line`、`complete` 和 `scanned_bytes`；预算不足时不返回正文或伪造 continuation。
+MCP schema 对 `range` 和其字段使用 `additionalProperties:false`，因此未知字段会被拒绝，
+不影响未提供 `range` 的旧客户端。目录遍历和内容搜索仍见第八节。
 
 ## 六、一致性不是快照保证
 
@@ -67,9 +81,9 @@ metadata 是弱版本：相同 size/mtime 的内容修改可能无法检测，�
 
 ## 七、MCP 工具面（当前与未来）
 
-当前本地 MCP 服务已注册并按 connection/profile allowlist 暴露：`server_info`、`ping`、`read_file`、`batch_read`、`list_directory`、`find_files`、`search_text`、`tree_directory`、`get_environment`、`discover_tools`。`workspace_snapshot`、`run_probe`、`git_status` 和 `git_diff` 仍是未来能力，不能从当前工具列表推断已实现。
+当前本地 MCP 服务已注册并按 connection/profile allowlist 暴露：`server_info`、`ping`、`read_file`、`batch_read`、`list_directory`、`find_files`、`search_text`、`tree_directory`、`get_environment`、`discover_tools`、`workspace_snapshot`。`run_probe`、`git_status` 和 `git_diff` 仍是未来能力，不能从当前工具列表推断已实现。
 
-发现/搜索/目录树工具已经返回 request_id、coverage、warnings、预算和 continuation；`read_file`/`batch_read` 的 byte-range 结果按第四节约束。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
+发现/搜索/目录树/工作区轮廓工具已经返回 request_id、coverage、warnings、预算和 continuation；`read_file`/`batch_read` 的 byte/line/tail 结果按第四、五节约束。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
 
 ## 八、P06 发现、文本搜索与目录树工具（第一增量）
 
@@ -244,7 +258,41 @@ byte/line/KMP/UTF-8 状态，不缓存整行或整棵树。默认签名 key 是�
 使游标失效；部署者可以通过受保护的 `SearchCursorKey` 提供跨重启 key，但 revision、
 generation、撤权和过期仍会使旧游标失效。
 
-## 九、R3 无进程环境发现（当前实现）
+## 九、R2 工作区轮廓（当前第一增量）
+
+`workspace_snapshot` 是一个只读、有界的工作区轮廓工具，不是强一致快照，也不是任意
+命令或项目脚本执行器。它接受 `root_id`、可选的相对 `path`、深度/条目/读取预算和
+签名 continuation；`root_id` 与路径都由 MCP 层按当前认证 `BoundScope` 再验证。模型
+不能传入本机绝对 root、改变 profile roots，或借 snapshot 绕过 `deny_patterns`、
+`ignore_patterns`、symlink/junction/reparse 边界。
+
+```json
+{
+  "root_id": "project",
+  "path": "src",
+  "max_depth": 3,
+  "max_entries": 256,
+  "max_read_bytes": 1048576
+}
+```
+
+远程请求不覆盖 `max_output_bytes`；CLI 以固定安全默认值构造 snapshot engine，最终完整
+MCP wire 结果仍受服务级 `MaxResponseBytes` 限制。
+
+结果的 `schema_version` 为 `local-probe.workspace-snapshot.v1`，包括扁平 `outline`、`manifest_candidates`、`language_stats`、`evidence_paths`、
+`coverage`、`warnings`、`budget` 和可选 `continuation`。路径全部是相对于授权 root 的
+规范 `/` 路径；绝对路径、内容正文、访问令牌、cursor 原文和本机错误不会进入远程结果。
+manifest 和语言信息是按已返回路径推导的证据，不打开源码、不执行 manifest、不声称
+跨文件事务一致性。`coverage.complete=false` 或 warning 表示仍有未扫描范围；调用方
+不能把部分轮廓解释为仓库全貌。
+
+`workspace_snapshot` 使用同一 `search.Binder`，因此 source 会重新绑定当前 profile
+revision 并重新执行 rootfs 授权。profile allowlist 是暴露条件，不因工具注册而自动
+对所有连接可见；审计只写固定 `workspace_snapshot` action 和计数型预算字段，不写路径、
+内容、请求参数或 continuation。当前 CLI 使用固定安全默认值，未来若开放配置化预算仍
+必须由本地策略设置，不能让模型任意提高限制。
+
+## 十、R3 无进程环境发现（当前实现）
 
 R3 增加了两个只读 MCP 工具：`get_environment` 和 `discover_tools`。它们不启动外部
 进程、不调用 `where.exe`、不搜索进程环境中的 `PATH`，也不读取完整环境变量。工具的
@@ -268,7 +316,40 @@ Windows 配置中的绝对候选路径允许使用 JSON 友好的 `/` 分隔符�
 过滤。CLI 启动时仅把已解析的本地配置转换为 `environment.ToolSpec`，不会从命令行接受
 候选路径或诊断开关。
 
-## 十、audit.v1（当前最小实现）
+## 十一、R4 固定探针与 developer mode（本地核心，未接入 MCP）
+
+R4 当前只实现可信本地调用方可使用的固定进程核心，不是远程工具契约。`internal/probe`
+只允许固定 `git`、`python`、`node` tool ID；Windows 输入必须是本地绝对 `.exe`，并拒绝
+UNC/device/ADS/保留名/路径别名、reparse/symlink、非普通文件和非 PE 映像。执行窗口会
+持有最终映像及父目录句柄，使用 `CREATE_SUSPENDED` 创建并加入 Job Object，恢复主线程前
+查询实际映像路径并核对句柄 identity；Job 限制为单进程、kill-on-close。私有空 cwd、空/精简
+环境、闭 stdin、无窗口、输出上限、超时和进程回收也属于固定实现，调用方不能覆盖。
+
+`internal/commandprofile` 的本地配置层只接受 Windows `version_probe`：绝对 `.exe`、
+命名 exact argv variant、私有空 cwd、空环境、单进程、`network=deny`、`per_call` 本地
+确认和结构化 version 结果。`internal/confirmation` 的 capability 是短期、一次性、绑定
+connection/profile/revision/command/variant/request nonce 的 opaque 值；它不能从 MCP JSON
+中的布尔值、文本或伪造 token 产生。`allow_any_suffix`、raw command、任意 args/env/cwd/
+timeout、脚本/wrapper 和模型修改 profile 均被拒绝。
+
+这些是已实现的本地核心，不代表执行已经安全可发布。当前明确未完成：
+
+- 没有接入操作系统的 network deny 执行器；`network=deny` 只是强制要求 opaque
+  `EnforcementCapability`，没有 enforcement 时 profile 必须拒绝。
+- 配置层可以解析/校验 profile，但 CLI/supervisor 尚未把 profile 接入
+  `probe.AuditExecutable`/`ToolVersion` 的生产路径；不存在完整 profile→probe runtime wiring。
+- `identity.sha256` 当前只校验 64 位十六进制格式。Windows 执行期尚未计算并比较该摘要，
+  也没有签名校验；当前信任依据是固定路径、PE 检查、句柄 identity 和挂起映像复核。
+- MCP 没有 `run_probe` 注册、输入/输出 schema 或 confirmation 流程。ChatGPT、Cloudflare
+  Tunnel 和其它远程入口继续不能启动 probe、选择 command profile 或传递命令参数。
+
+因此 MCP 工具列表仍只包含本文件第七节所列的只读文件/环境能力；在上述硬门和独立审查
+完成前，不得添加 `run_probe`，也不得用 read-only annotation 或本地确认字段替代 OS 网络
+隔离、映像校验和真实 profile 接线。Windows 手工步骤见
+[`manual-test-targets/r4/README.md`](../manual-test-targets/r4/README.md)；本轮不宣称 Linux
+或其它 Unix runtime 已验证。
+
+## 十二、audit.v1（当前最小实现）
 
 CLI 已接入本地 typed JSONL audit sink，默认目录为用户配置目录下的
 `Local-Probe/audit`，也可用 `-audit-dir` 覆盖。启动时若 sink 无法初始化则不监听；目录/文件
