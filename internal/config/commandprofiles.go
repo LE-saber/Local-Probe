@@ -37,11 +37,27 @@ type rawIdentitySpec struct {
 
 type rawArgvSpec struct {
 	Variants []rawVariantSpec `json:"variants"`
+	Slots    []rawSlotSpec    `json:"slots,omitempty"`
 }
 
 type rawVariantSpec struct {
-	ID    string   `json:"variant_id"`
-	Exact []string `json:"exact"`
+	ID       string                `json:"variant_id"`
+	Exact    []string              `json:"exact,omitempty"`
+	Template []rawTemplateItemSpec `json:"template,omitempty"`
+}
+
+type rawTemplateItemSpec struct {
+	Literal *string `json:"literal,omitempty"`
+	SlotID  *string `json:"slot_id,omitempty"`
+}
+
+type rawSlotSpec struct {
+	ID         string   `json:"slot_id"`
+	Kind       string   `json:"kind"`
+	EnumValues []string `json:"enum_values,omitempty"`
+	Min        *int64   `json:"min,omitempty"`
+	Max        *int64   `json:"max,omitempty"`
+	RootIDs    []string `json:"root_ids,omitempty"`
 }
 
 type rawCWDSpec struct {
@@ -117,13 +133,61 @@ func parseCommandProfile(raw rawCommandProfile) (commandprofile.Profile, error) 
 	if raw.Limits.WallTimeoutMS <= 0 || raw.Limits.WallTimeoutMS > 10000 {
 		return commandprofile.Profile{}, fmt.Errorf("%w: wall_timeout_ms is outside the hard bound", ErrInvalid)
 	}
+	if commandprofile.Kind(raw.Kind) == commandprofile.KindVersionProbe {
+		if len(raw.Argv.Slots) > 0 {
+			return commandprofile.Profile{}, fmt.Errorf("%w: version_probe does not support argv.slots", ErrInvalid)
+		}
+		for _, variant := range raw.Argv.Variants {
+			if len(variant.Template) > 0 {
+				return commandprofile.Profile{}, fmt.Errorf("%w: version_probe does not support argv.template", ErrInvalid)
+			}
+		}
+	}
 	platform := make([]commandprofile.Platform, len(raw.Platform))
 	for i, value := range raw.Platform {
 		platform[i] = commandprofile.Platform(value)
 	}
 	variants := make([]commandprofile.VariantSpec, len(raw.Argv.Variants))
 	for i, value := range raw.Argv.Variants {
-		variants[i] = commandprofile.VariantSpec{ID: value.ID, Exact: append([]string(nil), value.Exact...)}
+		if commandprofile.Kind(raw.Kind) != commandprofile.KindVersionProbe && value.Exact != nil && value.Template != nil {
+			return commandprofile.Profile{}, fmt.Errorf("%w: argv.variants[%d] exact and template are mutually exclusive", ErrInvalid, i)
+		}
+		template := make([]commandprofile.TemplateItemSpec, len(value.Template))
+		for j, item := range value.Template {
+			if item.Literal != nil && item.SlotID != nil {
+				return commandprofile.Profile{}, fmt.Errorf("%w: template[%d] must contain one item", ErrInvalid, j)
+			}
+			template[j] = commandprofile.TemplateItemSpec{SlotID: stringValue(item.SlotID), Literal: stringValue(item.Literal)}
+		}
+		variants[i] = commandprofile.VariantSpec{ID: value.ID, Exact: append([]string(nil), value.Exact...), Template: template}
+	}
+	slots := make([]commandprofile.SlotSpec, len(raw.Argv.Slots))
+	for i, value := range raw.Argv.Slots {
+		slotField := fmt.Sprintf("argv.slots[%d]", i)
+		switch commandprofile.SlotKind(value.Kind) {
+		case commandprofile.SlotEnum:
+			if value.Min != nil || value.Max != nil || value.RootIDs != nil {
+				return commandprofile.Profile{}, fmt.Errorf("%w: %s enum has unexpected fields", ErrInvalid, slotField)
+			}
+		case commandprofile.SlotBoundedInteger:
+			if value.Min == nil || value.Max == nil || value.EnumValues != nil || value.RootIDs != nil {
+				return commandprofile.Profile{}, fmt.Errorf("%w: %s bounded_integer fields are invalid", ErrInvalid, slotField)
+			}
+		case commandprofile.SlotRootRelativePath:
+			if value.Min != nil || value.Max != nil || value.EnumValues != nil {
+				return commandprofile.Profile{}, fmt.Errorf("%w: %s root_relative_path has unexpected fields", ErrInvalid, slotField)
+			}
+		}
+		slot := commandprofile.SlotSpec{
+			ID: value.ID, Kind: commandprofile.SlotKind(value.Kind), EnumValues: append([]string(nil), value.EnumValues...), RootIDs: append([]string(nil), value.RootIDs...),
+		}
+		if value.Min != nil {
+			slot.Min = *value.Min
+		}
+		if value.Max != nil {
+			slot.Max = *value.Max
+		}
+		slots[i] = slot
 	}
 	profile, err := commandprofile.New(commandprofile.Spec{
 		ID:         raw.ID,
@@ -135,8 +199,8 @@ func parseCommandProfile(raw rawCommandProfile) (commandprofile.Profile, error) 
 			RejectReparse:  raw.Identity.RejectReparse,
 			SHA256:         raw.Identity.SHA256,
 		},
-		Variants: variants,
-		CWD:      commandprofile.CWDSpec{Kind: commandprofile.CWDKind(raw.CWD.Kind)},
+		Slots: slots, Variants: variants,
+		CWD: commandprofile.CWDSpec{Kind: commandprofile.CWDKind(raw.CWD.Kind)},
 		Environment: commandprofile.EnvironmentSpec{
 			Inherit: raw.Environment.Inherit,
 			Allow:   append([]string(nil), raw.Environment.Allow...),
@@ -172,7 +236,30 @@ func marshalCommandProfile(profile commandprofile.Profile) rawCommandProfile {
 	variants := profile.Variants()
 	rawVariants := make([]rawVariantSpec, len(variants))
 	for i, value := range variants {
-		rawVariants[i] = rawVariantSpec{ID: value.ID(), Exact: value.Exact()}
+		items := value.Template()
+		rawItems := make([]rawTemplateItemSpec, len(items))
+		for j, item := range items {
+			if item.Literal != "" {
+				literal := item.Literal
+				rawItems[j].Literal = &literal
+			} else {
+				slotID := item.SlotID
+				rawItems[j].SlotID = &slotID
+			}
+		}
+		rawVariants[i] = rawVariantSpec{ID: value.ID(), Exact: value.Exact(), Template: rawItems}
+	}
+	slots := profile.Slots()
+	rawSlots := make([]rawSlotSpec, len(slots))
+	for i, slot := range slots {
+		rawSlots[i] = rawSlotSpec{
+			ID: slot.ID(), Kind: string(slot.Kind()), EnumValues: slot.EnumValues(), RootIDs: slot.RootIDs(),
+		}
+		if slot.Kind() == commandprofile.SlotBoundedInteger {
+			min, max := slot.Min(), slot.Max()
+			rawSlots[i].Min = &min
+			rawSlots[i].Max = &max
+		}
 	}
 	env := profile.Environment()
 	limits := profile.Limits()
@@ -186,7 +273,7 @@ func marshalCommandProfile(profile commandprofile.Profile) rawCommandProfile {
 			RejectReparse:  profile.Identity().RejectReparse,
 			SHA256:         profile.Identity().SHA256,
 		},
-		Argv: rawArgvSpec{Variants: rawVariants},
+		Argv: rawArgvSpec{Variants: rawVariants, Slots: rawSlots},
 		CWD:  rawCWDSpec{Kind: string(profile.CWD().Kind)},
 		Environment: rawEnvironmentSpec{
 			Inherit: env.Inherit,
@@ -232,6 +319,13 @@ func cloneStringMap(values map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func validateDeveloperModeConnections(mode commandprofile.DeveloperMode, connectionIDs map[string]struct{}) error {

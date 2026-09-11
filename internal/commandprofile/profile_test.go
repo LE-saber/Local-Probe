@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,5 +123,210 @@ func TestDeveloperModeValidation(t *testing.T) {
 	}
 	if _, err := NewDeveloperMode(true, []string{"connection-a"}, ConfirmationPerCall, "allow"); err == nil {
 		t.Fatal("non-deny network default accepted")
+	}
+}
+
+func fixedCommandSpec() Spec {
+	return Spec{
+		ID: "fixed_command", Kind: KindFixedCommand, Platform: []Platform{PlatformWindows},
+		Executable: `C:\Tools\tool.exe`,
+		Identity:   IdentitySpec{RequireRegular: true, RejectReparse: true, SHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		Slots: []SlotSpec{
+			{ID: "format", Kind: SlotEnum, EnumValues: []string{"json", "text"}},
+			{ID: "count", Kind: SlotBoundedInteger, Min: 1, Max: 10},
+			{ID: "file", Kind: SlotRootRelativePath, RootIDs: []string{"project", "private"}},
+		},
+		Variants: []VariantSpec{{ID: "run", Template: []TemplateItemSpec{
+			{Literal: "--format"}, {SlotID: "format"}, {Literal: "--count"}, {SlotID: "count"}, {SlotID: "file"},
+		}}},
+		CWD: CWDSpec{Kind: CWDPrivateEmpty}, Environment: EnvironmentSpec{Inherit: false},
+		Limits:       LimitsSpec{WallTimeout: time.Second, StdoutBytes: 4096, StderrBytes: 4096, MaxProcesses: 1, MaxChildren: 0},
+		Network:      NetworkSpec{Mode: NetworkDeny, RequireEnforcement: true},
+		Confirmation: ConfirmationSpec{Mode: ConfirmationPerCall, LocalOnly: true},
+		Result:       ResultSpec{Type: ResultExitStatus},
+	}
+}
+
+func TestFixedCommandResolveVariantUsesTypedSlotsInOrder(t *testing.T) {
+	spec := fixedCommandSpec()
+	profile, err := New(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolverCalls := 0
+	argv, err := profile.ResolveVariant("run", map[string]SlotValue{
+		"format": {Text: "json"}, "count": {Integer: 3}, "file": {RootID: "project", RelativePath: "src/main.go"},
+	}, func(rootID, relative string) (string, error) {
+		resolverCalls++
+		return `C:\work\` + rootID + `\` + relative, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--format", "json", "--count", "3", `C:\work\project\src/main.go`}
+	if !reflect.DeepEqual(argv, want) || resolverCalls != 1 {
+		t.Fatalf("argv = %#v, resolver calls = %d, want %#v and 1", argv, resolverCalls, want)
+	}
+	argv[0] = "changed"
+	again, err := profile.ResolveVariant("run", map[string]SlotValue{
+		"format": {Text: "text"}, "count": {Integer: 1}, "file": {RootID: "private", RelativePath: "x.txt"},
+	}, func(string, string) (string, error) { return "resolved", nil })
+	if err != nil || again[0] != "--format" {
+		t.Fatalf("resolved argv leaked mutable state: %#v, %v", again, err)
+	}
+}
+
+func TestFixedCommandTemplateMayReuseASlot(t *testing.T) {
+	spec := fixedCommandSpec()
+	spec.Variants[0].Template = append(spec.Variants[0].Template, TemplateItemSpec{SlotID: "format"})
+	profile, err := New(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv, err := profile.ResolveVariant("run", map[string]SlotValue{
+		"format": {Text: "json"}, "count": {Integer: 2}, "file": {RootID: "project", RelativePath: "x.txt"},
+	}, func(string, string) (string, error) { return "resolved", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := argv[len(argv)-1]; got != "json" {
+		t.Fatalf("reused slot result = %q, want json; argv=%#v", got, argv)
+	}
+}
+
+func TestFixedCommandReusedPathSlotIsResolvedOnce(t *testing.T) {
+	spec := fixedCommandSpec()
+	spec.Variants[0].Template = append(spec.Variants[0].Template, TemplateItemSpec{SlotID: "file"})
+	profile, err := New(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	argv, err := profile.ResolveVariant("run", map[string]SlotValue{
+		"format": {Text: "json"}, "count": {Integer: 2}, "file": {RootID: "project", RelativePath: "x.txt"},
+	}, func(string, string) (string, error) {
+		calls++
+		return `C:\resolved\x.txt`, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || argv[len(argv)-1] != argv[len(argv)-2] {
+		t.Fatalf("reused path resolved calls=%d argv=%#v, want one call and equal tokens", calls, argv)
+	}
+}
+
+func TestFixedCommandExactAndVersionCompatibility(t *testing.T) {
+	spec := fixedCommandSpec()
+	spec.Slots = nil
+	spec.Variants = []VariantSpec{{ID: "exact", Exact: []string{"--status", "ready"}}}
+	profile, err := New(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := profile.ResolveVariant("exact", map[string]SlotValue{}, nil)
+	if err != nil || !reflect.DeepEqual(got, []string{"--status", "ready"}) {
+		t.Fatalf("fixed exact resolve = %#v, %v", got, err)
+	}
+	legacy, err := New(validSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.ResolveVariant("short", map[string]SlotValue{}, nil); err != nil {
+		t.Fatalf("version exact compatibility failed: %v", err)
+	}
+}
+
+func TestFixedCommandRejectsInvalidSlotInputs(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Spec)
+	}{
+		{"duplicate slot", func(s *Spec) { s.Slots = append(s.Slots, s.Slots[0]) }},
+		{"duplicate enum", func(s *Spec) { s.Slots[0].EnumValues = []string{"json", "json"} }},
+		{"undeclared reference", func(s *Spec) { s.Variants[0].Template[1] = TemplateItemSpec{SlotID: "missing"} }},
+		{"unreferenced slot", func(s *Spec) {
+			s.Slots = append(s.Slots, SlotSpec{ID: "unused", Kind: SlotEnum, EnumValues: []string{"x"}})
+		}},
+		{"ambiguous template item", func(s *Spec) { s.Variants[0].Template[0] = TemplateItemSpec{} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := fixedCommandSpec()
+			tc.mutate(&spec)
+			if _, err := New(spec); err == nil || !errors.Is(err, ErrInvalid) {
+				t.Fatalf("accepted invalid slot shape: %v", err)
+			}
+		})
+	}
+	profile, err := New(fixedCommandSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validValues := map[string]SlotValue{
+		"format": {Text: "json"}, "count": {Integer: 3}, "file": {RootID: "project", RelativePath: "ok.txt"},
+	}
+	for name, values := range map[string]map[string]SlotValue{
+		"missing": {"format": validValues["format"], "count": validValues["count"]},
+		"extra":   {"format": validValues["format"], "count": validValues["count"], "file": validValues["file"], "extra": {Text: "x"}},
+	} {
+		if _, err := profile.ResolveVariant("run", values, func(string, string) (string, error) { return "ok", nil }); err == nil {
+			t.Fatalf("accepted %s slot values", name)
+		}
+	}
+	invalidPaths := []string{"/absolute", `dir\\file`, "dir//file", "dir/../file", "dir/file.", "dir/file ", "dir/*.txt", "C:drive", "CON.txt", "prn", "AUX.log", "NUL", "CLOCK$.tmp", "COM1.txt", "COM¹.txt", "COM²", "COM³.log", "LPT9", "LPT¹.txt", "LPT²", "LPT³.log", "dir<file", "dir>file", "dir\"file", "dir|file"}
+	for _, relative := range invalidPaths {
+		values := map[string]SlotValue{"format": validValues["format"], "count": validValues["count"], "file": {RootID: "project", RelativePath: relative}}
+		if _, err := profile.ResolveVariant("run", values, func(string, string) (string, error) { return "ok", nil }); err == nil {
+			t.Fatalf("accepted invalid relative path %q", relative)
+		}
+	}
+	if _, err := profile.ResolveVariant("run", validValues, nil); !errors.Is(err, ErrPathResolverRequired) {
+		t.Fatalf("missing path resolver = %v", err)
+	}
+	if _, err := profile.ResolveVariant("run", validValues, func(string, string) (string, error) { return "", errors.New("denied") }); !errors.Is(err, ErrPathResolution) {
+		t.Fatalf("resolver denial = %v", err)
+	}
+	mixed := []map[string]SlotValue{
+		{"format": {Text: "json", Integer: 1}, "count": validValues["count"], "file": validValues["file"]},
+		{"format": validValues["format"], "count": {Text: "3"}, "file": validValues["file"]},
+		{"format": validValues["format"], "count": validValues["count"], "file": {Text: "x", RootID: "project", RelativePath: "x.txt"}},
+	}
+	for _, values := range mixed {
+		if _, err := profile.ResolveVariant("run", values, func(string, string) (string, error) { return "ok", nil }); err == nil {
+			t.Fatalf("accepted mixed typed slot fields: %#v", values)
+		}
+	}
+	longResolved := strings.Repeat("a", 30000)
+	values := map[string]SlotValue{"format": validValues["format"], "count": validValues["count"], "file": validValues["file"]}
+	longArgv, longErr := profile.ResolveVariant("run", values, func(string, string) (string, error) { return longResolved, nil })
+	if longErr != nil || len(longArgv[len(longArgv)-1]) != len(longResolved) {
+		t.Fatalf("long resolved path rejected: len=%d err=%v", len(longArgv), longErr)
+	}
+	tooLong := strings.Repeat("a", 32768)
+	if _, err := profile.ResolveVariant("run", values, func(string, string) (string, error) { return tooLong, nil }); err == nil {
+		t.Fatal("oversized resolver path accepted")
+	}
+	tooLongRelative := strings.Repeat("a", 4097)
+	values["file"] = SlotValue{RootID: "project", RelativePath: tooLongRelative}
+	if _, err := profile.ResolveVariant("run", values, func(string, string) (string, error) { return "ok", nil }); err == nil {
+		t.Fatal("oversized relative path accepted")
+	}
+}
+
+func TestFixedCommandSlotDataIsDeeplyImmutable(t *testing.T) {
+	spec := fixedCommandSpec()
+	profile, err := New(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Slots[0].EnumValues[0] = "changed"
+	spec.Slots[2].RootIDs[0] = "changed"
+	slots := profile.Slots()
+	slots[0].EnumValues()[0] = "changed-accessor"
+	slots[2].RootIDs()[0] = "changed-accessor"
+	got := profile.Slots()
+	if got[0].EnumValues()[0] != "json" || got[2].RootIDs()[0] != "project" {
+		t.Fatalf("slot data was not deeply copied: %#v", got)
 	}
 }

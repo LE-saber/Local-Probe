@@ -129,6 +129,14 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	if req.CommandID != profile.ID() {
 		return e.reject(initialAudit, ErrInvalidRequest, "invalid_request")
 	}
+	// fixed_command is configuration/resolve-only in this increment. Typed
+	// slot values are not represented in Request or bound into confirmation;
+	// a future executor must bind a resolved-input digest and profile revision
+	// before this gate can be relaxed. Reject before consuming confirmation or
+	// invoking the runner so a fixed profile cannot execute accidentally.
+	if profile.Kind() != commandprofile.KindVersionProbe {
+		return e.reject(initialAudit, fmt.Errorf("%w: unsupported_profile", ErrNotAdmitted), "unsupported_profile")
+	}
 	variant, ok := profile.Variant(req.VariantID)
 	if !ok {
 		return e.reject(initialAudit, ErrInvalidRequest, "invalid_request")

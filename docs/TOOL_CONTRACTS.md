@@ -326,28 +326,37 @@ Windows 输入必须是本地绝对 `.exe`，并拒绝 UNC/device/ADS/保留名/
 kill-on-close。私有空 cwd、空/精简环境、闭 stdin、无窗口、输出上限、超时和进程回收也属于
 固定实现，调用方不能覆盖。
 
-`internal/commandprofile` 的本地配置层只接受 Windows `version_probe`：绝对 `.exe`、
-小写 64 字符 SHA256 pin、命名 exact argv variant（只允许 `-v`、`--version`、`version`）、
-私有空 cwd、空环境、单进程、`network=deny`、`per_call` 本地确认和结构化 version 结果。
-`internal/probe` 从同一最终映像 guard handle 计算并比较该摘要，并在 CreateProcess/resume
-前复核执行期限。`internal/confirmation` 的 capability 是短期、一次性、绑定
-connection/profile/revision/command/variant/request nonce 的 opaque 值；它不能从 MCP JSON
-中的布尔值、文本或伪造 token 产生。`allow_any_suffix`、raw command、任意 args/env/cwd/
-timeout、脚本/wrapper 和模型修改 profile 均被拒绝。
+`internal/commandprofile` 的本地配置层支持 Windows `version_probe` 与 `fixed_command`：
+二者都要求绝对 `.exe`、小写 64 字符 SHA256 pin、私有空 cwd、空环境、单进程、`network=deny`、
+`per_call` 本地确认和结构化结果。`version_probe` 继续兼容 `argv.slots:[]`，并只允许固定
+`-v`、`--version`、`version` exact variant；`fixed_command` 支持 exact argv 或逐项
+literal/typed-slot 模板，slot 限定为 `enum`、`bounded_integer`、`root_relative_path`。
+配置解析会做 variant/slot/root ID 交叉校验；纯 `ResolveVariant` 不执行命令。路径使用 `/` 规范，
+最多 4096 字节，拒绝 Windows 保留名/非法字符，并通过可信 resolver 对同一 slot 单次解析复用结果；resolved
+argv 受 32767 字节保守预算。`internal/probe` 仍从同一最终映像 guard handle 计算并比较摘要，
+并在 CreateProcess/resume 前复核执行期限。`internal/confirmation` 的 capability 是短期、一次性、
+绑定 connection/profile/revision/command/variant/request nonce 的 opaque 值；它不能从 MCP JSON
+中的布尔值、文本或伪造 token 产生。`allow_any_suffix`、raw command、任意 args/env/cwd、
+timeout、把 `.cmd/.bat/.ps1` wrapper 直接配置为 executable，以及模型修改 profile 均被拒绝；
+通过 `.exe` 解释器间接执行脚本的策略仍须在启用 `fixed_command` 前闭合。
 
 `config.Store.AcquireRevisionLease` 与 `internal/commandexec` 提供本地 fail-closed bridge：
-先持有 profile revision lease，检查 developer/network admission，再消费一次性 confirmation，
-最后由可信 profile 构造 probe descriptor/policy。`Executor` 要求调用方提供 `AuditRecorder`：
-拒绝路径同步记录 `command.reject`；成功准入和确认消费后分别将 `command.admission`、
-`command.start` 送入有界异步队列。只有即时校验或入队错误会 fail closed、不启动 probe；后续
-磁盘写失败只标记 `degraded`，尚待 supervisor 阻断新执行，不能声称每条事件都在启动前持久化。
-审计上下文不包含 path、argv、env、output 或 token。当前 probe 尚未提供可靠完整 outcome，
-因此 `command.result` 仍未接线。`commandprofile.EnforcementCapability` 当前没有生产铸造器，
-因此默认拒绝；bridge 尚未接入 CLI/supervisor/MCP。配置层已有的 pre-open writable handle 或
-mapped view 仍是残余风险；`LockFileEx` 的 byte-range lock 不约束 mapped view，不能作为完整修复。
+对当前可执行的 profile，先持有 profile revision lease，检查 developer/network admission，再消费
+一次性 confirmation，最后由可信 profile 构造 probe descriptor/policy。对 `fixed_command`，当前
+`Executor` 在 confirmation、admission、start 和 runner 之前直接返回 `unsupported_profile`，
+因此该配置/解析增量没有新增执行能力。`Executor` 要求调用方提供 `AuditRecorder`：拒绝路径同步
+记录 `command.reject`；成功准入和确认消费后分别将 `command.admission`、`command.start` 送入
+有界异步队列。只有即时校验或入队错误会 fail closed、不启动 probe；后续磁盘写失败只标记
+`degraded`，尚待 supervisor 阻断新执行，不能声称每条事件都在启动前持久化。审计上下文不包含
+path、argv、env、output 或 token。当前 probe 尚未提供可靠完整 outcome，因此 `command.result`
+仍未接线。`commandprofile.EnforcementCapability` 当前没有生产铸造器，因此默认拒绝；bridge
+尚未接入 CLI/supervisor/MCP。配置层已有的 pre-open writable handle 或 mapped view 仍是残余风险；
+`LockFileEx` 的 byte-range lock 不约束 mapped view，不能作为完整修复。
 
-下一增量先做 developer-mode exact argv/typed slots 的本地配置验证，再在 probe 提供可靠完整
-outcome 后接入 `command.result`；该路线不开放 raw command、arbitrary shell 或任意参数数组。
+下一增量绑定 resolved-input digest、config revision 与 local confirmation，并闭合可靠 outcome/runner
+边界后再接入 `command.result`；最终 resolver 仍须重新执行 root 授权、deny/reparse/final identity，
+launcher 仍须做 Windows UTF-16/escaping 检查。`cmd`、PowerShell 及其它 shell/interpreter 方案也
+必须在执行前闭合；该路线不开放 raw command、arbitrary shell 或任意参数数组。
 
 `internal/networkguard` 已完成 NET-01 platform-independent contract/fake：每次操作使用不可
 序列化的独立 lease/capability/run handle，要求完整 IPv4/IPv6 outbound/inbound、bind/listen、

@@ -4,7 +4,7 @@
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心，但尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行；`command.result` 因 probe 尚无可靠完整 outcome 仍未接线，本轮也未做手工、网页或网络测试。P09/P10 及发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心；`fixed_command` 当前仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新执行能力。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行；`command.result` 因 probe 尚无可靠完整 outcome 仍未接线，本轮也未做手工、网页或网络测试。P09/P10 及发布级审查仍未完成。
 
 ## 一、能力分层与不变边界
 
@@ -103,9 +103,12 @@ Git、解释器、网络、写入和可产生项目状态的动作必须单独�
 
 `argv.variants` 是本地规则定义的命名 exact argv 集合；上例明确允许 `codex -v` 和
 `codex --version` 两种变体。远端请求最多只能选择 `command_id=codex_version` 与
-`variant_id=short|long`，不能传 `suffix`、`argv`、`executable` 或命令字符串。其它 profile
-的动态值也只能通过 schema 中声明的 typed slots（enum、root-relative path、bounded int）
-传入，由服务端逐项组装 argv。`allow_any_suffix`、通配后缀和任意参数数组首版明确拒绝。
+`variant_id=short|long`，不能传 `suffix`、`argv`、`executable` 或命令字符串。`fixed_command`
+还可在本地规则中使用逐项 literal/slot 模板；slot 只允许 `enum`、`root-relative path`、
+`bounded integer`，由服务端逐项组装 argv。`version_probe` 的旧 `slots:[]` 配置继续兼容。
+root-relative path 采用 `/` 规范，限制为 4096 字节并拒绝 Windows 保留名/非法字符；可信
+resolver 对同一 slot 只做一次解析并复用结果，resolved argv 受 32767 字节保守预算约束。`allow_any_suffix`、
+通配后缀和任意参数数组首版明确拒绝。
 
 | `kind` | 执行语义 | 首批范围 |
 |---|---|---|
@@ -307,13 +310,17 @@ contract/fake、R4-NET-02 固定 8-family opaque plan/跨平台 DisabledBackend 
    本地幂等清理。该增量不调用 `fwpuclnt.dll`，不实现 WFP ABI/dynamic session/filter install，
    不请求管理员权限，不修改 Windows Firewall，不铸造 capability；本阶段也没有真实/手动
    网络测试证据。
-3. **下一步：developer-mode exact argv/typed slots 本地配置验证**：先验证本地受信配置中的
-   exact argv variants、命名 `variant_id` 和 enum/root-relative path/bounded integer 等 typed
-   slots；验证规则 revision 绑定与服务端逐项构造 argv。该增量只做 local-only 配置校验，不注册
-   MCP `run_probe`，不开放 raw command、arbitrary shell 或任意参数数组。
-4. **随后：outcome/result 接线**：只有在 probe 能提供可靠、完整且可审计的 process outcome 后，
-   才将受限 exit/timeout/byte counts 接入 `command.result`；在此之前不声称 result producer 已
-   接到实际执行。
+3. **已实现：developer-mode exact argv/typed slots 本地配置验证**：本地受信配置支持
+   `fixed_command` 的 exact argv 和逐项模板，typed slots 限定为 enum、root-relative path、
+   bounded integer；`version_probe` 保持 `slots:[]` 兼容。解析会做 root ID 交叉校验、路径 4096
+   字节/Windows 保留名与非法字符检查，并由纯 `ResolveVariant` 在 32767 字节保守预算内构造
+   argv。可信 resolver 的最终授权仍未被该纯函数取代；该增量不注册 MCP `run_probe`，而且
+   commandexec 在 confirmation/admission/start/runner 前对 `fixed_command` fail closed。
+4. **下一步：resolved input 与执行边界闭合**：将 resolved-input digest、config revision
+   和 local confirmation 绑定，再建立可靠、可审计的 outcome/runner 边界并接入受限的
+   `command.result`；最终 resolver 仍须做 root 授权、deny/reparse/final identity，launcher
+   仍须检查 Windows UTF-16/escaping。`cmd`、PowerShell 或其它 shell/interpreter 方案在此
+   边界前必须明确闭合；在完成前不执行 `fixed_command`，不注册 MCP。
 5. **后续：真实 WFP adapter**：基于受审查的 `fwpuclnt.dll` user-mode ABI 实现动态会话级
    WFP 过滤器，覆盖上述八个固定 family 以及 loopback/适用的 identity 绑定；不创建持久
    Windows Firewall 规则，未能证明的状态 fail closed。该 adapter 尚不能直接接入当前
@@ -359,8 +366,8 @@ closed。停止条件：network deny 无法证明、profile/bridge 未安全接�
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；R5 与 R6 可在 R4 通过后分别推进；R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据。
 
-现在做：先保持远程能力关闭，执行 developer-mode exact argv/typed slots 的本地配置验证；
-随后在 probe 提供可靠完整 outcome 后接 `command.result`。再按 WFP adapter → 低权限 broker/service
+现在做：先保持远程能力关闭，完成 resolved-input digest、revision、local confirmation 的绑定，
+并闭合可靠 outcome/runner 边界后再接 `command.result`。再按 WFP adapter → 低权限 broker/service
 → suspended Job integration → VM identity/network adversarial tests → CLI/supervisor 生产接线推进
 R4。自动化检查先行；本轮尚未做 Windows 手工、网页或网络测试。硬门全部通过前保持 MCP
 `run_probe` 不注册。

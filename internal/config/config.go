@@ -653,6 +653,18 @@ func (c Config) validate() error {
 	if err := commandprofile.ValidateProfiles(c.commandProfiles); err != nil {
 		return err
 	}
+	for i, command := range c.commandProfiles {
+		for j, slot := range command.Slots() {
+			if slot.Kind() != commandprofile.SlotRootRelativePath {
+				continue
+			}
+			for k, rootID := range slot.RootIDs() {
+				if _, ok := rootIDs[rootID]; !ok {
+					return invalid(fmt.Sprintf("command_profiles[%d].argv.slots[%d].root_ids[%d]", i, j, k), "unknown root reference")
+				}
+			}
+		}
+	}
 	return validateDeveloperModeConnections(c.developerMode, connectionIDs)
 }
 
