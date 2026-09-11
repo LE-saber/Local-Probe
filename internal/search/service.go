@@ -76,8 +76,8 @@ func outputBudget(value, maximum int) (int, error) {
 	return value, nil
 }
 
-func makeBudget(page, depth, entries, read, output int) Budget {
-	return Budget{PageSize: page, MaxDepth: depth, MaxEntries: entries, MaxReadBytes: read, MaxOutputBytes: output}
+func makeBudget(page, depth, entries, read, output, openFiles, openDirectories int) Budget {
+	return Budget{PageSize: page, MaxDepth: depth, MaxEntries: entries, MaxReadBytes: read, MaxOutputBytes: output, MaxOpenFiles: openFiles, MaxOpenDirectories: openDirectories}
 }
 
 func appendWarning(warnings *[]string, warning string) {
@@ -124,6 +124,15 @@ func (s *Service) listCursor(base cursorPayload, frames []cursorFrame) (string, 
 	return s.cursor(base)
 }
 
+// canContinueAfterDirectoryLimit prevents a continuation from replaying the
+// same directory stack forever. Replaying a cursor opens every frame again;
+// when the stack already consumes the entire per-call directory budget, the
+// blocked child cannot be opened on the next call either. In that case the
+// result remains explicitly incomplete but has no unusable continuation.
+func (s *Service) canContinueAfterDirectoryLimit(frames []cursorFrame) bool {
+	return len(frames) < s.limits.MaxOpenDirectories
+}
+
 func (s *Service) ListDirectory(ctx context.Context, bound policy.BoundScope, req ListDirectoryRequest) (ListDirectoryResult, error) {
 	out := ListDirectoryResult{SchemaVersion: SchemaVersion, RootID: req.RootID, Path: req.Path, Entries: []Entry{}}
 	if bound.Validate() != nil {
@@ -143,12 +152,13 @@ func (s *Service) ListDirectory(ctx context.Context, bound policy.BoundScope, re
 	if err != nil {
 		return out, err
 	}
-	out.Budget = makeBudget(page, 0, entriesLimit, 0, s.limits.MaxOutputBytes)
-	base := cursorPayload{Operation: "list_directory", ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), Revision: bound.Revision(), RootID: req.RootID, StartPath: req.Path, PageSize: page, MaxEntries: entriesLimit}
+	out.Budget = makeBudget(page, 0, entriesLimit, 0, s.limits.MaxOutputBytes, s.limits.MaxOpenFiles, s.limits.MaxOpenDirectories)
+	opens := newOpenBudget(s.limits, &out.Coverage)
+	base := cursorPayload{Operation: "list_directory", ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), Revision: bound.Revision(), RootID: req.RootID, StartPath: req.Path, PageSize: page, MaxEntries: entriesLimit, MaxOpenFiles: s.limits.MaxOpenFiles, MaxOpenDirectories: s.limits.MaxOpenDirectories}
 	frames := []cursorFrame{{Path: req.Path}}
 	if req.Cursor != "" {
 		payload, decodeErr := s.decodeCursor(req.Cursor)
-		if decodeErr != nil || payload.Operation != base.Operation || !cursorMatchesScope(payload, bound.ConnectionID(), bound.ProfileID(), bound.Revision(), req.RootID, req.Path) || payload.PageSize != page || payload.MaxEntries != entriesLimit {
+		if decodeErr != nil || payload.Operation != base.Operation || !cursorMatchesScope(payload, bound.ConnectionID(), bound.ProfileID(), bound.Revision(), req.RootID, req.Path) || payload.PageSize != page || payload.MaxEntries != entriesLimit || payload.MaxOpenFiles != base.MaxOpenFiles || payload.MaxOpenDirectories != base.MaxOpenDirectories {
 			return out, ErrInvalidCursor
 		}
 		base.ExpiresAt, base.Frames = payload.ExpiresAt, payload.Frames
@@ -160,10 +170,23 @@ func (s *Service) ListDirectory(ctx context.Context, bound policy.BoundScope, re
 	}
 	opCtx, cancel := s.operationContext(ctx)
 	defer cancel()
-	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch)
+	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch, opens)
 	if err != nil {
 		if warning := contextWarning(err); warning != "" {
 			appendWarning(&out.Warnings, warning)
+			return out, nil
+		}
+		if errors.Is(err, ErrOpenDirectoriesLimit) {
+			appendWarning(&out.Warnings, "open_directory_limit")
+			out.Coverage.Complete = false
+			if s.canContinueAfterDirectoryLimit(frames) {
+				out.Continuation, err = s.listCursor(base, frames)
+				if err != nil {
+					return out, err
+				}
+			} else {
+				appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+			}
 			return out, nil
 		}
 		return out, normalizeOperationError(err)
@@ -288,12 +311,13 @@ func (s *Service) FindFiles(ctx context.Context, bound policy.BoundScope, req Fi
 		return out, err
 	}
 	caseSensitive := defaultCaseSensitive(req.CaseSensitive)
-	out.Budget = makeBudget(page, depth, entriesLimit, 0, s.limits.MaxOutputBytes)
-	base := cursorPayload{Operation: "find_files", ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), Revision: bound.Revision(), RootID: req.RootID, StartPath: req.Path, Pattern: req.Pattern, CaseSensitive: caseSensitive, PageSize: page, MaxDepth: depth, MaxEntries: entriesLimit}
+	out.Budget = makeBudget(page, depth, entriesLimit, 0, s.limits.MaxOutputBytes, s.limits.MaxOpenFiles, s.limits.MaxOpenDirectories)
+	opens := newOpenBudget(s.limits, &out.Coverage)
+	base := cursorPayload{Operation: "find_files", ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), Revision: bound.Revision(), RootID: req.RootID, StartPath: req.Path, Pattern: req.Pattern, CaseSensitive: caseSensitive, PageSize: page, MaxDepth: depth, MaxEntries: entriesLimit, MaxOpenFiles: s.limits.MaxOpenFiles, MaxOpenDirectories: s.limits.MaxOpenDirectories}
 	frames := []cursorFrame{{Path: req.Path}}
 	if req.Cursor != "" {
 		payload, decodeErr := s.decodeCursor(req.Cursor)
-		if decodeErr != nil || payload.Operation != base.Operation || !cursorMatchesScope(payload, bound.ConnectionID(), bound.ProfileID(), bound.Revision(), req.RootID, req.Path) || payload.Pattern != req.Pattern || payload.CaseSensitive != caseSensitive || payload.PageSize != page || payload.MaxDepth != depth || payload.MaxEntries != entriesLimit {
+		if decodeErr != nil || payload.Operation != base.Operation || !cursorMatchesScope(payload, bound.ConnectionID(), bound.ProfileID(), bound.Revision(), req.RootID, req.Path) || payload.Pattern != req.Pattern || payload.CaseSensitive != caseSensitive || payload.PageSize != page || payload.MaxDepth != depth || payload.MaxEntries != entriesLimit || payload.MaxOpenFiles != base.MaxOpenFiles || payload.MaxOpenDirectories != base.MaxOpenDirectories {
 			return out, ErrInvalidCursor
 		}
 		base.ExpiresAt, base.Frames = payload.ExpiresAt, payload.Frames
@@ -305,10 +329,23 @@ func (s *Service) FindFiles(ctx context.Context, bound policy.BoundScope, req Fi
 	}
 	opCtx, cancel := s.operationContext(ctx)
 	defer cancel()
-	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch)
+	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch, opens)
 	if err != nil {
 		if warning := contextWarning(err); warning != "" {
 			appendWarning(&out.Warnings, warning)
+			return out, nil
+		}
+		if errors.Is(err, ErrOpenDirectoriesLimit) {
+			appendWarning(&out.Warnings, "open_directory_limit")
+			out.Coverage.Complete = false
+			if s.canContinueAfterDirectoryLimit(frames) {
+				out.Continuation, err = s.listCursor(base, frames)
+				if err != nil {
+					return out, err
+				}
+			} else {
+				appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+			}
 			return out, nil
 		}
 		return out, normalizeOperationError(err)
@@ -376,9 +413,45 @@ func (s *Service) FindFiles(ctx context.Context, bound policy.BoundScope, req Fi
 				appendWarning(&out.Warnings, "depth_limit")
 				continue
 			}
+			if !opens.canOpenDirectory() {
+				w.rewindLast()
+				appendWarning(&out.Warnings, "open_directory_limit")
+				out.Coverage.Complete = false
+				if err := w.verifyGenerations(); err != nil {
+					return out, normalizeOperationError(err)
+				}
+				frames := w.framesState()
+				if s.canContinueAfterDirectoryLimit(frames) {
+					out.Continuation, err = s.listCursor(base, frames)
+					if err != nil {
+						return out, err
+					}
+				} else {
+					appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+				}
+				break
+			}
 			if pushErr := w.push(child); pushErr != nil {
 				if errors.Is(pushErr, ErrGenerationChanged) {
 					return out, ErrGenerationChanged
+				}
+				if errors.Is(pushErr, ErrOpenDirectoriesLimit) {
+					w.rewindLast()
+					appendWarning(&out.Warnings, "open_directory_limit")
+					out.Coverage.Complete = false
+					if err := w.verifyGenerations(); err != nil {
+						return out, normalizeOperationError(err)
+					}
+					frames := w.framesState()
+					if s.canContinueAfterDirectoryLimit(frames) {
+						out.Continuation, err = s.listCursor(base, frames)
+						if err != nil {
+							return out, err
+						}
+					} else {
+						appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+					}
+					break
 				}
 				out.Coverage.UnsupportedEntries++
 				appendWarning(&out.Warnings, "directory_unavailable")
@@ -473,13 +546,14 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 		return out, ErrInvalidRequest
 	}
 	caseSensitive := defaultCaseSensitive(req.CaseSensitive)
-	out.Budget = makeBudget(page, depth, entriesLimit, readLimit, s.limits.MaxOutputBytes)
-	base := cursorPayload{Operation: "search_text", ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), Revision: bound.Revision(), RootID: req.RootID, StartPath: req.Path, Query: req.Query, Globs: globs, CaseSensitive: caseSensitive, PageSize: page, MaxDepth: depth, MaxEntries: entriesLimit, MaxReadBytes: readLimit, ContextBytes: contextBytes}
+	out.Budget = makeBudget(page, depth, entriesLimit, readLimit, s.limits.MaxOutputBytes, s.limits.MaxOpenFiles, s.limits.MaxOpenDirectories)
+	opens := newOpenBudget(s.limits, &out.Coverage)
+	base := cursorPayload{Operation: "search_text", ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), Revision: bound.Revision(), RootID: req.RootID, StartPath: req.Path, Query: req.Query, Globs: globs, CaseSensitive: caseSensitive, PageSize: page, MaxDepth: depth, MaxEntries: entriesLimit, MaxReadBytes: readLimit, ContextBytes: contextBytes, MaxOpenFiles: s.limits.MaxOpenFiles, MaxOpenDirectories: s.limits.MaxOpenDirectories}
 	frames := []cursorFrame{{Path: req.Path}}
 	var pending *scanCursorState
 	if req.Cursor != "" {
 		payload, decodeErr := s.decodeCursor(req.Cursor)
-		if decodeErr != nil || payload.Operation != base.Operation || !cursorMatchesScope(payload, bound.ConnectionID(), bound.ProfileID(), bound.Revision(), req.RootID, req.Path) || payload.Query != req.Query || !equalStrings(payload.Globs, globs) || payload.CaseSensitive != caseSensitive || payload.PageSize != page || payload.MaxDepth != depth || payload.MaxEntries != entriesLimit || payload.MaxReadBytes != readLimit || payload.ContextBytes != contextBytes {
+		if decodeErr != nil || payload.Operation != base.Operation || !cursorMatchesScope(payload, bound.ConnectionID(), bound.ProfileID(), bound.Revision(), req.RootID, req.Path) || payload.Query != req.Query || !equalStrings(payload.Globs, globs) || payload.CaseSensitive != caseSensitive || payload.PageSize != page || payload.MaxDepth != depth || payload.MaxEntries != entriesLimit || payload.MaxReadBytes != readLimit || payload.ContextBytes != contextBytes || payload.MaxOpenFiles != base.MaxOpenFiles || payload.MaxOpenDirectories != base.MaxOpenDirectories {
 			return out, ErrInvalidCursor
 		}
 		base.ExpiresAt, base.Frames, pending = payload.ExpiresAt, payload.Frames, payload.Pending
@@ -491,10 +565,23 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 	}
 	opCtx, cancel := s.operationContext(ctx)
 	defer cancel()
-	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch)
+	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch, opens)
 	if err != nil {
 		if warning := contextWarning(err); warning != "" {
 			appendWarning(&out.Warnings, warning)
+			return out, nil
+		}
+		if errors.Is(err, ErrOpenDirectoriesLimit) {
+			appendWarning(&out.Warnings, "open_directory_limit")
+			out.Coverage.Complete = false
+			if s.canContinueAfterDirectoryLimit(frames) {
+				out.Continuation, err = s.listCursor(base, frames)
+				if err != nil {
+					return out, err
+				}
+			} else {
+				appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+			}
 			return out, nil
 		}
 		return out, normalizeOperationError(err)
@@ -512,7 +599,7 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 			break
 		}
 		if pending != nil {
-			scan, scanErr := s.scanFile(opCtx, source, bound, req.RootID, req.Query, caseSensitive, contextBytes, *pending, &out, page-len(out.Matches), readLimit-out.Coverage.ReadBytes, s.limits.MaxOutputBytes-out.Coverage.ReturnedBytes)
+			scan, scanErr := s.scanFile(opCtx, source, bound, req.RootID, req.Query, caseSensitive, contextBytes, *pending, &out, opens, page-len(out.Matches), readLimit-out.Coverage.ReadBytes, s.limits.MaxOutputBytes-out.Coverage.ReturnedBytes)
 			if scanErr != nil {
 				if errors.Is(scanErr, ErrUnsupportedEncoding) {
 					out.Coverage.UnsupportedEntries++
@@ -520,6 +607,19 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 					pending = nil
 					base.Pending = nil
 					continue
+				}
+				if errors.Is(scanErr, ErrOpenFilesLimit) {
+					appendWarning(&out.Warnings, "open_file_limit")
+					out.Coverage.Complete = false
+					base.Pending = pending
+					if err := w.verifyGenerations(); err != nil {
+						return out, normalizeOperationError(err)
+					}
+					out.Continuation, err = s.listCursor(base, w.framesState())
+					if err != nil {
+						return out, err
+					}
+					break
 				}
 				return out, normalizeSearchScanError(scanErr, &out)
 			}
@@ -596,9 +696,47 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 				appendWarning(&out.Warnings, "depth_limit")
 				continue
 			}
+			if !opens.canOpenDirectory() {
+				w.rewindLast()
+				appendWarning(&out.Warnings, "open_directory_limit")
+				out.Coverage.Complete = false
+				base.Pending = pending
+				if err := w.verifyGenerations(); err != nil {
+					return out, normalizeOperationError(err)
+				}
+				frames := w.framesState()
+				if s.canContinueAfterDirectoryLimit(frames) {
+					out.Continuation, err = s.listCursor(base, frames)
+					if err != nil {
+						return out, err
+					}
+				} else {
+					appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+				}
+				break
+			}
 			if pushErr := w.push(child); pushErr != nil {
 				if errors.Is(pushErr, ErrGenerationChanged) {
 					return out, ErrGenerationChanged
+				}
+				if errors.Is(pushErr, ErrOpenDirectoriesLimit) {
+					w.rewindLast()
+					appendWarning(&out.Warnings, "open_directory_limit")
+					out.Coverage.Complete = false
+					base.Pending = pending
+					if err := w.verifyGenerations(); err != nil {
+						return out, normalizeOperationError(err)
+					}
+					frames := w.framesState()
+					if s.canContinueAfterDirectoryLimit(frames) {
+						out.Continuation, err = s.listCursor(base, frames)
+						if err != nil {
+							return out, err
+						}
+					} else {
+						appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+					}
+					break
 				}
 				out.Coverage.UnsupportedEntries++
 				appendWarning(&out.Warnings, "directory_unavailable")
@@ -612,13 +750,41 @@ func (s *Service) SearchText(ctx context.Context, bound policy.BoundScope, req S
 			}
 			continue
 		}
+		if !opens.canOpenFile() {
+			w.rewindLast()
+			appendWarning(&out.Warnings, "open_file_limit")
+			out.Coverage.Complete = false
+			base.Pending = nil
+			if err := w.verifyGenerations(); err != nil {
+				return out, normalizeOperationError(err)
+			}
+			out.Continuation, err = s.listCursor(base, w.framesState())
+			if err != nil {
+				return out, err
+			}
+			break
+		}
 		state := scanCursorState{Path: child, Offset: 0, Line: 1, LineStartByte: 0, LastMatchByte: -1}
-		scan, scanErr := s.scanFile(opCtx, source, bound, req.RootID, req.Query, caseSensitive, contextBytes, state, &out, page-len(out.Matches), readLimit-out.Coverage.ReadBytes, s.limits.MaxOutputBytes-out.Coverage.ReturnedBytes)
+		scan, scanErr := s.scanFile(opCtx, source, bound, req.RootID, req.Query, caseSensitive, contextBytes, state, &out, opens, page-len(out.Matches), readLimit-out.Coverage.ReadBytes, s.limits.MaxOutputBytes-out.Coverage.ReturnedBytes)
 		if scanErr != nil {
 			if errors.Is(scanErr, ErrUnsupportedEncoding) {
 				out.Coverage.UnsupportedEntries++
 				appendWarning(&out.Warnings, "unsupported_encoding")
 				continue
+			}
+			if errors.Is(scanErr, ErrOpenFilesLimit) {
+				appendWarning(&out.Warnings, "open_file_limit")
+				out.Coverage.Complete = false
+				w.rewindLast()
+				base.Pending = nil
+				if err := w.verifyGenerations(); err != nil {
+					return out, normalizeOperationError(err)
+				}
+				out.Continuation, err = s.listCursor(base, w.framesState())
+				if err != nil {
+					return out, err
+				}
+				break
 			}
 			return out, normalizeSearchScanError(scanErr, &out)
 		}
@@ -681,7 +847,7 @@ func normalizeOperationError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
-	if errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrInvalidCursor) || errors.Is(err, ErrGenerationChanged) || errors.Is(err, ErrDenied) {
+	if errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrInvalidCursor) || errors.Is(err, ErrGenerationChanged) || errors.Is(err, ErrDenied) || errors.Is(err, ErrOpenFilesLimit) || errors.Is(err, ErrOpenDirectoriesLimit) {
 		return err
 	}
 	return ErrUnavailable
@@ -703,7 +869,7 @@ func normalizeSearchScanError(err error, out *SearchTextResult) error {
 		appendWarning(&out.Warnings, "time_limit")
 		return context.DeadlineExceeded
 	}
-	if errors.Is(err, ErrGenerationChanged) || errors.Is(err, ErrInvalidCursor) || errors.Is(err, ErrDenied) {
+	if errors.Is(err, ErrGenerationChanged) || errors.Is(err, ErrInvalidCursor) || errors.Is(err, ErrDenied) || errors.Is(err, ErrOpenFilesLimit) || errors.Is(err, ErrOpenDirectoriesLimit) {
 		return err
 	}
 	return ErrUnavailable

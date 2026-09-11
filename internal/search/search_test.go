@@ -71,6 +71,335 @@ func TestListDirectoryIsBoundedAndCursorIsSigned(t *testing.T) {
 	}
 }
 
+func TestListDirectoryCursorReplayPreservesStableOrderWithoutDuplicates(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["list_directory"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+	// Directory order is a source contract: pagination must preserve it. The
+	// service must not sort each page independently or lose entries while
+	// replaying the cursor's directory offset.
+	source := newFakeSource(map[string][]DirEntry{
+		"": {
+			{Name: "z.txt", Type: EntryRegular},
+			{Name: "a.txt", Type: EntryRegular},
+			{Name: "m.txt", Type: EntryRegular},
+			{Name: "b.txt", Type: EntryRegular},
+		},
+	})
+	service, err := New(source, DefaultLimits(), []byte("search-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	page, err := service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Coverage.ReplayedEntries != 0 || page.Coverage.OpenedDirectories != 1 {
+		t.Fatalf("first page coverage = %#v", page.Coverage)
+	}
+	for _, entry := range page.Entries {
+		got = append(got, entry.Path)
+	}
+	if page.Continuation == "" {
+		t.Fatalf("first page did not return a continuation: %#v", page)
+	}
+
+	page, err = service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 2, Cursor: page.Continuation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Coverage.ReplayedEntries != 2 || page.Coverage.OpenedDirectories != 1 {
+		t.Fatalf("replayed page coverage = %#v", page.Coverage)
+	}
+	for _, entry := range page.Entries {
+		got = append(got, entry.Path)
+	}
+	if page.Continuation == "" {
+		t.Fatalf("second page did not return a continuation: %#v", page)
+	}
+
+	page, err = service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 2, Cursor: page.Continuation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range page.Entries {
+		got = append(got, entry.Path)
+	}
+	if page.Continuation != "" || !page.Coverage.Complete {
+		t.Fatalf("final page coverage = %#v continuation=%q", page.Coverage, page.Continuation)
+	}
+	want := []string{"z.txt", "a.txt", "m.txt", "b.txt"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stable paginated order = %v, want %v", got, want)
+	}
+}
+
+func TestNewDefaultsOpenBudgetsForLegacyNonzeroLimits(t *testing.T) {
+	legacy := DefaultLimits()
+	legacy.MaxOpenFiles = 0
+	legacy.MaxOpenDirectories = 0
+	service, err := New(newFakeSource(map[string][]DirEntry{"": {}}), legacy, []byte("search-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := DefaultLimits()
+	if service.limits.MaxOpenFiles != defaults.MaxOpenFiles || service.limits.MaxOpenDirectories != defaults.MaxOpenDirectories {
+		t.Fatalf("legacy limits open budgets = %d/%d, want %d/%d", service.limits.MaxOpenFiles, service.limits.MaxOpenDirectories, defaults.MaxOpenFiles, defaults.MaxOpenDirectories)
+	}
+}
+
+func TestWalkerPreservesDirectoryBudgetDuringInitialCursorReplay(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["find_files"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+	source := newFakeSource(map[string][]DirEntry{
+		"":       {{Name: "nested", Type: EntryDirectory}},
+		"nested": {{Name: "leaf.go", Type: EntryRegular}},
+	})
+	limits := DefaultLimits()
+	limits.MaxOpenDirectories = 1
+	coverage := Coverage{}
+	opens := newOpenBudget(limits, &coverage)
+	_, err := newWalker(context.Background(), source, bound, "project", []cursorFrame{
+		{Path: "", Offset: 1, Generation: "stable"},
+		{Path: "nested", Generation: "stable"},
+	}, limits.DirectoryBatch, opens)
+	if !errors.Is(err, ErrOpenDirectoriesLimit) || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("initial multi-frame replay error = %v, want open_directory_limit", err)
+	}
+	if coverage.OpenedDirectories != 1 || coverage.ReplayedEntries != 1 {
+		t.Fatalf("initial replay coverage = %#v, want one open and one replay", coverage)
+	}
+}
+
+func TestSearchOpenBudgetsAreBoundedAndReported(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["find_files","search_text"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+
+	limits := DefaultLimits()
+	limits.MaxOpenDirectories = 1
+	source := newFakeSource(map[string][]DirEntry{
+		"":       {{Name: "top.go", Type: EntryRegular}, {Name: "nested", Type: EntryDirectory}},
+		"nested": {{Name: "child.go", Type: EntryRegular}},
+	}, map[string]string{"top.go": "needle\n", "nested/child.go": "needle\n"})
+	service, err := New(source, limits, []byte("search-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := service.FindFiles(context.Background(), bound, FindFilesRequest{RootID: "project", Pattern: "**/*.go", PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files.Coverage.OpenedDirectories != 1 || files.Coverage.Complete || !contains(files.Warnings, "open_directory_limit") || !contains(files.Warnings, "open_directory_limit_no_continuation") || contains(files.Warnings, "directory_unavailable") || files.Continuation != "" || len(files.Entries) != 1 || files.Entries[0].Path != "top.go" {
+		t.Fatalf("directory open budget result = %#v", files)
+	}
+
+	limits = DefaultLimits()
+	limits.MaxOpenFiles = 1
+	source = newFakeSource(map[string][]DirEntry{
+		"": {{Name: "a.go", Type: EntryRegular}, {Name: "b.go", Type: EntryRegular}},
+	}, map[string]string{"a.go": "needle\n", "b.go": "needle\n"})
+	service, err = New(source, limits, []byte("search-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.SearchText(context.Background(), bound, SearchTextRequest{RootID: "project", Query: "needle", PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Coverage.OpenedFiles != 1 || first.Coverage.OpenedDirectories != 1 || first.Coverage.Complete || !contains(first.Warnings, "open_file_limit") || first.Continuation == "" || len(first.Matches) != 1 {
+		t.Fatalf("file open budget first page = %#v", first)
+	}
+	second, err := service.SearchText(context.Background(), bound, SearchTextRequest{RootID: "project", Query: "needle", PageSize: 10, Cursor: first.Continuation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Coverage.OpenedFiles != 1 || second.Coverage.ReplayedEntries != 1 || !second.Coverage.Complete || second.Continuation != "" || len(second.Matches) != 1 || second.Matches[0].Path != "b.go" {
+		t.Fatalf("file open budget continuation = %#v", second)
+	}
+}
+
+func TestTreeDirectoryOpenBudgetReturnsContinuation(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["tree_directory"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+	source := newFakeSource(map[string][]DirEntry{
+		"":       {{Name: "nested", Type: EntryDirectory}},
+		"nested": {{Name: "leaf.go", Type: EntryRegular}},
+	})
+	limits := DefaultLimits()
+	limits.MaxOpenDirectories = 1
+	service, err := New(source, limits, []byte("search-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", MaxDepth: 2, PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Coverage.OpenedDirectories != 1 || result.Coverage.Complete || !contains(result.Warnings, "open_directory_limit") || !contains(result.Warnings, "open_directory_limit_no_continuation") || contains(result.Warnings, "directory_unavailable") || result.Continuation != "" {
+		t.Fatalf("tree open budget result = %#v", result)
+	}
+	if len(result.Entries) != 1 || result.Entries[0].Path != "" {
+		t.Fatalf("tree open budget entries = %#v, want root only", result.Entries)
+	}
+}
+
+func TestTreeDirectoryPreservesBudgetDuringInitialCursorReplay(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["tree_directory"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+	source := newFakeSource(map[string][]DirEntry{
+		"":       {{Name: "nested", Type: EntryDirectory}},
+		"nested": {{Name: "leaf.go", Type: EntryRegular}},
+	})
+	limits := DefaultLimits()
+	limits.MaxOpenDirectories = 1
+	service, err := New(source, limits, []byte("search-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := service.cursor(cursorPayload{
+		Operation:          "tree_directory",
+		ConnectionID:       bound.ConnectionID(),
+		ProfileID:          bound.ProfileID(),
+		Revision:           bound.Revision(),
+		RootID:             "project",
+		PageSize:           10,
+		MaxDepth:           2,
+		MaxEntries:         limits.MaxScannedEntries,
+		MaxOutputBytes:     limits.MaxOutputBytes,
+		MaxOpenFiles:       limits.MaxOpenFiles,
+		MaxOpenDirectories: limits.MaxOpenDirectories,
+		RootEmitted:        true,
+		Frames: []cursorFrame{
+			{Path: "", Offset: 1, Generation: "stable"},
+			{Path: "nested", Generation: "stable"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", MaxDepth: 2, PageSize: 10, Cursor: cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Coverage.OpenedDirectories != 1 || result.Coverage.ReplayedEntries != 1 || result.Coverage.Complete || !contains(result.Warnings, "open_directory_limit") || !contains(result.Warnings, "open_directory_limit_no_continuation") || contains(result.Warnings, "directory_unavailable") || result.Continuation != "" {
+		t.Fatalf("tree initial replay budget result = %#v", result)
+	}
+}
+
+func TestOpenDirectoryLimitNeverReturnsAStalledContinuation(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["find_files","search_text","tree_directory"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+
+	newService := func(source Binder) *Service {
+		limits := DefaultLimits()
+		limits.MaxOpenDirectories = 1
+		service, err := New(source, limits, []byte("search-test-cursor-key-0123456789"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+
+	t.Run("find_files", func(t *testing.T) {
+		service := newService(newFakeSource(map[string][]DirEntry{
+			"":       {{Name: "top.go", Type: EntryRegular}, {Name: "nested", Type: EntryDirectory}},
+			"nested": {{Name: "child.go", Type: EntryRegular}},
+		}))
+		result, err := service.FindFiles(context.Background(), bound, FindFilesRequest{RootID: "project", Pattern: "**/*.go", PageSize: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Continuation != "" || !contains(result.Warnings, "open_directory_limit_no_continuation") || len(result.Entries) != 1 || result.Entries[0].Path != "top.go" {
+			t.Fatalf("find_files stalled continuation result = %#v", result)
+		}
+	})
+
+	t.Run("search_text", func(t *testing.T) {
+		service := newService(newFakeSource(
+			map[string][]DirEntry{
+				"":       {{Name: "top.go", Type: EntryRegular}, {Name: "nested", Type: EntryDirectory}},
+				"nested": {{Name: "child.go", Type: EntryRegular}},
+			},
+			map[string]string{"top.go": "needle\n", "nested/child.go": "needle\n"},
+		))
+		result, err := service.SearchText(context.Background(), bound, SearchTextRequest{RootID: "project", Query: "needle", PageSize: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Continuation != "" || !contains(result.Warnings, "open_directory_limit_no_continuation") || len(result.Matches) != 1 || result.Matches[0].Path != "top.go" {
+			t.Fatalf("search_text stalled continuation result = %#v", result)
+		}
+	})
+
+	t.Run("tree_directory", func(t *testing.T) {
+		service := newService(newFakeSource(map[string][]DirEntry{
+			"":       {{Name: "nested", Type: EntryDirectory}},
+			"nested": {{Name: "child.go", Type: EntryRegular}},
+		}))
+		result, err := service.TreeDirectory(context.Background(), bound, TreeDirectoryRequest{RootID: "project", MaxDepth: 2, PageSize: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Continuation != "" || !contains(result.Warnings, "open_directory_limit_no_continuation") || len(result.Entries) != 1 || result.Entries[0].Path != "" {
+			t.Fatalf("tree_directory stalled continuation result = %#v", result)
+		}
+	})
+}
+
+func TestSearchCursorIsInvalidatedByDirectoryGenerationChange(t *testing.T) {
+	bound, _ := searchBound(t, `{
+  "schema_version":"local-probe.config.v1",
+  "roots":[{"id":"project","path":"C:/project"}],
+  "profiles":[{"id":"read","roots":["project"],"tools":["list_directory"]}],
+  "connections":[{"id":"connection","profile_id":"read","credential_ref":"credential","enabled":true}],
+  "credentials":[{"id":"credential","kind":"local_token"}]
+}`)
+	source := newFakeSource(map[string][]DirEntry{"": {{Name: "a.txt", Type: EntryRegular}, {Name: "b.txt", Type: EntryRegular}}})
+	service, err := New(source, DefaultLimits(), []byte("search-test-cursor-key-0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 1})
+	if err != nil || first.Continuation == "" {
+		t.Fatalf("first page = %#v, %v", first, err)
+	}
+	source.setGeneration("", "changed")
+	if _, err := service.ListDirectory(context.Background(), bound, ListDirectoryRequest{RootID: "project", PageSize: 1, Cursor: first.Continuation}); !errors.Is(err, ErrGenerationChanged) {
+		t.Fatalf("generation-changed cursor error = %v", err)
+	}
+}
+
 func TestTreeDirectoryReturnsFlatBoundedTreeAndHidesDeniedSubtrees(t *testing.T) {
 	bound, store := searchBound(t, `{
   "schema_version":"local-probe.config.v1",
@@ -339,9 +668,10 @@ type fakeBinder struct{ source Source }
 func (b *fakeBinder) BindSearch(policy.BoundScope) (Source, error) { return b.source, nil }
 
 type fakeSource struct {
-	mu    sync.RWMutex
-	dirs  map[string][]DirEntry
-	files map[string]string
+	mu          sync.RWMutex
+	dirs        map[string][]DirEntry
+	files       map[string]string
+	generations map[string]string
 }
 
 func newFakeSource(dirs map[string][]DirEntry, files ...map[string]string) *fakeSource {
@@ -349,7 +679,13 @@ func newFakeSource(dirs map[string][]DirEntry, files ...map[string]string) *fake
 	if len(files) != 0 {
 		allFiles = files[0]
 	}
-	return &fakeSource{dirs: dirs, files: allFiles}
+	return &fakeSource{dirs: dirs, files: allFiles, generations: map[string]string{}}
+}
+
+func (s *fakeSource) setGeneration(path, generation string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.generations[path] = generation
 }
 
 func (s *fakeSource) BindSearch(policy.BoundScope) (Source, error) { return s, nil }
@@ -357,11 +693,15 @@ func (s *fakeSource) BindSearch(policy.BoundScope) (Source, error) { return s, n
 func (s *fakeSource) OpenDirectory(_ context.Context, _ policy.BoundScope, _, path string) (Directory, error) {
 	s.mu.RLock()
 	entries, ok := s.dirs[path]
+	generation := s.generations[path]
 	s.mu.RUnlock()
 	if !ok {
 		return nil, errors.New("directory missing")
 	}
-	return &fakeDirectory{entries: append([]DirEntry(nil), entries...), generation: "stable"}, nil
+	if generation == "" {
+		generation = "stable"
+	}
+	return &fakeDirectory{entries: append([]DirEntry(nil), entries...), generation: generation}, nil
 }
 
 func (s *fakeSource) OpenFile(_ context.Context, _ policy.BoundScope, ref readcore.FileRef) (readcore.Handle, error) {

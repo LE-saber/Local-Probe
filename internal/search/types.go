@@ -27,11 +27,13 @@ const (
 )
 
 var (
-	ErrInvalidRequest    = errors.New("invalid search request")
-	ErrInvalidCursor     = errors.New("invalid search cursor")
-	ErrGenerationChanged = errors.New("search directory generation changed")
-	ErrDenied            = errors.New("search access denied")
-	ErrUnavailable       = errors.New("search source unavailable")
+	ErrInvalidRequest       = errors.New("invalid search request")
+	ErrInvalidCursor        = errors.New("invalid search cursor")
+	ErrGenerationChanged    = errors.New("search directory generation changed")
+	ErrDenied               = errors.New("search access denied")
+	ErrUnavailable          = errors.New("search source unavailable")
+	ErrOpenFilesLimit       = errors.New("search file-open budget exhausted")
+	ErrOpenDirectoriesLimit = errors.New("search directory-open budget exhausted")
 )
 
 // EntryType is deliberately smaller than os.FileMode so the source adapter
@@ -49,8 +51,11 @@ type DirEntry struct {
 
 // Directory is an iterator over a directory opened inside an authorized root.
 // ReadDir must return at most n entries when n > 0 and may return io.EOF only
-// after the final entries. Generation is a bounded metadata fingerprint used
-// to invalidate live-listing cursors when the directory changes.
+// after the final entries. Its stream order must remain stable for the lifetime
+// of the directory generation; walkers preserve that order across pages rather
+// than sorting an entire large directory into memory. Generation is a bounded
+// metadata fingerprint used to invalidate live-listing cursors when the
+// directory changes.
 type Directory interface {
 	ReadDir(n int) ([]DirEntry, error)
 	Generation() (string, error)
@@ -74,30 +79,34 @@ type Binder interface {
 // Limits are per-call safety limits. They bound memory, traversal work,
 // directory reads, text I/O and cursor size independently of MCP wire limits.
 type Limits struct {
-	MaxPageSize       int
-	MaxDepth          int
-	MaxScannedEntries int
-	MaxReadBytes      int
-	MaxLineBytes      int
-	MaxContextBytes   int
-	DirectoryBatch    int
-	MaxOutputBytes    int
-	MaxCursorBytes    int
-	Timeout           time.Duration
+	MaxPageSize        int
+	MaxDepth           int
+	MaxScannedEntries  int
+	MaxReadBytes       int
+	MaxLineBytes       int
+	MaxContextBytes    int
+	DirectoryBatch     int
+	MaxOutputBytes     int
+	MaxCursorBytes     int
+	MaxOpenFiles       int
+	MaxOpenDirectories int
+	Timeout            time.Duration
 }
 
 func DefaultLimits() Limits {
 	return Limits{
-		MaxPageSize:       128,
-		MaxDepth:          32,
-		MaxScannedEntries: 4096,
-		MaxReadBytes:      8 << 20,
-		MaxLineBytes:      64 << 10,
-		MaxContextBytes:   512,
-		DirectoryBatch:    64,
-		MaxOutputBytes:    256 << 10,
-		MaxCursorBytes:    64 << 10,
-		Timeout:           10 * time.Second,
+		MaxPageSize:        128,
+		MaxDepth:           32,
+		MaxScannedEntries:  4096,
+		MaxReadBytes:       8 << 20,
+		MaxLineBytes:       64 << 10,
+		MaxContextBytes:    512,
+		DirectoryBatch:     64,
+		MaxOutputBytes:     256 << 10,
+		MaxCursorBytes:     64 << 10,
+		MaxOpenFiles:       256,
+		MaxOpenDirectories: 256,
+		Timeout:            10 * time.Second,
 	}
 }
 
@@ -111,6 +120,8 @@ func (l Limits) validate() error {
 		l.DirectoryBatch < 1 || l.DirectoryBatch > 1024 ||
 		l.MaxOutputBytes < 1<<10 || l.MaxOutputBytes > 8<<20 ||
 		l.MaxCursorBytes < 1024 || l.MaxCursorBytes > 256<<10 ||
+		l.MaxOpenFiles < 1 || l.MaxOpenFiles > 1<<20 ||
+		l.MaxOpenDirectories < 1 || l.MaxOpenDirectories > 1<<20 ||
 		l.Timeout <= 0 || l.Timeout > 30*time.Second {
 		return fmt.Errorf("%w: search limits exceed safety bounds", ErrInvalidRequest)
 	}
@@ -184,24 +195,31 @@ type TreeEntry struct {
 }
 
 type Coverage struct {
-	Complete               bool `json:"complete"`
-	ScannedEntries         int  `json:"scanned_entries"`
-	ReturnedEntries        int  `json:"returned_entries"`
-	DeniedEntries          int  `json:"denied_entries"`
-	IgnoredEntries         int  `json:"ignored_entries"`
-	UnsupportedEntries     int  `json:"unsupported_entries"`
-	InvalidEncodingEntries int  `json:"invalid_encoding_entries"`
-	DepthLimitedEntries    int  `json:"depth_limited_entries"`
-	ReadBytes              int  `json:"read_bytes"`
-	ReturnedBytes          int  `json:"returned_bytes"`
+	Complete        bool `json:"complete"`
+	ScannedEntries  int  `json:"scanned_entries"`
+	ReturnedEntries int  `json:"returned_entries"`
+	// ReplayedEntries counts directory records consumed only to restore a
+	// signed cursor. Open counts include successful handles for this call.
+	ReplayedEntries        int `json:"replayed_entries"`
+	OpenedFiles            int `json:"opened_files"`
+	OpenedDirectories      int `json:"opened_directories"`
+	DeniedEntries          int `json:"denied_entries"`
+	IgnoredEntries         int `json:"ignored_entries"`
+	UnsupportedEntries     int `json:"unsupported_entries"`
+	InvalidEncodingEntries int `json:"invalid_encoding_entries"`
+	DepthLimitedEntries    int `json:"depth_limited_entries"`
+	ReadBytes              int `json:"read_bytes"`
+	ReturnedBytes          int `json:"returned_bytes"`
 }
 
 type Budget struct {
-	PageSize       int `json:"page_size"`
-	MaxDepth       int `json:"max_depth,omitempty"`
-	MaxEntries     int `json:"max_entries"`
-	MaxReadBytes   int `json:"max_read_bytes,omitempty"`
-	MaxOutputBytes int `json:"max_output_bytes"`
+	PageSize           int `json:"page_size"`
+	MaxDepth           int `json:"max_depth,omitempty"`
+	MaxEntries         int `json:"max_entries"`
+	MaxReadBytes       int `json:"max_read_bytes,omitempty"`
+	MaxOutputBytes     int `json:"max_output_bytes"`
+	MaxOpenFiles       int `json:"max_open_files"`
+	MaxOpenDirectories int `json:"max_open_directories"`
 }
 
 type ListDirectoryResult struct {

@@ -81,6 +81,39 @@ func TestBoundSearchSourceUsesRootfsPolicyAndDirectoryGeneration(t *testing.T) {
 	if strings.Join(listingPaths, ",") != "notes.txt,src" || listing.Coverage.DeniedEntries == 0 || listing.Coverage.IgnoredEntries == 0 {
 		t.Fatalf("list_directory paths = %v coverage=%#v warnings=%v", listingPaths, listing.Coverage, listing.Warnings)
 	}
+	if listing.Coverage.OpenedDirectories != 1 {
+		t.Fatalf("list_directory opened_directories = %d, want 1", listing.Coverage.OpenedDirectories)
+	}
+	listingOrder := make([]string, 0, len(listing.Entries))
+	for _, entry := range listing.Entries {
+		listingOrder = append(listingOrder, entry.Path)
+	}
+	var pagedOrder []string
+	paged, err := service.ListDirectory(ctx, bound, search.ListDirectoryRequest{RootID: "project", PageSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for page := 0; ; page++ {
+		if page > len(listingOrder)+1 {
+			t.Fatal("stable-order pagination did not terminate")
+		}
+		for _, entry := range paged.Entries {
+			pagedOrder = append(pagedOrder, entry.Path)
+		}
+		if paged.Coverage.Complete {
+			break
+		}
+		if paged.Continuation == "" {
+			t.Fatalf("stable-order page stopped without continuation: %#v", paged)
+		}
+		paged, err = service.ListDirectory(ctx, bound, search.ListDirectoryRequest{RootID: "project", PageSize: 1, Cursor: paged.Continuation})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Join(pagedOrder, ",") != strings.Join(listingOrder, ",") {
+		t.Fatalf("stable-order pagination = %v, one-shot = %v", pagedOrder, listingOrder)
+	}
 	found, err := service.FindFiles(ctx, bound, search.FindFilesRequest{RootID: "project", Pattern: "**/*.go", PageSize: 16})
 	if err != nil {
 		t.Fatal(err)
@@ -93,12 +126,18 @@ func TestBoundSearchSourceUsesRootfsPolicyAndDirectoryGeneration(t *testing.T) {
 	if strings.Join(foundPaths, ",") != "src/main.go,src/nested/util.go" {
 		t.Fatalf("find_files paths = %v coverage=%#v warnings=%v", foundPaths, found.Coverage, found.Warnings)
 	}
+	if found.Coverage.OpenedDirectories < 3 {
+		t.Fatalf("find_files opened_directories = %d, want root/src/src-nested", found.Coverage.OpenedDirectories)
+	}
 	text, err := service.SearchText(ctx, bound, search.SearchTextRequest{RootID: "project", Query: "needle", PageSize: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(text.Matches) != 2 || text.Coverage.DeniedEntries == 0 || text.Coverage.IgnoredEntries == 0 {
 		t.Fatalf("search_text = %#v", text)
+	}
+	if text.Coverage.OpenedFiles < 3 || text.Coverage.OpenedDirectories < 3 {
+		t.Fatalf("search_text opened files/directories = %d/%d, want at least 3/at least 3", text.Coverage.OpenedFiles, text.Coverage.OpenedDirectories)
 	}
 	tree, err := service.TreeDirectory(ctx, bound, search.TreeDirectoryRequest{RootID: "project", MaxDepth: 2, PageSize: 16})
 	if err != nil {
@@ -112,6 +151,9 @@ func TestBoundSearchSourceUsesRootfsPolicyAndDirectoryGeneration(t *testing.T) {
 	sort.Strings(sortedTreePaths)
 	if strings.Join(sortedTreePaths, ",") != ",notes.txt,src,src/main.go,src/nested" || tree.Coverage.DeniedEntries == 0 || tree.Coverage.IgnoredEntries == 0 || tree.Coverage.Complete {
 		t.Fatalf("tree_directory paths = %v coverage=%#v warnings=%v", treePaths, tree.Coverage, tree.Warnings)
+	}
+	if tree.Coverage.OpenedDirectories < 2 {
+		t.Fatalf("tree_directory opened_directories = %d, want root/src", tree.Coverage.OpenedDirectories)
 	}
 
 	// The generation is tied to the opened directory's metadata. A changed

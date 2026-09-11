@@ -4,7 +4,7 @@
 
 ## 一、当前调用契约
 
-`Engine.ReadBatch(ctx, trustedScope, requests)` 接收一个已经由可信调用方决定的 Scope 和一组 Request。Scope 内部保存 connection、profile revision 和复制后的 roots 集合，不从模型 JSON 解码。当前没有实现认证 ingress、配置存储、动态撤权或生产文件打开器。
+`Engine.ReadBatch(ctx, trustedScope, requests)` 接收一个已经由可信调用方决定的 Scope 和一组 Request。Scope 内部保存 connection、profile revision 和复制后的 roots 集合，不从模型 JSON 解码。本节只描述脱离服务层的 readcore 调用；认证 ingress、配置存储、动态撤权和生产文件打开器由后文的 MCP 适配层另行约束。
 
 Request 的 `file.root_id` 和 `file.path` 选择授权范围内的文件。path 使用 `/` 分隔的规范相对路径；offset 为 0-based 字节位置。`max_bytes=0` 使用单项默认最大预算；负数、越过配置上限、非法路径和未授权 root 产生单项错误。
 
@@ -55,7 +55,7 @@ BatchResult 包含 schema_version、按输入排序的 items、returned_bytes、
 
 小到不足一个字符的预算返回 budget_exhausted，提示缩小 batch 或提高页预算；不会无限返回相同的零进展 continuation。空文件和恰好到 EOF 返回成功且没有 continuation。
 
-当前是 byte-range，不含按行定位、日志 tail、目录遍历和内容搜索。这些属于计划 P06。
+对于本节的 readcore 直接调用，当前仍是 byte-range，不含按行定位、日志 tail、目录遍历和内容搜索；MCP 产品层的 P06 发现/搜索工具见第八节。
 
 ## 六、一致性不是快照保证
 
@@ -65,11 +65,11 @@ metadata 是弱版本：相同 size/mtime 的内容修改可能无法检测，�
 
 当前 next_offset 是内核位置提示，**不是签名 MCP cursor**。生产 cursor 必须绑定 connection、profile revision、root、文件/查询、版本、过滤条件和过期时间，处理撤权和篡改；这一功能尚未实现。
 
-## 七、未来 MCP 工具面
+## 七、MCP 工具面（当前与未来）
 
-目标约十个高层工具：workspace_snapshot、list_directory、tree_directory、find_files、search_text、read_file、batch_read、get_environment、run_probe、git_status、git_diff。具体 schema 在 P05/P06 冻结，不把底层全部细节扔给模型。
+当前本地 MCP 服务已注册并按 connection/profile allowlist 暴露：`server_info`、`ping`、`read_file`、`batch_read`、`list_directory`、`find_files`、`search_text`、`tree_directory`、`get_environment`、`discover_tools`。`workspace_snapshot`、`run_probe`、`git_status` 和 `git_diff` 仍是未来能力，不能从当前工具列表推断已实现。
 
-统一产品响应还需 request_id、coverage、warnings、预算和 continuation。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
+发现/搜索/目录树工具已经返回 request_id、coverage、warnings、预算和 continuation；`read_file`/`batch_read` 的 byte-range 结果按第四节约束。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
 
 ## 八、P06 发现、文本搜索与目录树工具（第一增量）
 
@@ -82,10 +82,22 @@ reparse 边界。每个结果都包含 `coverage.complete`、计数和 `warnings
 配置 revision、root、起始路径、查询/模式、大小写和预算；篡改、过期、撤权或目录/文件
 generation 变化都会要求重新开始。
 
+四个工具的 `budget.max_open_files` 和 `budget.max_open_directories` 是**单次调用**的
+成功打开句柄预算，不是账号、连接、进程或机器级全局配额。`coverage.opened_files`、
+`coverage.opened_directories` 记录本次调用成功打开的句柄数；`coverage.replayed_entries`
+记录为恢复签名游标而消耗的目录记录数。目录源保留原生 `ReadDir(n)` 的目录流顺序；
+在同一个 directory generation 内分页顺序稳定，但不承诺字典序/字母序，也不会为了排序
+把大型目录整体载入内存。
+
+可能出现 `open_file_limit` 或 `open_directory_limit`。如果目录打开预算已经被恢复游标
+所需的目录栈完全消耗，继续生成同一个游标不会取得进展；此时返回
+`open_directory_limit_no_continuation`、`complete:false` 且不返回不可推进的
+`continuation`。调用方应把它视为有界的部分结果，而不是重复重试同一游标。
+
 ### `tree_directory`
 
 Use when：需要在一个授权目录范围内以类似 `tree` 的方式查看层级，并希望一次只接收一页
-扁平、有序的路径条目。
+扁平、且在同一 directory generation 内保持目录流顺序的路径条目。
 
 Do not use：需要执行 `tree.exe`、Shell、改变进程当前目录或读取文件正文时。它不会创建
 会话级 `cd` 状态；每次调用都必须重新提供 `root_id`、相对 `path` 和（如有）签名游标。
@@ -121,7 +133,8 @@ Use when：需要查看一个授权目录的下一页直接子项，且希望看
 特殊项类型。
 
 Do not use：需要递归找文件或读取内容时；此工具不返回文件正文，也不保证 live listing
-是原子快照。它按有界批次迭代目录，不会先把整棵目录排序载入内存。
+是原子快照。它按有界批次迭代目录，保持同一 generation 的原生目录流顺序，不会先把
+整棵目录排序载入内存，也不承诺字典序。
 
 完整参数示例：
 
@@ -142,9 +155,11 @@ Do not use：需要递归找文件或读取内容时；此工具不返回文件�
   "root_id": "project",
   "path": "src",
   "entries": [{"path": "src/main.go", "name": "main.go", "type": "regular"}],
-  "coverage": {"complete": false, "scanned_entries": 32, "returned_entries": 1},
+  "coverage": {"complete": false, "scanned_entries": 32, "returned_entries": 1,
+    "replayed_entries": 0, "opened_files": 0, "opened_directories": 1},
   "warnings": ["page_limit"],
-  "budget": {"page_size": 32, "max_entries": 256, "max_output_bytes": 262144},
+  "budget": {"page_size": 32, "max_entries": 256, "max_output_bytes": 262144,
+    "max_open_files": 256, "max_open_directories": 256},
   "continuation": "v1.…"
 }
 ```
@@ -221,9 +236,51 @@ Do not use：需要正则、二进制内容、无限长日志尾部或一次性�
 }
 ```
 
-`max_read_bytes`、目录项、深度、页数、取消和服务端超时都可能产生不完整结果；此时
-返回 `complete:false`、相应 warning（如 `read_limit`、`scan_limit`、`time_limit`）和
+`max_read_bytes`、目录项、深度、页数、打开文件/目录预算、取消和服务端超时都可能产生
+不完整结果；此时返回 `complete:false`、相应 warning（如 `read_limit`、`scan_limit`、
+`open_file_limit`、`open_directory_limit`、`time_limit`）和
 `continuation`。继续调用时保持 query、globs、大小写和全部预算不变。游标保存有界
 byte/line/KMP/UTF-8 状态，不缓存整行或整棵树。默认签名 key 是进程随机值，服务重启会
 使游标失效；部署者可以通过受保护的 `SearchCursorKey` 提供跨重启 key，但 revision、
 generation、撤权和过期仍会使旧游标失效。
+
+## 九、R3 无进程环境发现（当前实现）
+
+R3 增加了两个只读 MCP 工具：`get_environment` 和 `discover_tools`。它们不启动外部
+进程、不调用 `where.exe`、不搜索进程环境中的 `PATH`，也不读取完整环境变量。工具的
+可信候选由本地配置的 `environment_tools` 提供；配置层只保存逻辑 ID、精确候选文件和
+候选目录，并把绝对路径、远程文件系统、symlink/reparse 等平台判断留给
+`internal/environment`。候选路径不会从模型请求进入。
+Windows 配置中的绝对候选路径允许使用 JSON 友好的 `/` 分隔符，发现层会先规范化为
+原生 `\` 再执行绝对路径、UNC/device、ADS、reparse 和远程文件系统检查；这些路径形态
+不会因此放宽。
+
+`get_environment` 只接受空 JSON 对象，返回 MCP schema/version、请求 ID、粗粒度 OS、
+架构和固定 capability 名称。`discover_tools` 只接受可选的 `logical_ids` 数组（最多
+128 项，元素为 ASCII 逻辑 ID）；省略或空数组表示全部本地配置项。未知或重复 ID、
+额外字段及非对象参数均返回不含原始输入值的 `invalid_request`。
+
+远程响应始终使用 `LocalDiagnostics=false`，结果仅包含 `approved_logical_id`、
+`exists` 和 `candidate_count`；`candidate_paths` 与诊断说明不会出现在 MCP wire 中。
+没有配置环境工具时，`get_environment` 仍可用，`discover_tools` 返回空 `tools` 数组。
+两个工具都标记为只读/幂等，但 annotation 只是客户端提示，不能替代 connection/profile
+工具 allowlist。`tools/list` 和 `server_info.tools` 均按当前认证 connection 的 profile
+过滤。CLI 启动时仅把已解析的本地配置转换为 `environment.ToolSpec`，不会从命令行接受
+候选路径或诊断开关。
+
+## 十、audit.v1（当前最小实现）
+
+CLI 已接入本地 typed JSONL audit sink，默认目录为用户配置目录下的
+`Local-Probe/audit`，也可用 `-audit-dir` 覆盖。启动时若 sink 无法初始化则不监听；目录/文件
+权限、文件大小轮转和保留数均有界。普通事件使用有界异步队列，队列满时允许丢弃并将 sink
+标记为 degraded；安全事件（当前为最终 HTTP 401/403 的 `auth.reject`）同步 write-through。
+
+MCP 适配层当前记录 `auth.accept`、`mcp.list`、`mcp.call` 和 `mcp.result`。调用事件只记录
+受校验的 action（工具名或 `unknown`）及计数/预算字段；参数、请求正文、响应正文、文件路径、
+token、JWT、key 和错误 message 均不写入。typed error envelope 只提取有限的稳定 error code，
+未知或格式错误的错误结果统一记为 `unavailable`；401/403 不会再由内部 MCP 事件重复记一条
+security reject。
+
+尚未完成的部分必须单独看待：当前没有 command、network-tunnel、policy、fs-search 事件生产者，
+也没有运行时 sink 故障后的 fail-closed ingress、全局并发/线级配额或管理变更审计。audit 的
+`Stats.Degraded` 可供后续 supervisor/GUI 读取，但目前不会自动拒绝已启动 listener 的新请求。

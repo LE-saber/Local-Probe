@@ -285,6 +285,9 @@ func (d *directory) ReadDir(n int) ([]search.DirEntry, error) {
 	if err := d.bound.Validate(); err != nil {
 		return nil, deniedError()
 	}
+	// Keep the filesystem's native directory stream order for n > 0. The
+	// search walker pages and replays offsets against this order; ReadDir(-1)
+	// would sort and materialize an unbounded directory instead.
 	entries, err := d.file.ReadDir(n)
 	out := make([]search.DirEntry, 0, len(entries))
 	for _, entry := range entries {

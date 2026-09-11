@@ -8,11 +8,11 @@
 
 [实际进度与验证记录](docs/IMPLEMENTATION_STATUS.md) · [下一阶段执行路线](docs/NEXT_PHASE_PLAN.zh-CN.md) · [接口与边界](docs/TOOL_CONTRACTS.md) · [威胁模型](docs/THREAT_MODEL.md) · [兼容性预检](docs/COMPATIBILITY.md) · [上游来源与复用决定](docs/UPSTREAM_REVIEW.md)
 
-## 当前状态：K0 内核原型，P04 平台有界验证，P05/P06 真实链路已验证
+## 当前状态：K0 内核原型，P04 平台有界验证，P05/P06 真实链路已验证，R1/R3 已接入本地 MCP
 
-当前实现了有界字节范围读取、确定性批量预算、输入顺序保持、部分失败、UTF-8 安全续读、版本变化检测及本机命令行演示。P04 已有配置/策略校验、`policy.BoundScope`、基于 Go `os.Root` 的只读 rootfs、绑定到 `readcore` 的 Source adapter，以及 Windows/WSL2 的有界特殊文件、链接边界和 loopback SMB 验证；P05 已完成官方 SDK 的认证 loopback MCP listener、Cloudflare Access/Tunnel 真实链路和 `server_info`、`ping`、`read_file`、`batch_read`；P06 的目录发现、文件查找、literal 搜索和 tree 分页也已由 ChatGPT Business“极高”验证。P08 只有固定探针核心，尚未接入远程工具面；P09/P10 supervisor、多 connection 隔离、行范围/snapshot、索引、GUI 和文件修改仍未完成。下一阶段按 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](docs/NEXT_PHASE_PLAN.zh-CN.md) 执行。
+当前实现了有界字节范围读取、确定性批量预算、输入顺序保持、部分失败、UTF-8 安全续读、版本变化检测及本机命令行演示。P04 已有配置/策略校验、`policy.BoundScope`、基于 Go `os.Root` 的只读 rootfs、绑定到 `readcore` 的 Source adapter，以及 Windows 本轮和历史 WSL2 的有界特殊文件、链接边界与 loopback SMB 验证；P05 已完成官方 SDK 的认证 loopback MCP listener、Cloudflare Access/Tunnel 真实链路和 `server_info`、`ping`、`read_file`、`batch_read`；P06 的目录发现、文件查找、literal 搜索和 tree 分页也已由 ChatGPT Business“极高”验证。R1 的 direct-search 第一增量与 audit.v1、R3 的无进程环境发现已接入本地 MCP，但新增工具尚未做真实 Business 复测。P08 只有固定探针核心，尚未接入远程工具面；P09/P10 supervisor、多 connection 隔离、行范围/snapshot、索引、GUI 和文件修改仍未完成。下一阶段按 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](docs/NEXT_PHASE_PLAN.zh-CN.md) 执行。
 
-rootfs 已对绝对/相对 root、普通文件、逐组件 symlink/reparse 拒绝、Scope 撤权、hardlink 和元数据 identity 做有界实现与平台测试；这不是完整文件系统隔离或独立安全审查。本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台、全量 TOCTOU 和生产发布仍是残余风险。演示程序仅打开本地操作者明确指定的文件，不能改成接收远程路径后直接部署。
+rootfs 已对绝对/相对 root、普通文件、逐组件 symlink/reparse 拒绝、Scope 撤权、hardlink 和元数据 identity 做有界实现与平台测试；这不是完整文件系统隔离或独立安全审查。本轮 WSL Ubuntu-22.04 未安装 Go，未运行 Linux runtime 测试；Windows 本轮验证和历史 WSL2 记录均不能替代独立安全审查。本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台、全量 TOCTOU 和生产发布仍是残余风险。演示程序仅打开本地操作者明确指定的文件，不能改成接收远程路径后直接部署。
 
 ## 运行已有代码
 
@@ -48,6 +48,6 @@ ChatGPT 原生自定义 App
 
 ## 接续开发
 
-下一条关键路径见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](docs/NEXT_PHASE_PLAN.zh-CN.md)：先 R0 冻结安全契约，再做 R1 direct 读取/资源预算/audit.v1，R3 无进程环境发现可并行；随后推进 R2 lines/tail/snapshot 与 R4 P08 executable launch TOCTOU 和固定探针。R5 Git、R6 多 connection/supervisor、R7 index、R8 GUI/tray、R9 发布审查按依赖推进。当前仍不开放 raw command、Shell、任意 args/env/cwd/timeout 或写入能力；真实 Business 调用通过不等于所有账号、Pro、长时间运行或生产发布已通过。
+下一条关键路径见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](docs/NEXT_PHASE_PLAN.zh-CN.md)：R1 direct 读取/资源预算与 audit.v1、R3 无进程环境发现的第一增量已接入本地 MCP，接下来推进 R2 lines/tail/snapshot 与 R4 P08 executable launch TOCTOU 和固定探针。R5 Git、R6 多 connection/supervisor、R7 index、R8 GUI/tray、R9 发布审查按依赖推进。当前仍不开放 raw command、Shell、任意 args/env/cwd/timeout 或写入能力；真实 Business 调用通过不等于所有账号、Pro、长时间运行或生产发布已通过。audit 运行时故障 fail-closed、全局配额和 command/network/policy 事件生产仍未实现。
 
 本仓库暂未选择对外发布许可证。当前代码是本项目独立实现，未复制 LCA、ChatCMD 或 Codex Free 源码；任何后续复用必须先审核上游许可并保留必要通知。

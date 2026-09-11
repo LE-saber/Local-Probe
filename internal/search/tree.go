@@ -36,20 +36,23 @@ func (s *Service) TreeDirectory(ctx context.Context, bound policy.BoundScope, re
 	if err != nil {
 		return out, err
 	}
-	out.Budget = makeBudget(page, depth, entriesLimit, 0, s.limits.MaxOutputBytes)
+	out.Budget = makeBudget(page, depth, entriesLimit, 0, s.limits.MaxOutputBytes, s.limits.MaxOpenFiles, s.limits.MaxOpenDirectories)
+	opens := newOpenBudget(s.limits, &out.Coverage)
 
 	base := cursorPayload{
-		Operation:      "tree_directory",
-		ConnectionID:   bound.ConnectionID(),
-		ProfileID:      bound.ProfileID(),
-		Revision:       bound.Revision(),
-		RootID:         req.RootID,
-		StartPath:      req.Path,
-		PageSize:       page,
-		MaxDepth:       depth,
-		MaxEntries:     entriesLimit,
-		MaxOutputBytes: s.limits.MaxOutputBytes,
-		RootEmitted:    true,
+		Operation:          "tree_directory",
+		ConnectionID:       bound.ConnectionID(),
+		ProfileID:          bound.ProfileID(),
+		Revision:           bound.Revision(),
+		RootID:             req.RootID,
+		StartPath:          req.Path,
+		PageSize:           page,
+		MaxDepth:           depth,
+		MaxEntries:         entriesLimit,
+		MaxOutputBytes:     s.limits.MaxOutputBytes,
+		MaxOpenFiles:       s.limits.MaxOpenFiles,
+		MaxOpenDirectories: s.limits.MaxOpenDirectories,
+		RootEmitted:        true,
 	}
 	frames := []cursorFrame{{Path: req.Path}}
 	rootEmitted := false
@@ -58,7 +61,8 @@ func (s *Service) TreeDirectory(ctx context.Context, bound policy.BoundScope, re
 		if decodeErr != nil || payload.Operation != base.Operation ||
 			!cursorMatchesScope(payload, bound.ConnectionID(), bound.ProfileID(), bound.Revision(), req.RootID, req.Path) ||
 			payload.PageSize != page || payload.MaxDepth != depth || payload.MaxEntries != entriesLimit ||
-			payload.MaxOutputBytes != base.MaxOutputBytes || !payload.RootEmitted {
+			payload.MaxOutputBytes != base.MaxOutputBytes || payload.MaxOpenFiles != base.MaxOpenFiles ||
+			payload.MaxOpenDirectories != base.MaxOpenDirectories || !payload.RootEmitted {
 			return out, ErrInvalidCursor
 		}
 		base.ExpiresAt, base.Frames, base.RootEmitted = payload.ExpiresAt, payload.Frames, payload.RootEmitted
@@ -72,10 +76,23 @@ func (s *Service) TreeDirectory(ctx context.Context, bound policy.BoundScope, re
 	}
 	opCtx, cancel := s.operationContext(ctx)
 	defer cancel()
-	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch)
+	w, err := newWalker(opCtx, source, bound, req.RootID, frames, s.limits.DirectoryBatch, opens)
 	if err != nil {
 		if warning := contextWarning(err); warning != "" {
 			appendWarning(&out.Warnings, warning)
+			return out, nil
+		}
+		if errors.Is(err, ErrOpenDirectoriesLimit) {
+			appendWarning(&out.Warnings, "open_directory_limit")
+			out.Coverage.Complete = false
+			if s.canContinueAfterDirectoryLimit(frames) {
+				out.Continuation, err = s.treeCursor(base, frames)
+				if err != nil {
+					return out, err
+				}
+			} else {
+				appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+			}
 			return out, nil
 		}
 		return out, normalizeOperationError(err)
@@ -165,6 +182,24 @@ func (s *Service) TreeDirectory(ctx context.Context, bound policy.BoundScope, re
 			out.Coverage.IgnoredEntries++
 			continue
 		}
+		if entry.Type == EntryDirectory && depthAt < depth && !opens.canOpenDirectory() {
+			w.rewindLast()
+			appendWarning(&out.Warnings, "open_directory_limit")
+			out.Coverage.Complete = false
+			if err := w.verifyGenerations(); err != nil {
+				return out, normalizeOperationError(err)
+			}
+			frames := w.framesState()
+			if s.canContinueAfterDirectoryLimit(frames) {
+				out.Continuation, err = s.treeCursor(base, frames)
+				if err != nil {
+					return out, err
+				}
+			} else {
+				appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+			}
+			break
+		}
 
 		public := publicTreeEntry(child, entry, depthAt+1)
 		entryBytes := estimateTreeEntry(public)
@@ -199,6 +234,30 @@ func (s *Service) TreeDirectory(ctx context.Context, bound policy.BoundScope, re
 			} else if pushErr := w.push(child); pushErr != nil {
 				if errors.Is(pushErr, ErrGenerationChanged) {
 					return out, ErrGenerationChanged
+				}
+				if errors.Is(pushErr, ErrOpenDirectoriesLimit) {
+					// This is defensive for a source that applies its own open
+					// limit. Rewind before returning a cursor so the directory is
+					// not emitted without its subtree or repeated without progress.
+					w.rewindLast()
+					out.Entries = out.Entries[:len(out.Entries)-1]
+					out.Coverage.ReturnedEntries--
+					out.Coverage.ReturnedBytes -= entryBytes
+					appendWarning(&out.Warnings, "open_directory_limit")
+					out.Coverage.Complete = false
+					if err := w.verifyGenerations(); err != nil {
+						return out, normalizeOperationError(err)
+					}
+					frames := w.framesState()
+					if s.canContinueAfterDirectoryLimit(frames) {
+						out.Continuation, err = s.treeCursor(base, frames)
+						if err != nil {
+							return out, err
+						}
+					} else {
+						appendWarning(&out.Warnings, "open_directory_limit_no_continuation")
+					}
+					return out, nil
 				}
 				out.Coverage.UnsupportedEntries++
 				appendWarning(&out.Warnings, "directory_unavailable")

@@ -14,12 +14,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/LE-saber/Local-Probe/internal/audit"
 	"github.com/LE-saber/Local-Probe/internal/cfaccess"
 	"github.com/LE-saber/Local-Probe/internal/config"
+	"github.com/LE-saber/Local-Probe/internal/environment"
 	"github.com/LE-saber/Local-Probe/internal/mcpserver"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/rootfs"
@@ -49,6 +52,7 @@ func run(args []string, stdout, stderr *os.File) error {
 	tokenFile := flags.String("token-file", "", "protected file containing the local MCP hop token")
 	cloudflareAccessConfig := flags.String("cloudflare-access-config", "", "external Cloudflare Access JSON config (cloudflare-access only)")
 	listenAddr := flags.String("listen-addr", defaultListenAddr, "loopback listen address")
+	auditDir := flags.String("audit-dir", "", "audit directory (default: user config Local-Probe/audit)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -110,9 +114,21 @@ func run(args []string, stdout, stderr *os.File) error {
 		return errors.New("configured filesystem roots cannot be opened safely")
 	}
 	defer source.Close()
+	auditSink, err := openAuditSink(*auditDir)
+	if err != nil {
+		return err
+	}
+	auditClosed := false
+	defer func() {
+		if !auditClosed {
+			_ = auditSink.Close()
+		}
+	}()
 	options := mcpserver.Options{
-		Manager: manager,
-		Source:  source,
+		Manager:          manager,
+		Source:           source,
+		EnvironmentTools: environmentToolSpecs(cfg),
+		Audit:            auditSink,
 	}
 	if mode == ingressLocalToken {
 		options.Credentials = []mcpserver.Credential{{ConnectionID: *connectionID, Token: token}}
@@ -154,16 +170,70 @@ func run(args []string, stdout, stderr *os.File) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		shutdownErr := httpServer.Shutdown(shutdownCtx)
+		closeAuditErr := auditSink.Close()
+		auditClosed = true
+		if shutdownErr != nil {
 			return errors.New("MCP server shutdown failed")
+		}
+		if closeAuditErr != nil {
+			return errors.New("audit sink shutdown failed")
 		}
 		return nil
 	case err := <-serverErr:
+		closeAuditErr := auditSink.Close()
+		auditClosed = true
+		if closeAuditErr != nil {
+			return errors.New("audit sink shutdown failed")
+		}
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return errors.New("MCP HTTP server stopped unexpectedly")
 	}
+}
+
+var newAuditSink = func(directory string) (*audit.Sink, error) {
+	return audit.New(audit.Config{Directory: directory})
+}
+
+func openAuditSink(override string) (*audit.Sink, error) {
+	directory, err := resolveAuditDir(override)
+	if err != nil {
+		return nil, err
+	}
+	sink, err := newAuditSink(directory)
+	if err != nil {
+		return nil, errors.New("cannot initialize audit sink")
+	}
+	return sink, nil
+}
+
+func resolveAuditDir(override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return override, nil
+	}
+	base, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(base) == "" {
+		return "", errors.New("cannot determine user config directory for audit")
+	}
+	return filepath.Join(base, "Local-Probe", "audit"), nil
+}
+
+func environmentToolSpecs(cfg config.Config) []environment.ToolSpec {
+	configured := cfg.EnvironmentTools()
+	if configured == nil {
+		return nil
+	}
+	specs := make([]environment.ToolSpec, len(configured))
+	for i, tool := range configured {
+		specs[i] = environment.ToolSpec{
+			ID:             tool.ID(),
+			CandidateFiles: tool.CandidateFiles(),
+			CandidateDirs:  tool.CandidateDirs(),
+		}
+	}
+	return specs
 }
 
 // routeMCP deliberately leaves every non-MCP path as 404. In particular,

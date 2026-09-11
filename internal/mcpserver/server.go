@@ -17,9 +17,12 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
+	"github.com/LE-saber/Local-Probe/internal/audit"
 	"github.com/LE-saber/Local-Probe/internal/cfaccess"
+	"github.com/LE-saber/Local-Probe/internal/environment"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/readcore"
 	"github.com/LE-saber/Local-Probe/internal/search"
@@ -32,25 +35,28 @@ const (
 	ServerName    = "local-probe"
 	ServerVersion = "0.1.0-alpha"
 
-	ToolServerInfo    = "server_info"
-	ToolPing          = "ping"
-	ToolReadFile      = "read_file"
-	ToolBatchRead     = "batch_read"
-	ToolListDirectory = "list_directory"
-	ToolFindFiles     = "find_files"
-	ToolSearchText    = "search_text"
-	ToolTreeDirectory = "tree_directory"
-	LocalTokenHeader  = "X-Local-Probe-Token"
+	ToolServerInfo     = "server_info"
+	ToolPing           = "ping"
+	ToolReadFile       = "read_file"
+	ToolBatchRead      = "batch_read"
+	ToolListDirectory  = "list_directory"
+	ToolFindFiles      = "find_files"
+	ToolSearchText     = "search_text"
+	ToolTreeDirectory  = "tree_directory"
+	ToolGetEnvironment = "get_environment"
+	ToolDiscoverTools  = "discover_tools"
+	LocalTokenHeader   = "X-Local-Probe-Token"
 
 	// CloudflareAccessHeader is re-exported for callers that need to construct
 	// a local integration test request without depending on the cfaccess
 	// package's transport details.
 	CloudflareAccessHeader = cfaccess.AccessJWTHeader
 
-	defaultMaxRequestBodyBytes = 1 << 20
-	defaultMaxResponseBytes    = 512 << 10
-	maxTokenBytes              = 4096
-	modernMCPProtocolVersion   = "2026-07-28"
+	defaultMaxRequestBodyBytes   = 1 << 20
+	defaultMaxResponseBytes      = 512 << 10
+	maxTokenBytes                = 4096
+	maxEnvironmentToolSelections = 128
+	modernMCPProtocolVersion     = "2026-07-28"
 )
 
 var (
@@ -82,6 +88,11 @@ type Options struct {
 	Manager     *policy.Manager
 	Source      SourceBinder
 	Credentials []Credential
+	Audit       audit.Recorder
+	// EnvironmentTools is a local-only allowlist for non-executing tool
+	// discovery. Candidate paths come from trusted configuration; MCP input
+	// can select only logical IDs and never supplies paths or diagnostics.
+	EnvironmentTools []environment.ToolSpec
 	// CloudflareAccess selects the explicit Cloudflare Access ingress. When it
 	// is non-nil, local Credentials must be empty and every request must carry
 	// a valid Cf-Access-Jwt-Assertion plus a trusted public Host.
@@ -100,17 +111,21 @@ type Options struct {
 // Server is an authenticated, read-only MCP handler. It is safe to share
 // across concurrent HTTP requests.
 type Server struct {
-	manager          *policy.Manager
-	source           SourceBinder
-	limits           readcore.Limits
-	maxBodyBytes     int64
-	maxResponseBytes int64
-	credentials      []credential
-	cloudflareAccess *cfaccess.Verifier
-	cloudflareHosts  map[string]hostPattern
-	requestID        atomic.Uint64
-	handler          http.Handler
-	search           *search.Service
+	manager             *policy.Manager
+	source              SourceBinder
+	limits              readcore.Limits
+	maxBodyBytes        int64
+	maxResponseBytes    int64
+	credentials         []credential
+	cloudflareAccess    *cfaccess.Verifier
+	cloudflareHosts     map[string]hostPattern
+	environmentTools    []environment.ToolSpec
+	discoverEnvironment func([]environment.ToolSpec, environment.DiscoveryOptions) ([]environment.ToolDiscoveryResult, error)
+	audit               audit.Recorder
+	requestID           atomic.Uint64
+	auditID             atomic.Uint64
+	handler             http.Handler
+	search              *search.Service
 }
 
 type credential struct {
@@ -196,14 +211,17 @@ func New(opts Options) (*Server, error) {
 		seenTokens = append(seenTokens, token)
 	}
 	s := &Server{
-		manager:          opts.Manager,
-		source:           opts.Source,
-		limits:           limits,
-		maxBodyBytes:     maxBody,
-		maxResponseBytes: maxResponse,
-		credentials:      credentials,
-		cloudflareAccess: opts.CloudflareAccess,
-		cloudflareHosts:  hosts,
+		manager:             opts.Manager,
+		source:              opts.Source,
+		limits:              limits,
+		maxBodyBytes:        maxBody,
+		maxResponseBytes:    maxResponse,
+		credentials:         credentials,
+		cloudflareAccess:    opts.CloudflareAccess,
+		cloudflareHosts:     hosts,
+		environmentTools:    cloneEnvironmentTools(opts.EnvironmentTools),
+		discoverEnvironment: environment.DiscoverTools,
+		audit:               opts.Audit,
 	}
 	if binder, ok := opts.Source.(search.Binder); ok {
 		searchService, searchErr := search.New(binder, opts.SearchLimits, opts.SearchCursorKey)
@@ -304,6 +322,20 @@ func (s *Server) buildHandler() http.Handler {
 		OutputSchema: treeDirectoryOutputSchema,
 		Annotations:  readOnlyAnnotations(),
 	}, s.handleTreeDirectory)
+	addTool(server, &mcp.Tool{
+		Name:         ToolGetEnvironment,
+		Description:  "Return coarse local operating-system facts without reading the environment or starting a process.",
+		InputSchema:  getEnvironmentInputSchema,
+		OutputSchema: getEnvironmentOutputSchema,
+		Annotations:  readOnlyAnnotations(),
+	}, s.handleGetEnvironment)
+	addTool(server, &mcp.Tool{
+		Name:         ToolDiscoverTools,
+		Description:  "Check locally configured tool candidates without searching PATH or exposing candidate paths.",
+		InputSchema:  discoverToolsInputSchema,
+		OutputSchema: discoverToolsOutputSchema,
+		Annotations:  readOnlyAnnotations(),
+	}, s.handleDiscoverTools)
 
 	streamableOptions := func(stateless bool) *mcp.StreamableHTTPOptions {
 		return &mcp.StreamableHTTPOptions{
@@ -348,9 +380,57 @@ func (s *Server) buildHandler() http.Handler {
 	protected := auth.RequireBearerToken(verify, authOptions)
 	protectedHandler := protected(mcpHandler)
 	if s.cloudflareAccess != nil {
-		return cloudflareHost(s.cloudflareHosts, cloudflareAccessHeader(protectedHandler))
+		return s.auditHTTP(cloudflareHost(s.cloudflareHosts, cloudflareAccessHeader(protectedHandler)))
 	}
-	return localTokenHeader(protectedHandler)
+	return s.auditHTTP(localTokenHeader(protectedHandler))
+}
+
+type auditResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *auditResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *auditResponseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *auditResponseWriter) Flush() {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *auditResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (s *Server) auditHTTP(next http.Handler) http.Handler {
+	if s == nil || s.audit == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := &auditResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		if recorder.status == http.StatusUnauthorized || recorder.status == http.StatusForbidden {
+			_ = s.audit.EmitSecurity(audit.Event{
+				Component: audit.ComponentAuth, EventType: audit.EventAuthReject,
+				Severity: audit.SeverityWarn, Outcome: audit.OutcomeRejected,
+				ErrorCode: "auth_failed",
+			})
+		}
+	})
 }
 
 // localTokenHeader adapts the private X-Local-Probe-Token hop to the SDK's
@@ -508,9 +588,10 @@ func (s *Server) authorizationMiddleware() mcp.Middleware {
 			if err != nil {
 				return nil, err
 			}
+			s.recordAudit(audit.Event{CorrelationID: s.nextAuditCorrelation(), Component: audit.ComponentAuth, EventType: audit.EventAuthAccept, Severity: audit.SeverityInfo, Outcome: audit.OutcomeSucceeded, ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), ProfileRevision: bound.Revision()})
 			switch method {
 			case "tools/list":
-				result, err := next(ctx, method, req)
+				result, err := s.auditMCP(audit.EventMCPList, "tools/list", bound, false, 0, func() (mcp.Result, error) { return next(ctx, method, req) })
 				if err != nil {
 					return nil, err
 				}
@@ -531,12 +612,121 @@ func (s *Server) authorizationMiddleware() mcp.Middleware {
 				return list, nil
 			case "tools/call":
 				params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
-				if !ok || params == nil || !bound.AllowsTool(params.Name) {
-					return deniedToolResult(), nil
+				action := "unknown"
+				if ok && params != nil && isRegisteredAuditAction(params.Name) {
+					action = params.Name
 				}
+				denied := !ok || params == nil || !bound.AllowsTool(params.Name)
+				inputBytes := 0
+				if params != nil {
+					inputBytes = len(params.Arguments)
+				}
+				if denied {
+					result, err := s.auditMCP(audit.EventMCPCall, action, bound, true, inputBytes, func() (mcp.Result, error) { return deniedToolResult(), nil })
+					return result, err
+				}
+				return s.auditMCP(audit.EventMCPCall, action, bound, false, inputBytes, func() (mcp.Result, error) { return next(ctx, method, req) })
 			}
 			return next(ctx, method, req)
 		}
+	}
+}
+
+func (s *Server) recordAudit(event audit.Event) {
+	if s != nil && s.audit != nil {
+		_ = s.audit.Emit(event)
+	}
+}
+
+func (s *Server) nextAuditCorrelation() string {
+	return fmt.Sprintf("mcp-%d", s.auditID.Add(1))
+}
+
+func (s *Server) auditMCP(eventType audit.EventType, action string, bound policy.BoundScope, denied bool, inputBytes int, call func() (mcp.Result, error)) (mcp.Result, error) {
+	correlation := s.nextAuditCorrelation()
+	s.recordAudit(audit.Event{CorrelationID: correlation, Component: audit.ComponentMCP, EventType: eventType, Action: action, Severity: audit.SeverityInfo, Outcome: audit.OutcomeStarted, ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), ProfileRevision: bound.Revision(), Budget: audit.Budget{WireInBytes: int64(inputBytes)}})
+	started := time.Now()
+	result, err := call()
+	outcome, errorCode := audit.OutcomeSucceeded, ""
+	if denied {
+		outcome, errorCode = audit.OutcomeRejected, "denied"
+	} else if err != nil {
+		outcome, errorCode = audit.OutcomeFailed, "unavailable"
+		if errors.Is(err, context.Canceled) {
+			errorCode = "cancelled"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			errorCode = "deadline_exceeded"
+		}
+	} else if callResult, ok := result.(*mcp.CallToolResult); ok && callResult.IsError {
+		outcome, errorCode = auditToolError(callResult)
+	}
+	outputBytes := auditResultBytes(result)
+	s.recordAudit(audit.Event{CorrelationID: correlation, Component: audit.ComponentMCP, EventType: audit.EventMCPResult, Action: action, Severity: audit.SeverityInfo, Outcome: outcome, ErrorCode: errorCode, DurationMS: time.Since(started).Milliseconds(), ConnectionID: bound.ConnectionID(), ProfileID: bound.ProfileID(), ProfileRevision: bound.Revision(), Budget: audit.Budget{WireInBytes: int64(inputBytes), WireOutBytes: outputBytes, ReturnedBytes: outputBytes}})
+	return result, err
+}
+
+// auditToolError extracts only the stable error code from this server's typed
+// error envelope. It never copies the message or any other response content
+// into the audit event. Unknown/malformed envelopes are deliberately reduced
+// to unavailable so an arbitrary tool response cannot inject audit fields.
+func auditToolError(result *mcp.CallToolResult) (audit.Outcome, string) {
+	if result == nil || !result.IsError {
+		return audit.OutcomeSucceeded, ""
+	}
+	type errorEnvelope struct {
+		SchemaVersion string `json:"schema_version"`
+		Error         struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	for _, content := range result.Content {
+		text, ok := content.(*mcp.TextContent)
+		if !ok || text == nil || len(text.Text) > 4096 {
+			continue
+		}
+		var envelope errorEnvelope
+		if err := json.Unmarshal([]byte(text.Text), &envelope); err != nil || envelope.SchemaVersion != SchemaVersion {
+			continue
+		}
+		switch envelope.Error.Code {
+		case "denied":
+			return audit.OutcomeRejected, envelope.Error.Code
+		case "invalid_request", "not_found", "unsupported_type", "unsupported_encoding", "stale_version", "budget_exhausted", "deadline_exceeded", "cancelled", "unavailable":
+			return audit.OutcomeFailed, envelope.Error.Code
+		}
+	}
+	return audit.OutcomeFailed, "unavailable"
+}
+
+func auditResultBytes(result mcp.Result) int64 {
+	call, ok := result.(*mcp.CallToolResult)
+	if !ok || call == nil {
+		return 0
+	}
+	var total int
+	if raw, ok := call.StructuredContent.(json.RawMessage); ok {
+		total += len(raw)
+	} else if call.StructuredContent != nil {
+		if data, err := json.Marshal(call.StructuredContent); err == nil {
+			total += len(data)
+		}
+	}
+	for _, content := range call.Content {
+		if text, ok := content.(*mcp.TextContent); ok && text != nil {
+			total += len(text.Text)
+		}
+	}
+	return int64(total)
+}
+
+func isRegisteredAuditAction(value string) bool {
+	switch value {
+	case ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory,
+		ToolFindFiles, ToolSearchText, ToolTreeDirectory, ToolGetEnvironment, ToolDiscoverTools:
+		return true
+	default:
+		// Never copy an arbitrary client-supplied tool name into an audit record.
+		return false
 	}
 }
 
@@ -604,6 +794,24 @@ type serverInfoOutput struct {
 	ConnectionID  string   `json:"connection_id"`
 	ProfileID     string   `json:"profile_id"`
 	Tools         []string `json:"tools"`
+}
+
+type discoverToolsInput struct {
+	LogicalIDs []string `json:"logical_ids,omitempty"`
+}
+
+type getEnvironmentOutput struct {
+	SchemaVersion string   `json:"schema_version"`
+	RequestID     string   `json:"request_id"`
+	OS            string   `json:"os"`
+	Arch          string   `json:"arch"`
+	Capabilities  []string `json:"capabilities"`
+}
+
+type discoverToolsOutput struct {
+	SchemaVersion string                            `json:"schema_version"`
+	RequestID     string                            `json:"request_id"`
+	Tools         []environment.ToolDiscoveryResult `json:"tools"`
 }
 
 type pingOutput struct {
@@ -772,13 +980,131 @@ func (s *Server) handleTreeDirectory(ctx context.Context, req *mcp.CallToolReque
 	return s.jsonResult(result), nil
 }
 
+func (s *Server) handleGetEnvironment(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var input struct{}
+	if err := decodeArguments(req, &input); err != nil {
+		return errorResult("invalid_request", "arguments must be an empty JSON object"), nil
+	}
+	bound, err := s.boundScope(ctx)
+	if err != nil {
+		return errorResult("unauthorized", "authentication is required"), nil
+	}
+	if !bound.AllowsTool(ToolGetEnvironment) {
+		return deniedToolResult(), nil
+	}
+	env := environment.GetEnvironment()
+	return s.jsonResult(getEnvironmentOutput{
+		SchemaVersion: SchemaVersion,
+		RequestID:     s.nextRequestID(),
+		OS:            env.OS,
+		Arch:          env.Arch,
+		Capabilities:  append([]string(nil), env.Capabilities...),
+	}), nil
+}
+
+func (s *Server) handleDiscoverTools(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var input discoverToolsInput
+	if err := decodeArguments(req, &input); err != nil {
+		return errorResult("invalid_request", "arguments must be a JSON object with supported fields"), nil
+	}
+	bound, err := s.boundScope(ctx)
+	if err != nil {
+		return errorResult("unauthorized", "authentication is required"), nil
+	}
+	if !bound.AllowsTool(ToolDiscoverTools) {
+		return deniedToolResult(), nil
+	}
+	specs, err := s.selectEnvironmentTools(input.LogicalIDs)
+	if err != nil {
+		return errorResult("invalid_request", "logical tool selection is invalid"), nil
+	}
+	discover := s.discoverEnvironment
+	if discover == nil {
+		discover = environment.DiscoverTools
+	}
+	results, err := discover(specs, environment.DiscoveryOptions{})
+	if err != nil {
+		return environmentErrorResult(err), nil
+	}
+	// The remote MCP contract never enables local diagnostics. Keep this
+	// defensive redaction at the boundary so a future discovery implementation
+	// cannot accidentally put candidate paths on the wire.
+	for i := range results {
+		results[i].CandidatePaths = nil
+		results[i].DiagnosticsNotice = ""
+	}
+	return s.jsonResult(discoverToolsOutput{
+		SchemaVersion: SchemaVersion,
+		RequestID:     s.nextRequestID(),
+		Tools:         results,
+	}), nil
+}
+
+func (s *Server) selectEnvironmentTools(logicalIDs []string) ([]environment.ToolSpec, error) {
+	if len(logicalIDs) > maxEnvironmentToolSelections {
+		return nil, environment.ErrCandidateLimit
+	}
+	if len(logicalIDs) == 0 {
+		return cloneEnvironmentTools(s.environmentTools), nil
+	}
+	byID := make(map[string]environment.ToolSpec, len(s.environmentTools))
+	for _, spec := range s.environmentTools {
+		if _, exists := byID[spec.ID]; exists {
+			return nil, environment.ErrDuplicateID
+		}
+		byID[spec.ID] = spec
+	}
+	selected := make([]environment.ToolSpec, 0, len(logicalIDs))
+	seen := make(map[string]struct{}, len(logicalIDs))
+	for _, id := range logicalIDs {
+		if _, exists := seen[id]; exists {
+			return nil, environment.ErrDuplicateID
+		}
+		spec, exists := byID[id]
+		if !exists {
+			return nil, environment.ErrInvalidInput
+		}
+		seen[id] = struct{}{}
+		selected = append(selected, cloneEnvironmentTool(spec))
+	}
+	return selected, nil
+}
+
+func environmentErrorResult(err error) *mcp.CallToolResult {
+	code, message := "unavailable", "configured environment discovery is unavailable"
+	switch {
+	case errors.Is(err, environment.ErrInvalidInput), errors.Is(err, environment.ErrDuplicateID), errors.Is(err, environment.ErrCandidateLimit):
+		code, message = "invalid_request", "configured environment discovery request is invalid"
+	case errors.Is(err, environment.ErrRejectedCandidate):
+		code, message = "unavailable", "configured environment candidate was rejected"
+	}
+	return errorResult(code, message)
+}
+
+func cloneEnvironmentTools(values []environment.ToolSpec) []environment.ToolSpec {
+	if values == nil {
+		return nil
+	}
+	out := make([]environment.ToolSpec, len(values))
+	for i, value := range values {
+		out[i] = cloneEnvironmentTool(value)
+	}
+	return out
+}
+
+func cloneEnvironmentTool(value environment.ToolSpec) environment.ToolSpec {
+	value.CandidateFiles = append([]string(nil), value.CandidateFiles...)
+	value.CandidateDirs = append([]string(nil), value.CandidateDirs...)
+	return value
+}
+
 func (s *Server) handleServerInfo(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	bound, err := s.boundScope(ctx)
 	if err != nil {
 		return errorResult("unauthorized", "authentication is required"), nil
 	}
-	tools := make([]string, 0, 8)
-	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText, ToolTreeDirectory} {
+	tools := make([]string, 0, 10)
+	for _, name := range []string{ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory, ToolFindFiles, ToolSearchText, ToolTreeDirectory, ToolGetEnvironment, ToolDiscoverTools} {
 		if bound.AllowsTool(name) {
 			tools = append(tools, name)
 		}
@@ -1003,6 +1329,24 @@ func readOnlyAnnotations() *mcp.ToolAnnotations {
 }
 
 var emptyObjectSchema = map[string]any{"type": "object", "additionalProperties": false}
+var getEnvironmentInputSchema = map[string]any{"type": "object", "additionalProperties": false}
+
+var discoverToolsInputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"properties": map[string]any{
+		"logical_ids": map[string]any{
+			"type":     "array",
+			"maxItems": maxEnvironmentToolSelections,
+			"items": map[string]any{
+				"type":      "string",
+				"minLength": 1,
+				"maxLength": 128,
+				"pattern":   "^[A-Za-z0-9_-]+$",
+			},
+		},
+	},
+}
 
 var readFileInputSchema = map[string]any{
 	"type":                 "object",
@@ -1044,6 +1388,40 @@ var batchReadInputSchema = map[string]any{
 
 var serverInfoSchema = map[string]any{"type": "object"}
 var pingSchema = map[string]any{"type": "object"}
+var getEnvironmentOutputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"schema_version", "request_id", "os", "arch", "capabilities"},
+	"properties": map[string]any{
+		"schema_version": map[string]any{"type": "string"},
+		"request_id":     map[string]any{"type": "string"},
+		"os":             map[string]any{"type": "string"},
+		"arch":           map[string]any{"type": "string"},
+		"capabilities":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+	},
+}
+var discoverToolsOutputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"schema_version", "request_id", "tools"},
+	"properties": map[string]any{
+		"schema_version": map[string]any{"type": "string"},
+		"request_id":     map[string]any{"type": "string"},
+		"tools": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"approved_logical_id", "exists", "candidate_count"},
+				"properties": map[string]any{
+					"approved_logical_id": map[string]any{"type": "string"},
+					"exists":              map[string]any{"type": "boolean"},
+					"candidate_count":     map[string]any{"type": "integer", "minimum": 0},
+				},
+			},
+		},
+	},
+}
 var readFileOutputSchema = map[string]any{"type": "object"}
 var batchReadOutputSchema = map[string]any{"type": "object"}
 

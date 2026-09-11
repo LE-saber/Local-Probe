@@ -21,14 +21,14 @@ type scanOutcome struct {
 	Warning  string
 }
 
-func (s *Service) scanFile(ctx context.Context, source Source, bound policy.BoundScope, rootID, query string, caseSensitive bool, contextBytes int, state scanCursorState, out *SearchTextResult, remainingMatches, remainingRead, remainingOutput int) (scanOutcome, error) {
+func (s *Service) scanFile(ctx context.Context, source Source, bound policy.BoundScope, rootID, query string, caseSensitive bool, contextBytes int, state scanCursorState, out *SearchTextResult, opens *openBudget, remainingMatches, remainingRead, remainingOutput int) (scanOutcome, error) {
 	if remainingRead <= 0 {
 		return scanOutcome{State: state, Warning: "read_limit"}, nil
 	}
 	if state.Path == "" || !validRelativePath(state.Path) || remainingMatches <= 0 && remainingMatches != -1 {
 		return scanOutcome{State: state, Warning: "page_limit"}, nil
 	}
-	h, err := source.OpenFile(ctx, bound, readcore.FileRef{RootID: rootID, Path: state.Path})
+	h, err := opens.openFile(source, ctx, bound, readcore.FileRef{RootID: rootID, Path: state.Path})
 	if err != nil {
 		return scanOutcome{}, mapSourceError(err)
 	}

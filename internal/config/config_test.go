@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +30,11 @@ const validJSON = `{
   "credentials": [
     {"id": "cred-a", "kind": "runtime"},
     {"id": "cred-b", "kind": "runtime"}
+  ],
+  "environment_tools": [
+    {"id": "git", "candidate_files": ["D:/replace/with/an/absolute/path/to/git.exe"], "candidate_dirs": []},
+    {"id": "node", "candidate_files": [], "candidate_dirs": ["D:/replace/with/an/absolute/tool-directory"]},
+    {"id": "codex", "candidate_files": ["D:/replace/with/an/absolute/path/to/codex.exe"], "candidate_dirs": []}
   ]
 }`
 
@@ -35,8 +43,11 @@ func TestParseStrictAndReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.SchemaVersion() != SchemaVersionV1 || len(c.Roots()) != 2 || len(c.Profiles()) != 2 || len(c.Connections()) != 2 || len(c.Credentials()) != 2 {
+	if c.SchemaVersion() != SchemaVersionV1 || len(c.Roots()) != 2 || len(c.Profiles()) != 2 || len(c.Connections()) != 2 || len(c.Credentials()) != 2 || len(c.EnvironmentTools()) != 3 {
 		t.Fatalf("unexpected parsed config: %+v", c)
+	}
+	if got := c.EnvironmentTools()[0].CandidateFiles(); !reflect.DeepEqual(got, []string{"D:/replace/with/an/absolute/path/to/git.exe"}) {
+		t.Fatalf("git candidate files = %#v", got)
 	}
 	profile, ok := c.Profile("read-project")
 	if !ok || !profile.ReadOnly() || len(profile.RootIDs()) != 1 {
@@ -56,6 +67,170 @@ func TestParseStrictAndReferences(t *testing.T) {
 			t.Fatalf("wrong error for invalid config: %v", err)
 		}
 	}
+}
+
+func TestEnvironmentToolsValidationAndLegacyCompatibility(t *testing.T) {
+	base, err := Parse([]byte(validJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyJSON := strings.Replace(validJSON, `,
+  "environment_tools": [
+    {"id": "git", "candidate_files": ["D:/replace/with/an/absolute/path/to/git.exe"], "candidate_dirs": []},
+    {"id": "node", "candidate_files": [], "candidate_dirs": ["D:/replace/with/an/absolute/tool-directory"]},
+    {"id": "codex", "candidate_files": ["D:/replace/with/an/absolute/path/to/codex.exe"], "candidate_dirs": []}
+  ]`, "", 1)
+	legacy, err := Parse([]byte(legacyJSON))
+	if err != nil {
+		t.Fatalf("legacy config without environment_tools rejected: %v", err)
+	}
+	if got := legacy.EnvironmentTools(); len(got) != 0 {
+		t.Fatalf("legacy environment_tools = %#v, want empty", got)
+	}
+
+	validTool, err := NewEnvironmentTool("git", []string{"relative/tool"}, nil)
+	if err != nil {
+		t.Fatalf("relative candidate should remain a core/platform concern: %v", err)
+	}
+	if _, err := NewWithEnvironmentTools(base.SchemaVersion(), base.Roots(), base.Profiles(), base.Connections(), base.Credentials(), []EnvironmentTool{validTool}); err != nil {
+		t.Fatalf("valid environment tool rejected: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		tools []EnvironmentTool
+	}{
+		{
+			name:  "duplicate logical id",
+			tools: []EnvironmentTool{mustEnvironmentTool(t, "git"), mustEnvironmentTool(t, "git")},
+		},
+		{
+			name:  "too many tools",
+			tools: makeEnvironmentTools(t, MaxEnvironmentTools+1),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewWithEnvironmentTools(base.SchemaVersion(), base.Roots(), base.Profiles(), base.Connections(), base.Credentials(), tc.tools); err == nil || !errors.Is(err, ErrInvalid) {
+				t.Fatalf("accepted invalid environment tools: %v", err)
+			}
+		})
+	}
+
+	tooManyCandidates := make([]string, MaxEnvironmentCandidatesPerTool+1)
+	for i := range tooManyCandidates {
+		tooManyCandidates[i] = "D:/replace/candidate-" + strconv.Itoa(i)
+	}
+	if _, err := NewEnvironmentTool("too_many_candidates", tooManyCandidates, nil); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("accepted too many candidates: %v", err)
+	}
+
+	invalidCases := []struct {
+		name string
+		id   string
+		files,
+		dirs []string
+	}{
+		{name: "invalid logical id", id: "工具", files: []string{"D:/replace/tool"}},
+		{name: "empty candidates", id: "empty", files: nil, dirs: nil},
+		{name: "empty candidate file", id: "empty_file", files: []string{""}},
+		{name: "empty candidate directory", id: "empty_dir", dirs: []string{""}},
+		{name: "invalid utf8", id: "invalid_utf8", files: []string{string([]byte{0xff})}},
+		{name: "nul candidate", id: "nul", files: []string{"D:/private/secret\x00tool"}},
+	}
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewEnvironmentTool(tc.id, tc.files, tc.dirs)
+			if err == nil || !errors.Is(err, ErrInvalid) {
+				t.Fatalf("accepted invalid environment tool: %v", err)
+			}
+			if strings.Contains(err.Error(), "D:/private/secret") {
+				t.Fatalf("validation error echoed candidate path: %v", err)
+			}
+		})
+	}
+
+	invalidJSONUTF8 := []byte(validJSON)
+	marker := []byte("git.exe")
+	markerIndex := bytes.Index(invalidJSONUTF8, marker)
+	if markerIndex < 0 {
+		t.Fatal("test marker not found")
+	}
+	invalidJSONUTF8[markerIndex] = 0xff
+	if _, err := Parse(invalidJSONUTF8); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("accepted invalid JSON UTF-8: %v", err)
+	}
+}
+
+func TestEnvironmentToolsAreDeeplyImmutable(t *testing.T) {
+	c, err := Parse([]byte(validJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := c.EnvironmentTools()
+	files := tools[0].CandidateFiles()
+	files[0] = "changed"
+	tools[0] = EnvironmentTool{}
+	if got := c.EnvironmentTools()[0].CandidateFiles()[0]; got != "D:/replace/with/an/absolute/path/to/git.exe" {
+		t.Fatalf("caller mutation changed config candidate: %q", got)
+	}
+
+	clone := c.Clone()
+	cloneTools := clone.EnvironmentTools()
+	cloneFiles := cloneTools[0].CandidateFiles()
+	cloneFiles[0] = "changed-clone"
+	cloneTools[0] = EnvironmentTool{}
+	if got := c.EnvironmentTools()[0].CandidateFiles()[0]; got != "D:/replace/with/an/absolute/path/to/git.exe" {
+		t.Fatalf("clone mutation changed original candidate: %q", got)
+	}
+}
+
+func TestExampleConfigParses(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "configs", "local-probe.example.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Parse(data)
+	if err != nil {
+		t.Fatalf("example config is invalid: %v", err)
+	}
+	if got := c.EnvironmentTools(); len(got) != 3 {
+		t.Fatalf("example environment_tools = %d, want 3", len(got))
+	}
+	profile, ok := c.Profile("read_only")
+	if !ok {
+		t.Fatal("example read_only profile is missing")
+	}
+	for _, want := range []string{"get_environment", "discover_tools"} {
+		found := false
+		for _, tool := range profile.Tools() {
+			if tool == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("example read_only profile does not allow %q", want)
+		}
+	}
+}
+
+func mustEnvironmentTool(t *testing.T, id string) EnvironmentTool {
+	t.Helper()
+	tool, err := NewEnvironmentTool(id, []string{"D:/replace/with/an/absolute/path/to/" + id + ".exe"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tool
+}
+
+func makeEnvironmentTools(t *testing.T, count int) []EnvironmentTool {
+	t.Helper()
+	tools := make([]EnvironmentTool, count)
+	for i := range tools {
+		tools[i] = mustEnvironmentTool(t, "tool-"+strconv.Itoa(i))
+	}
+	return tools
 }
 
 func TestIgnorePatternsAreConfigurableAndPreserved(t *testing.T) {

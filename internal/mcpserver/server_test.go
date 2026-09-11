@@ -8,13 +8,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/LE-saber/Local-Probe/internal/audit"
 	"github.com/LE-saber/Local-Probe/internal/config"
+	"github.com/LE-saber/Local-Probe/internal/environment"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/rootfs"
 	"github.com/LE-saber/Local-Probe/internal/search"
@@ -186,6 +190,149 @@ func TestSearchToolsAreMCPScopedAndUseStructuredResults(t *testing.T) {
 	decodeToolJSON(t, treeResult, &tree)
 	if len(tree.Entries) < 2 || tree.Entries[0].Path != "" || tree.Entries[0].Depth != 0 || tree.Entries[1].Path != "hello.txt" || tree.Entries[1].Depth != 1 {
 		t.Fatalf("tree_directory = %#v", tree)
+	}
+}
+
+func TestEnvironmentToolsAreScopedAndPathFree(t *testing.T) {
+	fixture := newFixture(t)
+	defer fixture.close()
+	candidatePath := filepath.Join(fixture.root, "git-probe")
+	if err := os.WriteFile(candidatePath, []byte("not a command"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.environmentTools = []environment.ToolSpec{{
+		ID:             "git",
+		CandidateFiles: []string{candidatePath},
+	}}
+	fixture.profileOneTools = []string{ToolServerInfo, ToolGetEnvironment, ToolDiscoverTools}
+	fixture.profileTwoTools = []string{ToolServerInfo}
+	server := newTestServer(t, fixture, []Credential{
+		{ConnectionID: "connection-one", Token: testTokenOne},
+		{ConnectionID: "connection-two", Token: testTokenTwo},
+	})
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "environment-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             httpServer.URL,
+		HTTPClient:           &http.Client{Transport: &testTokenTransport{token: testTokenOne}},
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		names = append(names, tool.Name)
+	}
+	sort.Strings(names)
+	wantNames := []string{ToolDiscoverTools, ToolGetEnvironment, ToolServerInfo}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("environment tools/list = %v, want %v", names, wantNames)
+	}
+
+	infoResult := callTool(t, ctx, session, ToolServerInfo, map[string]any{})
+	var info serverInfoOutput
+	decodeToolJSON(t, infoResult, &info)
+	if !containsString(info.Tools, ToolGetEnvironment) || !containsString(info.Tools, ToolDiscoverTools) {
+		t.Fatalf("server_info tools = %v", info.Tools)
+	}
+
+	environmentResult := callTool(t, ctx, session, ToolGetEnvironment, map[string]any{})
+	var environmentOutput getEnvironmentOutput
+	decodeToolJSON(t, environmentResult, &environmentOutput)
+	if environmentOutput.OS == "" || environmentOutput.Arch == "" || environmentOutput.RequestID == "" {
+		t.Fatalf("get_environment = %#v", environmentOutput)
+	}
+	if resultContainsString(environmentResult, fixture.root) {
+		t.Fatalf("get_environment exposed local root: %s", environmentResult.StructuredContent)
+	}
+
+	discoveryResult := callTool(t, ctx, session, ToolDiscoverTools, map[string]any{})
+	var discoveryOutput discoverToolsOutput
+	decodeToolJSON(t, discoveryResult, &discoveryOutput)
+	if len(discoveryOutput.Tools) != 1 || discoveryOutput.Tools[0].ApprovedLogicalID != "git" || !discoveryOutput.Tools[0].Exists || discoveryOutput.Tools[0].CandidateCount != 1 {
+		t.Fatalf("discover_tools = %#v", discoveryOutput)
+	}
+	if resultContainsString(discoveryResult, fixture.root) || bytes.Contains(structuredResultBytes(discoveryResult), []byte("candidate_paths")) || bytes.Contains(structuredResultBytes(discoveryResult), []byte("diagnostics_notice")) {
+		t.Fatalf("discover_tools exposed local diagnostics: %s", discoveryResult.StructuredContent)
+	}
+
+	var fakeCalled bool
+	server.discoverEnvironment = func(specs []environment.ToolSpec, options environment.DiscoveryOptions) ([]environment.ToolDiscoveryResult, error) {
+		fakeCalled = true
+		if options.LocalDiagnostics {
+			t.Error("remote discovery enabled local diagnostics")
+		}
+		if len(specs) != 1 || specs[0].ID != "git" {
+			t.Errorf("selected specs = %#v", specs)
+		}
+		return []environment.ToolDiscoveryResult{{
+			ApprovedLogicalID: "git",
+			Exists:            true,
+			CandidateCount:    1,
+			CandidatePaths:    []string{candidatePath},
+			DiagnosticsNotice: environment.DiagnosticsNotice,
+		}}, nil
+	}
+	fakeResult := callTool(t, ctx, session, ToolDiscoverTools, map[string]any{"logical_ids": []string{"git"}})
+	if !fakeCalled || resultContainsString(fakeResult, fixture.root) || bytes.Contains(structuredResultBytes(fakeResult), []byte("candidate_paths")) || bytes.Contains(structuredResultBytes(fakeResult), []byte("diagnostics_notice")) {
+		t.Fatalf("injected discovery was not redacted: %s", structuredResultBytes(fakeResult))
+	}
+	server.discoverEnvironment = environment.DiscoverTools
+
+	server.environmentTools = nil
+	emptyResult := callTool(t, ctx, session, ToolDiscoverTools, map[string]any{})
+	var emptyOutput discoverToolsOutput
+	decodeToolJSON(t, emptyResult, &emptyOutput)
+	if len(emptyOutput.Tools) != 0 {
+		t.Fatalf("discover_tools without configured tools = %#v", emptyOutput)
+	}
+	server.environmentTools = fixture.environmentTools
+
+	badArguments := callTool(t, ctx, session, ToolDiscoverTools, map[string]any{"paths": []string{fixture.root}})
+	if !badArguments.IsError || resultContainsString(badArguments, fixture.root) {
+		t.Fatalf("discover_tools accepted path argument: %#v", badArguments)
+	}
+
+	unknown := callTool(t, ctx, session, ToolDiscoverTools, map[string]any{
+		"logical_ids": []string{"not_configured"},
+	})
+	if !unknown.IsError || strings.Contains(toolText(t, unknown), "not_configured") || resultContainsString(unknown, fixture.root) {
+		t.Fatalf("unknown logical ID response = %#v, text=%q", unknown, toolText(t, unknown))
+	}
+
+	secondClient := mcp.NewClient(&mcp.Implementation{Name: "environment-scoped-client", Version: "test"}, nil)
+	secondSession, err := secondClient.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             httpServer.URL,
+		HTTPClient:           &http.Client{Transport: &testTokenTransport{token: testTokenTwo}},
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondSession.Close()
+	secondTools, err := secondSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondTools.Tools) != 1 || secondTools.Tools[0].Name != ToolServerInfo {
+		t.Fatalf("second connection tools = %#v", secondTools.Tools)
+	}
+	denied := callTool(t, ctx, secondSession, ToolDiscoverTools, map[string]any{})
+	if !denied.IsError || !strings.Contains(toolText(t, denied), `"code":"denied"`) {
+		t.Fatalf("second connection discover_tools = %#v, text=%q", denied, toolText(t, denied))
 	}
 }
 
@@ -520,13 +667,171 @@ func TestResolveToken(t *testing.T) {
 	}
 }
 
+func TestAuditMCPCallsContainActionOnly(t *testing.T) {
+	fixture := newFixture(t)
+	defer fixture.close()
+	auditDir := t.TempDir()
+	sink, err := audit.New(audit.Config{Directory: auditDir, MaxFileBytes: 64 << 10, MaxFiles: 4, QueueSize: 64, InstanceID: "mcp-audit-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sink.Close() })
+	fixture.audit = sink
+	server := newTestServer(t, fixture, []Credential{{ConnectionID: "connection-one", Token: testTokenOne}})
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "audit-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: &testTokenTransport{token: testTokenOne}},
+		DisableStandaloneSSE: true, MaxRetries: -1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	callTool(t, ctx, session, ToolPing, map[string]any{"path": "sentinel-path-query-token"})
+	invalid := callTool(t, ctx, session, ToolReadFile, map[string]any{
+		"path":       "sentinel-invalid-path",
+		"unexpected": "sentinel-invalid-argument",
+	})
+	if !invalid.IsError {
+		t.Fatalf("invalid read arguments unexpectedly succeeded: %#v", invalid)
+	}
+	callTool(t, ctx, session, "unknown_tool", map[string]any{"query": "sentinel-query", "token": "sentinel-token"})
+	callTool(t, ctx, session, "C:/private/sentinel-tool", map[string]any{"query": "sentinel-unknown-tool"})
+	if err := sink.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data := bytes.Join(readAuditFiles(t, auditDir), []byte{'\n'})
+	if !bytes.Contains(data, []byte(`"action":"tools/list"`)) || !bytes.Contains(data, []byte(`"action":"ping"`)) {
+		t.Fatalf("audit actions missing: %s", data)
+	}
+	if !bytes.Contains(data, []byte(`"outcome":"rejected"`)) || !bytes.Contains(data, []byte(`"error_code":"denied"`)) {
+		t.Fatalf("audit error outcomes missing: %s", data)
+	}
+	if !bytes.Contains(data, []byte(`"error_code":"invalid_request"`)) {
+		t.Fatalf("audit did not preserve invalid_request code: %s", data)
+	}
+	for _, action := range []string{`"action":"unknown_tool"`, `"action":"C:/private/sentinel-tool"`} {
+		if bytes.Contains(data, []byte(action)) {
+			t.Fatalf("audit copied unregistered tool name %q: %s", action, data)
+		}
+	}
+	for _, sentinel := range []string{"sentinel-path-query-token", "sentinel-query", "sentinel-token", "path", "query", "arguments"} {
+		if bytes.Contains(data, []byte(sentinel)) || (sentinel == "path" && bytes.Contains(data, []byte(`"path"`))) || (sentinel == "query" && bytes.Contains(data, []byte(`"query"`))) || (sentinel == "arguments" && bytes.Contains(data, []byte(`"arguments"`))) {
+			t.Fatalf("audit contains request detail %q: %s", sentinel, data)
+		}
+	}
+}
+
+func TestAuditToolErrorDoesNotCopyResponseContent(t *testing.T) {
+	result := &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{&mcp.TextContent{Text: `{"schema_version":"local-probe.mcp.v1","error":{"code":"invalid_request","message":"C:\\private\\sentinel.txt"}}`}},
+	}
+	outcome, code := auditToolError(result)
+	if outcome != audit.OutcomeFailed || code != "invalid_request" {
+		t.Fatalf("auditToolError() = (%q, %q), want failed/invalid_request", outcome, code)
+	}
+	unknown := &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{&mcp.TextContent{Text: `{"schema_version":"local-probe.mcp.v1","error":{"code":"sentinel-unknown","message":"sentinel-body"}}`}},
+	}
+	if outcome, code := auditToolError(unknown); outcome != audit.OutcomeFailed || code != "unavailable" {
+		t.Fatalf("unknown auditToolError() = (%q, %q), want failed/unavailable", outcome, code)
+	}
+}
+
+func TestAuditAuthRejectIsSynchronousAndRedacted(t *testing.T) {
+	fixture := newFixture(t)
+	defer fixture.close()
+	auditDir := t.TempDir()
+	sink, err := audit.New(audit.Config{Directory: auditDir, MaxFileBytes: 64 << 10, MaxFiles: 2, QueueSize: 1, InstanceID: "auth-audit-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sink.Close() })
+	fixture.audit = sink
+	server := newTestServer(t, fixture, []Credential{{ConnectionID: "connection-one", Token: testTokenOne}})
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	request, err := http.NewRequest(http.MethodPost, httpServer.URL, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badToken := "Bearer sentinel-auth-token-123456"
+	request.Header.Set(LocalTokenHeader, badToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad auth status = %d", response.StatusCode)
+	}
+	forbiddenRequest, err := http.NewRequest(http.MethodPost, httpServer.URL, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forbiddenRequest.Header.Set(LocalTokenHeader, testTokenOne)
+	forbiddenRequest.Header.Set("Origin", "https://attacker.example")
+	forbiddenRequest.Header.Set("Sec-Fetch-Site", "cross-site")
+	forbiddenResponse, err := http.DefaultClient.Do(forbiddenRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forbiddenResponse.Body.Close()
+	if forbiddenResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d", forbiddenResponse.StatusCode)
+	}
+	data := bytes.Join(readAuditFiles(t, auditDir), []byte{'\n'})
+	if bytes.Count(data, []byte(`"type":"auth.reject"`)) != 2 || !bytes.Contains(data, []byte(`"class":"security"`)) {
+		t.Fatalf("synchronous auth rejection missing: %s", data)
+	}
+	if bytes.Contains(data, []byte(badToken)) || bytes.Contains(data, []byte("sentinel-auth-token-123456")) {
+		t.Fatalf("auth token reached audit: %s", data)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readAuditFiles(t *testing.T, dir string) [][]byte {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(paths)
+	files := make([][]byte, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, data)
+	}
+	return files
+}
+
 type testFixture struct {
-	store           *config.Store
-	manager         *policy.Manager
-	source          *rootfs.Source
-	root            string
-	profileTwoTools []string
-	profileOneTools []string
+	store            *config.Store
+	manager          *policy.Manager
+	source           *rootfs.Source
+	root             string
+	environmentTools []environment.ToolSpec
+	audit            audit.Recorder
+	profileTwoTools  []string
+	profileOneTools  []string
 }
 
 func newFixture(t *testing.T) *testFixture {
@@ -586,11 +891,36 @@ func newTestServer(t *testing.T, fixture *testFixture, credentials []Credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := New(Options{Manager: fixture.manager, Source: fixture.source, Credentials: credentials})
+	server, err := New(Options{Manager: fixture.manager, Source: fixture.source, Credentials: credentials, EnvironmentTools: fixture.environmentTools, Audit: fixture.audit})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return server
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func resultContainsString(result *mcp.CallToolResult, value string) bool {
+	encoded, err := json.Marshal(value)
+	if err != nil || result == nil || result.StructuredContent == nil {
+		return false
+	}
+	return bytes.Contains(structuredResultBytes(result), encoded)
+}
+
+func structuredResultBytes(result *mcp.CallToolResult) []byte {
+	if result == nil || result.StructuredContent == nil {
+		return nil
+	}
+	data, _ := json.Marshal(result.StructuredContent)
+	return data
 }
 
 func callTool(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {

@@ -33,6 +33,17 @@ func New(binder Binder, limits Limits, cursorKey []byte) (*Service, error) {
 	}
 	if limits == (Limits{}) {
 		limits = DefaultLimits()
+	} else {
+		// MaxOpenFiles and MaxOpenDirectories were added after the original
+		// Limits struct. Preserve callers that construct a non-zero legacy
+		// literal while still rejecting explicitly negative or oversized values.
+		defaults := DefaultLimits()
+		if limits.MaxOpenFiles == 0 {
+			limits.MaxOpenFiles = defaults.MaxOpenFiles
+		}
+		if limits.MaxOpenDirectories == 0 {
+			limits.MaxOpenDirectories = defaults.MaxOpenDirectories
+		}
 	}
 	if err := limits.validate(); err != nil {
 		return nil, err
@@ -69,27 +80,29 @@ type scanCursorState struct {
 }
 
 type cursorPayload struct {
-	Version        int              `json:"version"`
-	Operation      string           `json:"operation"`
-	ConnectionID   string           `json:"connection_id"`
-	ProfileID      string           `json:"profile_id"`
-	Revision       string           `json:"revision"`
-	RootID         string           `json:"root_id"`
-	StartPath      string           `json:"start_path"`
-	Pattern        string           `json:"pattern,omitempty"`
-	Query          string           `json:"query,omitempty"`
-	Globs          []string         `json:"globs,omitempty"`
-	CaseSensitive  bool             `json:"case_sensitive,omitempty"`
-	PageSize       int              `json:"page_size"`
-	MaxDepth       int              `json:"max_depth,omitempty"`
-	MaxEntries     int              `json:"max_entries"`
-	MaxReadBytes   int              `json:"max_read_bytes,omitempty"`
-	ContextBytes   int              `json:"context_bytes,omitempty"`
-	MaxOutputBytes int              `json:"max_output_bytes,omitempty"`
-	RootEmitted    bool             `json:"root_emitted,omitempty"`
-	ExpiresAt      int64            `json:"expires_at"`
-	Frames         []cursorFrame    `json:"frames"`
-	Pending        *scanCursorState `json:"pending,omitempty"`
+	Version            int              `json:"version"`
+	Operation          string           `json:"operation"`
+	ConnectionID       string           `json:"connection_id"`
+	ProfileID          string           `json:"profile_id"`
+	Revision           string           `json:"revision"`
+	RootID             string           `json:"root_id"`
+	StartPath          string           `json:"start_path"`
+	Pattern            string           `json:"pattern,omitempty"`
+	Query              string           `json:"query,omitempty"`
+	Globs              []string         `json:"globs,omitempty"`
+	CaseSensitive      bool             `json:"case_sensitive,omitempty"`
+	PageSize           int              `json:"page_size"`
+	MaxDepth           int              `json:"max_depth,omitempty"`
+	MaxEntries         int              `json:"max_entries"`
+	MaxReadBytes       int              `json:"max_read_bytes,omitempty"`
+	ContextBytes       int              `json:"context_bytes,omitempty"`
+	MaxOutputBytes     int              `json:"max_output_bytes,omitempty"`
+	MaxOpenFiles       int              `json:"max_open_files"`
+	MaxOpenDirectories int              `json:"max_open_directories"`
+	RootEmitted        bool             `json:"root_emitted,omitempty"`
+	ExpiresAt          int64            `json:"expires_at"`
+	Frames             []cursorFrame    `json:"frames"`
+	Pending            *scanCursorState `json:"pending,omitempty"`
 }
 
 func (s *Service) cursor(payload cursorPayload) (string, error) {

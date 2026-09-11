@@ -129,11 +129,12 @@ func (r CredentialRef) Kind() string { return r.kind }
 // Config is an immutable validated configuration value. Callers can inspect
 // it through the accessors below, but cannot mutate the backing slices.
 type Config struct {
-	schemaVersion string
-	roots         []Root
-	profiles      []Profile
-	connections   []Connection
-	credentials   []CredentialRef
+	schemaVersion    string
+	roots            []Root
+	profiles         []Profile
+	connections      []Connection
+	credentials      []CredentialRef
+	environmentTools []EnvironmentTool
 }
 
 func NewRoot(id, rootPath string, denyPatterns []string) (Root, error) {
@@ -180,17 +181,7 @@ func NewCredentialRef(id, kind string) CredentialRef {
 }
 
 func New(schemaVersion string, roots []Root, profiles []Profile, connections []Connection, credentials []CredentialRef) (Config, error) {
-	c := Config{
-		schemaVersion: schemaVersion,
-		roots:         cloneRoots(roots),
-		profiles:      cloneProfiles(profiles),
-		connections:   append([]Connection(nil), connections...),
-		credentials:   append([]CredentialRef(nil), credentials...),
-	}
-	if err := c.validate(); err != nil {
-		return Config{}, err
-	}
-	return c, nil
+	return NewWithEnvironmentTools(schemaVersion, roots, profiles, connections, credentials, nil)
 }
 
 func (c Config) SchemaVersion() string { return c.schemaVersion }
@@ -249,11 +240,12 @@ func (c Config) Credential(id string) (CredentialRef, bool) {
 
 func (c Config) Clone() Config {
 	return Config{
-		schemaVersion: c.schemaVersion,
-		roots:         cloneRoots(c.roots),
-		profiles:      cloneProfiles(c.profiles),
-		connections:   append([]Connection(nil), c.connections...),
-		credentials:   append([]CredentialRef(nil), c.credentials...),
+		schemaVersion:    c.schemaVersion,
+		roots:            cloneRoots(c.roots),
+		profiles:         cloneProfiles(c.profiles),
+		connections:      append([]Connection(nil), c.connections...),
+		credentials:      append([]CredentialRef(nil), c.credentials...),
+		environmentTools: cloneEnvironmentTools(c.environmentTools),
 	}
 }
 
@@ -262,6 +254,9 @@ func (c Config) Clone() Config {
 func Parse(data []byte) (Config, error) {
 	if len(data) > MaxConfigBytes {
 		return Config{}, fmt.Errorf("%w: configuration exceeds size limit", ErrInvalid)
+	}
+	if !utf8.Valid(data) {
+		return Config{}, invalid("configuration", "invalid UTF-8")
 	}
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return Config{}, err
@@ -298,11 +293,12 @@ func Load(reader io.Reader) (Config, error) {
 
 func (c Config) MarshalJSON() ([]byte, error) {
 	raw := rawConfig{
-		SchemaVersion: c.schemaVersion,
-		Roots:         make([]rawRoot, len(c.roots)),
-		Profiles:      make([]rawProfile, len(c.profiles)),
-		Connections:   make([]rawConnection, len(c.connections)),
-		Credentials:   make([]rawCredential, len(c.credentials)),
+		SchemaVersion:    c.schemaVersion,
+		Roots:            make([]rawRoot, len(c.roots)),
+		Profiles:         make([]rawProfile, len(c.profiles)),
+		Connections:      make([]rawConnection, len(c.connections)),
+		Credentials:      make([]rawCredential, len(c.credentials)),
+		EnvironmentTools: make([]rawEnvironmentTool, len(c.environmentTools)),
 	}
 	for i, root := range c.roots {
 		raw.Roots[i] = rawRoot{ID: root.id, Path: root.path, DenyPatterns: append([]string(nil), root.denyPatterns...), IgnorePatterns: append([]string(nil), root.ignorePatterns...)}
@@ -330,6 +326,13 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	}
 	for i, credential := range c.credentials {
 		raw.Credentials[i] = rawCredential{ID: credential.id, Kind: credential.kind}
+	}
+	for i, tool := range c.environmentTools {
+		raw.EnvironmentTools[i] = rawEnvironmentTool{
+			ID:             tool.id,
+			CandidateFiles: append([]string(nil), tool.candidateFiles...),
+			CandidateDirs:  append([]string(nil), tool.candidateDirs...),
+		}
 	}
 	return json.Marshal(raw)
 }
@@ -405,11 +408,12 @@ func (s *Store) replace(expected string, next Config, checkExpected bool) (Snaps
 func revisionString(generation uint64) string { return fmt.Sprintf("r%d", generation) }
 
 type rawConfig struct {
-	SchemaVersion string          `json:"schema_version"`
-	Roots         []rawRoot       `json:"roots"`
-	Profiles      []rawProfile    `json:"profiles"`
-	Connections   []rawConnection `json:"connections"`
-	Credentials   []rawCredential `json:"credentials"`
+	SchemaVersion    string               `json:"schema_version"`
+	Roots            []rawRoot            `json:"roots"`
+	Profiles         []rawProfile         `json:"profiles"`
+	Connections      []rawConnection      `json:"connections"`
+	Credentials      []rawCredential      `json:"credentials"`
+	EnvironmentTools []rawEnvironmentTool `json:"environment_tools,omitempty"`
 }
 
 type rawRoot struct {
@@ -480,6 +484,16 @@ func fromRaw(raw rawConfig) (Config, error) {
 	for i, credential := range raw.Credentials {
 		c.credentials[i] = CredentialRef{id: credential.ID, kind: credential.Kind}
 	}
+	if raw.EnvironmentTools != nil {
+		c.environmentTools = make([]EnvironmentTool, len(raw.EnvironmentTools))
+		for i, tool := range raw.EnvironmentTools {
+			c.environmentTools[i] = EnvironmentTool{
+				id:             tool.ID,
+				candidateFiles: append([]string(nil), tool.CandidateFiles...),
+				candidateDirs:  append([]string(nil), tool.CandidateDirs...),
+			}
+		}
+	}
 	if err := c.validate(); err != nil {
 		return Config{}, err
 	}
@@ -544,7 +558,7 @@ func (c Config) validate() error {
 			return invalid(field+".credential_ref", "unknown credential reference")
 		}
 	}
-	return nil
+	return validateEnvironmentTools(c.environmentTools)
 }
 
 func validateRoot(root Root, field string) error {

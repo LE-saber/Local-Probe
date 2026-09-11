@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/LE-saber/Local-Probe/internal/policy"
+	"github.com/LE-saber/Local-Probe/internal/readcore"
 )
 
 type walkFrame struct {
@@ -24,18 +25,88 @@ type walker struct {
 	bound     policy.BoundScope
 	rootID    string
 	batchSize int
+	opens     *openBudget
 	frames    []walkFrame
 	last      bool
 }
 
-func newWalker(ctx context.Context, source Source, bound policy.BoundScope, rootID string, frames []cursorFrame, batchSize int) (*walker, error) {
+type openBudget struct {
+	maxFiles       int
+	maxDirectories int
+	openedFiles    int
+	openedDirs     int
+	coverage       *Coverage
+}
+
+func newOpenBudget(limits Limits, coverage *Coverage) *openBudget {
+	return &openBudget{
+		maxFiles:       limits.MaxOpenFiles,
+		maxDirectories: limits.MaxOpenDirectories,
+		coverage:       coverage,
+	}
+}
+
+func (b *openBudget) openDirectory(source Source, ctx context.Context, bound policy.BoundScope, rootID, relativePath string) (Directory, error) {
+	if b == nil || b.openedDirs >= b.maxDirectories {
+		return nil, ErrOpenDirectoriesLimit
+	}
+	dir, err := source.OpenDirectory(ctx, bound, rootID, relativePath)
+	if err != nil {
+		return dir, err
+	}
+	if dir == nil {
+		return nil, ErrUnavailable
+	}
+	b.openedDirs++
+	if b.coverage != nil {
+		b.coverage.OpenedDirectories = b.openedDirs
+	}
+	return dir, nil
+}
+
+func (b *openBudget) openFile(source Source, ctx context.Context, bound policy.BoundScope, refFile readcore.FileRef) (readcore.Handle, error) {
+	if b == nil || b.openedFiles >= b.maxFiles {
+		return nil, ErrOpenFilesLimit
+	}
+	h, err := source.OpenFile(ctx, bound, refFile)
+	if err != nil {
+		return h, err
+	}
+	if h == nil {
+		return nil, ErrUnavailable
+	}
+	b.openedFiles++
+	if b.coverage != nil {
+		b.coverage.OpenedFiles = b.openedFiles
+	}
+	return h, nil
+}
+
+func (b *openBudget) replay(entries int) {
+	if b != nil && b.coverage != nil && entries > 0 {
+		b.coverage.ReplayedEntries += entries
+	}
+}
+
+func (b *openBudget) canOpenFile() bool {
+	return b != nil && b.openedFiles < b.maxFiles
+}
+
+func (b *openBudget) canOpenDirectory() bool {
+	return b != nil && b.openedDirs < b.maxDirectories
+}
+
+func newWalker(ctx context.Context, source Source, bound policy.BoundScope, rootID string, frames []cursorFrame, batchSize int, opens *openBudget) (*walker, error) {
 	if ctx == nil || source == nil || !bound.AllowsRoot(rootID) || batchSize < 1 {
 		return nil, ErrDenied
+	}
+	if opens == nil {
+		return nil, ErrInvalidRequest
 	}
 	if len(frames) == 0 {
 		frames = []cursorFrame{{Path: ""}}
 	}
-	w := &walker{ctx: ctx, source: source, bound: bound, rootID: rootID, batchSize: batchSize}
+	w := &walker{ctx: ctx, source: source, bound: bound, rootID: rootID, batchSize: batchSize, opens: opens}
 	for _, state := range frames {
 		frame, done, err := w.openFrame(state)
 		if err != nil {
@@ -65,7 +136,7 @@ func (w *walker) openFrame(state cursorFrame) (walkFrame, bool, error) {
 	if state.Path != "" && !validRelativePath(state.Path) || !w.bound.AllowsDirectory(w.rootID, state.Path) {
 		return walkFrame{}, false, ErrDenied
 	}
-	dir, err := w.source.OpenDirectory(w.ctx, w.bound, w.rootID, state.Path)
+	dir, err := w.opens.openDirectory(w.source, w.ctx, w.bound, w.rootID, state.Path)
 	if err != nil {
 		return walkFrame{}, false, mapSourceError(err)
 	}
@@ -87,9 +158,11 @@ func (w *walker) openFrame(state cursorFrame) (walkFrame, bool, error) {
 			if remaining < len(entries) {
 				frame.batch = entries
 				frame.index = remaining
+				w.opens.replay(remaining)
 				remaining = 0
 				break
 			}
+			w.opens.replay(len(entries))
 			remaining -= len(entries)
 		}
 		if readErr != nil {
@@ -204,6 +277,9 @@ func (w *walker) close() {
 func mapSourceError(err error) error {
 	if err == nil {
 		return ErrUnavailable
+	}
+	if errors.Is(err, ErrOpenFilesLimit) || errors.Is(err, ErrOpenDirectoriesLimit) {
+		return err
 	}
 	if errors.Is(err, ErrDenied) {
 		return ErrDenied
