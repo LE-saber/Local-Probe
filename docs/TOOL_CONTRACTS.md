@@ -337,10 +337,17 @@ timeout、脚本/wrapper 和模型修改 profile 均被拒绝。
 
 `config.Store.AcquireRevisionLease` 与 `internal/commandexec` 提供本地 fail-closed bridge：
 先持有 profile revision lease，检查 developer/network admission，再消费一次性 confirmation，
-最后由可信 profile 构造 probe descriptor/policy。`commandprofile.EnforcementCapability` 当前没有
-生产铸造器，因此默认拒绝；bridge 尚未接入 CLI/supervisor/MCP。配置层已有的 pre-open writable
-handle 或 mapped view 仍是残余风险；`LockFileEx` 的 byte-range lock 不约束 mapped view，不能
-作为完整修复。
+最后由可信 profile 构造 probe descriptor/policy。`Executor` 要求调用方提供 `AuditRecorder`：
+拒绝路径同步记录 `command.reject`；成功准入和确认消费后分别将 `command.admission`、
+`command.start` 送入有界异步队列。只有即时校验或入队错误会 fail closed、不启动 probe；后续
+磁盘写失败只标记 `degraded`，尚待 supervisor 阻断新执行，不能声称每条事件都在启动前持久化。
+审计上下文不包含 path、argv、env、output 或 token。当前 probe 尚未提供可靠完整 outcome，
+因此 `command.result` 仍未接线。`commandprofile.EnforcementCapability` 当前没有生产铸造器，
+因此默认拒绝；bridge 尚未接入 CLI/supervisor/MCP。配置层已有的 pre-open writable handle 或
+mapped view 仍是残余风险；`LockFileEx` 的 byte-range lock 不约束 mapped view，不能作为完整修复。
+
+下一增量先做 developer-mode exact argv/typed slots 的本地配置验证，再在 probe 提供可靠完整
+outcome 后接入 `command.result`；该路线不开放 raw command、arbitrary shell 或任意参数数组。
 
 `internal/networkguard` 已完成 NET-01 platform-independent contract/fake：每次操作使用不可
 序列化的独立 lease/capability/run handle，要求完整 IPv4/IPv6 outbound/inbound、bind/listen、
@@ -379,15 +386,19 @@ session，不安装 filter，不启动进程，不修改 Windows Firewall/WFP，
 - `identity.sha256` 已从同一 Windows guard handle 计算并比较；尚无签名/Authenticode 校验，
   也没有完成 VM identity/network 对抗证据。
 - `internal/audit` 已提供 `command.admission`、`command.start`、`command.result`、
-  `command.reject` 的 audit.v2 producers，但尚未接入 commandexec 或 supervisor。
+  `command.reject` 的 audit.v2 producers。R4-AUDIT-01 已接入 local commandexec：拒绝路径同步
+  发出 `command.reject`，成功路径将 `command.admission`/`command.start` 有界异步入队；即时
+  校验/入队错误 fail closed，后续落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行。
+  当前 probe 没有可靠完整 outcome，`command.result` 尚未接线；producer 不写入 path、argv、env、
+  output 或 token，CLI/supervisor 生产接线仍未完成。
 - MCP 没有 `run_probe` 注册、输入/输出 schema 或 confirmation 流程。ChatGPT、Cloudflare
   Tunnel 和其它远程入口继续不能启动 probe、选择 command profile 或传递命令参数。
 
 因此 MCP 工具列表仍只包含本文件第七节所列的只读文件/环境能力；在上述硬门和独立审查
 完成前，不得添加 `run_probe`，也不得用 read-only annotation 或本地确认字段替代 OS 网络
 隔离、映像校验和真实 profile 接线。Windows 手工步骤见
-[`manual-test-targets/r4/README.md`](../manual-test-targets/r4/README.md)；本轮不宣称 Linux
-或其它 Unix runtime 已验证。
+[`manual-test-targets/r4/README.md`](../manual-test-targets/r4/README.md)；本轮未运行 Windows 手工、
+网页或网络测试，也不宣称 Linux 或其它 Unix runtime 已验证。
 
 ## 十二、audit.v1 与 audit.v2 command producers（当前最小实现）
 
@@ -400,7 +411,8 @@ CLI 已接入本地 typed JSONL audit sink；当前 sink 统一使用 `local-pro
 command producers 固定为 `command.admission`、`command.start`、`command.result` 和
 `command.reject`。它们只接受受限 command/variant selector、lowercase identity digest、
 exit/timeout、stdout/stderr 字节计数和 network enforcement 状态；不会写入路径、完整 argv/env、
-输出正文、请求正文或密钥。producer 尚未接到 commandexec。
+输出正文、请求正文或密钥。R4-AUDIT-01 已将 admission/start/reject 接到 local commandexec；
+`command.result` 因 probe 尚无可靠完整 outcome 仍未接线。
 
 MCP 适配层当前记录 `auth.accept`、`mcp.list`、`mcp.call` 和 `mcp.result`。调用事件只记录
 受校验的 action（工具名或 `unknown`）及计数/预算字段；参数、请求正文、响应正文、文件路径、
@@ -408,7 +420,7 @@ token、JWT、key 和错误 message 均不写入。typed error envelope 只提�
 未知或格式错误的错误结果统一记为 `unavailable`；401/403 不会再由内部 MCP 事件重复记一条
 security reject。
 
-尚未完成的部分必须单独看待：command producer 尚未接入实际执行，仍没有 network-tunnel、policy、
+尚未完成的部分必须单独看待：command.result 尚未接入实际执行 outcome，仍没有 network-tunnel、policy、
 fs-search 事件生产者，
 也没有运行时 sink 故障后的 fail-closed ingress、全局并发/线级配额或管理变更审计。audit 的
 `Stats.Degraded` 可供后续 supervisor/GUI 读取，但目前不会自动拒绝已启动 listener 的新请求。

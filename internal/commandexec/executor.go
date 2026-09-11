@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/LE-saber/Local-Probe/internal/audit"
 	"github.com/LE-saber/Local-Probe/internal/commandprofile"
 	"github.com/LE-saber/Local-Probe/internal/confirmation"
 	"github.com/LE-saber/Local-Probe/internal/probe"
@@ -23,6 +24,7 @@ var (
 	ErrNotAdmitted     = errors.New("command execution not admitted")
 	ErrConfirmation    = errors.New("local confirmation rejected")
 	ErrExecutionFailed = errors.New("command execution failed")
+	ErrAuditFailed     = errors.New("command audit failed")
 )
 
 const maxRequestNonceBytes = 256
@@ -70,6 +72,16 @@ type Result struct {
 	Version   string
 }
 
+// AuditRecorder is the narrow audit dependency used by Executor.  The
+// concrete audit.CommandRecorder is the production implementation; keeping
+// the interface here lets local tests inject a bounded failure recorder
+// without exposing any command-line or token fields.
+type AuditRecorder interface {
+	RecordAdmission(audit.CommandContext) error
+	RecordStart(audit.CommandContext) error
+	RecordReject(audit.CommandContext, string) error
+}
+
 // Executor owns a fixed binding and local confirmation/enforcement handles.
 // It is not safe to construct one from model-provided values.
 type Executor struct {
@@ -77,10 +89,13 @@ type Executor struct {
 	mode        commandprofile.DeveloperMode
 	confirm     *confirmation.Manager
 	enforcement commandprofile.EnforcementCapability
+	audit       AuditRecorder
+	admit       func(commandprofile.Profile, commandprofile.DeveloperMode, string, commandprofile.EnforcementCapability) error
+	run         func(context.Context, commandprofile.Profile, commandprofile.Variant) (Result, error)
 }
 
-func New(binding Binding, mode commandprofile.DeveloperMode, confirmations *confirmation.Manager, enforcement commandprofile.EnforcementCapability) (*Executor, error) {
-	if binding.ConnectionID == "" || binding.ProfileRevision == "" || binding.AcquireRevision == nil || confirmations == nil {
+func New(binding Binding, mode commandprofile.DeveloperMode, confirmations *confirmation.Manager, enforcement commandprofile.EnforcementCapability, recorder AuditRecorder) (*Executor, error) {
+	if binding.ConnectionID == "" || binding.ProfileRevision == "" || binding.AcquireRevision == nil || confirmations == nil || recorder == nil {
 		return nil, ErrInvalidBinding
 	}
 	if err := mode.Validate(); err != nil {
@@ -91,38 +106,50 @@ func New(binding Binding, mode commandprofile.DeveloperMode, confirmations *conf
 		mode:        mode.Clone(),
 		confirm:     confirmations,
 		enforcement: enforcement,
+		audit:       recorder,
+		admit:       admitProfile,
+		run:         runFixedVersion,
 	}, nil
 }
 
-// Execute performs admission, consumes the one-time local confirmation, then
-// asks the Windows probe to launch the exact profile executable and variant.
-// It never accepts an executable, argv, cwd, environment or timeout from req.
+// Execute performs admission, records the admission, consumes the one-time
+// local confirmation, records the start, then asks the Windows probe to launch
+// the exact profile executable and variant. It never accepts an executable,
+// argv, cwd, environment or timeout from req.
 func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	var result Result
-	if e == nil || e.confirm == nil || e.binding.AcquireRevision == nil {
+	if e == nil || e.confirm == nil || e.binding.AcquireRevision == nil || e.audit == nil || e.admit == nil || e.run == nil {
 		return result, ErrInvalidBinding
 	}
+	initialAudit := e.auditContext(req, e.binding.Profile, e.networkState())
 	if err := validateRequest(req); err != nil {
-		return result, err
+		return e.reject(initialAudit, ErrInvalidRequest, "invalid_request")
 	}
 	profile := e.binding.Profile
 	if req.CommandID != profile.ID() {
-		return result, ErrInvalidRequest
+		return e.reject(initialAudit, ErrInvalidRequest, "invalid_request")
 	}
 	variant, ok := profile.Variant(req.VariantID)
 	if !ok {
-		return result, ErrInvalidRequest
+		return e.reject(initialAudit, ErrInvalidRequest, "invalid_request")
 	}
 	release, ok := e.binding.AcquireRevision(e.binding.ProfileRevision)
 	if !ok || release == nil {
-		return result, ErrProfileChanged
+		return e.reject(e.auditContext(req, profile, e.networkState()), ErrProfileChanged, "stale_version")
 	}
 	defer release()
+
 	// The profile/network gate is checked before the confirmation is consumed
 	// so a permanently unavailable executor does not burn a user's token.
-	if err := profile.Admit(e.mode, e.binding.ConnectionID, e.enforcement); err != nil {
-		return result, fmt.Errorf("%w: %v", ErrNotAdmitted, stableAdmissionError(err))
+	if err := e.admit(profile, e.mode, e.binding.ConnectionID, e.enforcement); err != nil {
+		admissionErr := fmt.Errorf("%w: %v", ErrNotAdmitted, stableAdmissionError(err))
+		return e.reject(e.auditContext(req, profile, e.networkState()), admissionErr, "denied")
 	}
+	auditContext := e.auditContext(req, profile, audit.NetworkEnforcementVerified)
+	if err := e.audit.RecordAdmission(auditContext); err != nil {
+		return e.auditFailure(auditContext, err)
+	}
+
 	confirmationRequest := confirmation.Request{
 		ConnectionID:    e.binding.ConnectionID,
 		ProfileID:       profile.ID(),
@@ -132,15 +159,26 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 		RequestNonce:    req.RequestNonce,
 	}
 	if err := e.confirm.Consume(req.Confirmation, confirmationRequest); err != nil {
-		return result, ErrConfirmation
+		return e.reject(auditContext, ErrConfirmation, "denied")
+	}
+	if err := e.audit.RecordStart(auditContext); err != nil {
+		return e.auditFailure(auditContext, err)
 	}
 
+	return e.run(ctx, profile, variant)
+}
+
+func admitProfile(profile commandprofile.Profile, mode commandprofile.DeveloperMode, connectionID string, enforcement commandprofile.EnforcementCapability) error {
+	return profile.Admit(mode, connectionID, enforcement)
+}
+
+func runFixedVersion(ctx context.Context, profile commandprofile.Profile, variant commandprofile.Variant) (Result, error) {
 	// This is the only probe descriptor construction in the production bridge.
 	// The descriptor is private-state-bearing and cannot be built from a wire
 	// request. The profile executable is audited immediately before execution.
 	descriptor, err := probe.AuditExecutable(probe.ToolVersionGeneric, profile.Executable())
 	if err != nil {
-		return result, fmt.Errorf("%w: %v", ErrExecutionFailed, err)
+		return Result{}, fmt.Errorf("%w: %v", ErrExecutionFailed, err)
 	}
 	limits := profile.Limits()
 	policy := probe.VersionExecutionPolicy{
@@ -151,9 +189,59 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	}
 	version, err := probe.ToolVersionWithPolicy(ctx, descriptor, variant.Exact(), policy)
 	if err != nil {
-		return result, err
+		return Result{}, err
 	}
-	return Result{CommandID: req.CommandID, VariantID: req.VariantID, Version: version.Version}, nil
+	return Result{CommandID: profile.ID(), VariantID: variant.ID(), Version: version.Version}, nil
+}
+
+func (e *Executor) auditContext(req Request, profile commandprofile.Profile, network audit.NetworkEnforcement) audit.CommandContext {
+	identity := profile.Identity().SHA256
+	return audit.CommandContext{
+		ConnectionID:    e.binding.ConnectionID,
+		ProfileID:       profile.ID(),
+		ProfileRevision: e.binding.ProfileRevision,
+		CommandID:       req.CommandID,
+		VariantID:       req.VariantID,
+		IdentityDigest:  identity,
+		Network:         network,
+	}
+}
+
+func (e *Executor) networkState() audit.NetworkEnforcement {
+	if e != nil && e.enforcement.Verified() {
+		return audit.NetworkEnforcementVerified
+	}
+	return audit.NetworkEnforcementUnavailable
+}
+
+func (e *Executor) reject(context audit.CommandContext, executionErr error, reason string) (Result, error) {
+	if e != nil && e.audit != nil {
+		if err := e.audit.RecordReject(context, reason); err != nil {
+			return Result{}, fmt.Errorf("%w: %s", ErrAuditFailed, stableAuditError(err))
+		}
+	}
+	return Result{}, executionErr
+}
+
+// auditFailure emits the synchronous security event best-effort and returns a
+// path-free failure. A failed admission/start event is never followed by a
+// process launch, even if rejection delivery also fails.
+func (e *Executor) auditFailure(context audit.CommandContext, cause error) (Result, error) {
+	if e != nil && e.audit != nil {
+		_ = e.audit.RecordReject(context, "unavailable")
+	}
+	return Result{}, fmt.Errorf("%w: %s", ErrAuditFailed, stableAuditError(cause))
+}
+
+func stableAuditError(err error) string {
+	switch {
+	case errors.Is(err, audit.ErrQueueFull):
+		return "queue_full"
+	case errors.Is(err, audit.ErrClosed), errors.Is(err, audit.ErrStorage), errors.Is(err, audit.ErrRotation), errors.Is(err, audit.ErrRetention):
+		return "unavailable"
+	default:
+		return "unavailable"
+	}
 }
 
 func validateRequest(req Request) error {

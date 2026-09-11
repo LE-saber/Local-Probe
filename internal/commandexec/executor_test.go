@@ -6,9 +6,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LE-saber/Local-Probe/internal/audit"
 	"github.com/LE-saber/Local-Probe/internal/commandprofile"
 	"github.com/LE-saber/Local-Probe/internal/confirmation"
 )
+
+type captureAudit struct {
+	events []string
+	fail   string
+}
+
+func (r *captureAudit) RecordAdmission(audit.CommandContext) error {
+	r.events = append(r.events, "admission")
+	if r.fail == "admission" {
+		return audit.ErrStorage
+	}
+	return nil
+}
+
+func (r *captureAudit) RecordStart(audit.CommandContext) error {
+	r.events = append(r.events, "start")
+	if r.fail == "start" {
+		return audit.ErrStorage
+	}
+	return nil
+}
+
+func (r *captureAudit) RecordReject(audit.CommandContext, string) error {
+	r.events = append(r.events, "reject")
+	if r.fail == "reject" {
+		return audit.ErrStorage
+	}
+	return nil
+}
 
 func executionProfile(t *testing.T) commandprofile.Profile {
 	t.Helper()
@@ -77,13 +107,17 @@ func TestExecutorFailsClosedWithoutNetworkCapabilityBeforeConsumingConfirmation(
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{})
+	recorder := &captureAudit{}
+	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, recorder)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := executionRequest(t, manager, "r1")
 	if _, err := executor.Execute(context.Background(), req); !errors.Is(err, ErrNotAdmitted) {
 		t.Fatalf("want ErrNotAdmitted, got %v", err)
+	}
+	if len(recorder.events) != 1 || recorder.events[0] != "reject" {
+		t.Fatalf("audit events = %v, want [reject]", recorder.events)
 	}
 	confirmReq := confirmation.Request{ConnectionID: "connection-a", ProfileID: "codex_version", ProfileRevision: "r1", CommandID: "codex_version", VariantID: "short", RequestNonce: "nonce-a"}
 	if err := manager.Consume(req.Confirmation, confirmReq); err != nil {
@@ -101,13 +135,17 @@ func TestExecutorRejectsStaleBindingBeforeConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{})
+	recorder := &captureAudit{}
+	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, recorder)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := executionRequest(t, manager, "r1")
 	if _, err := executor.Execute(context.Background(), req); !errors.Is(err, ErrProfileChanged) {
 		t.Fatalf("want ErrProfileChanged, got %v", err)
+	}
+	if len(recorder.events) != 1 || recorder.events[0] != "reject" {
+		t.Fatalf("audit events = %v, want [reject]", recorder.events)
 	}
 }
 
@@ -121,7 +159,8 @@ func TestExecutorRejectsModelSelectorsOutsideBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{})
+	recorder := &captureAudit{}
+	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, recorder)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,5 +168,144 @@ func TestExecutorRejectsModelSelectorsOutsideBinding(t *testing.T) {
 	req.CommandID = "other_command"
 	if _, err := executor.Execute(context.Background(), req); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("want ErrInvalidRequest, got %v", err)
+	}
+	if len(recorder.events) != 1 || recorder.events[0] != "reject" {
+		t.Fatalf("audit events = %v, want [reject]", recorder.events)
+	}
+}
+
+func TestExecutorRequiresAuditRecorder(t *testing.T) {
+	manager, err := confirmation.New([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := NewBinding("connection-a", "r1", executionProfile(t), revisionLease("r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, nil); !errors.Is(err, ErrInvalidBinding) {
+		t.Fatalf("New without audit recorder = %v, want %v", err, ErrInvalidBinding)
+	}
+}
+
+func TestExecutorAuditFailureStopsBeforeConfirmationAndRun(t *testing.T) {
+	manager, err := confirmation.New([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := executionProfile(t)
+	binding, err := NewBinding("connection-a", "r1", profile, revisionLease("r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &captureAudit{fail: "admission"}
+	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.admit = func(commandprofile.Profile, commandprofile.DeveloperMode, string, commandprofile.EnforcementCapability) error {
+		return nil
+	}
+	runs := 0
+	executor.run = func(context.Context, commandprofile.Profile, commandprofile.Variant) (Result, error) {
+		runs++
+		return Result{}, nil
+	}
+	req := executionRequest(t, manager, "r1")
+	if _, err := executor.Execute(context.Background(), req); !errors.Is(err, ErrAuditFailed) {
+		t.Fatalf("Execute audit failure = %v, want %v", err, ErrAuditFailed)
+	}
+	if runs != 0 {
+		t.Fatalf("runner calls = %d, want 0", runs)
+	}
+	confirmReq := confirmation.Request{ConnectionID: "connection-a", ProfileID: "codex_version", ProfileRevision: "r1", CommandID: "codex_version", VariantID: "short", RequestNonce: "nonce-a"}
+	if err := manager.Consume(req.Confirmation, confirmReq); err != nil {
+		t.Fatalf("admission audit failure consumed confirmation: %v", err)
+	}
+}
+
+func TestExecutorRecordsAdmissionAndStartBeforeRun(t *testing.T) {
+	manager, err := confirmation.New([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := executionProfile(t)
+	binding, err := NewBinding("connection-a", "r1", profile, revisionLease("r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &captureAudit{}
+	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.admit = func(commandprofile.Profile, commandprofile.DeveloperMode, string, commandprofile.EnforcementCapability) error {
+		return nil
+	}
+	executor.run = func(context.Context, commandprofile.Profile, commandprofile.Variant) (Result, error) {
+		if len(recorder.events) != 2 || recorder.events[0] != "admission" || recorder.events[1] != "start" {
+			t.Fatalf("events before run = %v, want [admission start]", recorder.events)
+		}
+		return Result{CommandID: "codex_version", VariantID: "short", Version: "1.2.3"}, nil
+	}
+	result, err := executor.Execute(context.Background(), executionRequest(t, manager, "r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Version != "1.2.3" {
+		t.Fatalf("version = %q, want 1.2.3", result.Version)
+	}
+}
+
+func TestExecutorStartAuditFailureStopsRun(t *testing.T) {
+	manager, err := confirmation.New([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := NewBinding("connection-a", "r1", executionProfile(t), revisionLease("r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &captureAudit{fail: "start"}
+	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.admit = func(commandprofile.Profile, commandprofile.DeveloperMode, string, commandprofile.EnforcementCapability) error {
+		return nil
+	}
+	runs := 0
+	executor.run = func(context.Context, commandprofile.Profile, commandprofile.Variant) (Result, error) {
+		runs++
+		return Result{}, nil
+	}
+	if _, err := executor.Execute(context.Background(), executionRequest(t, manager, "r1")); !errors.Is(err, ErrAuditFailed) {
+		t.Fatalf("Execute start audit failure = %v, want %v", err, ErrAuditFailed)
+	}
+	if runs != 0 {
+		t.Fatalf("runner calls = %d, want 0", runs)
+	}
+}
+
+func TestExecutorRejectAuditFailureIsFailClosed(t *testing.T) {
+	manager, err := confirmation.New([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := NewBinding("connection-a", "r1", executionProfile(t), revisionLease("r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := New(binding, executionMode(t), manager, commandprofile.EnforcementCapability{}, &captureAudit{fail: "reject"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := executionRequest(t, manager, "r1")
+	if _, err := executor.Execute(context.Background(), req); !errors.Is(err, ErrAuditFailed) {
+		t.Fatalf("Execute reject audit failure = %v, want %v", err, ErrAuditFailed)
+	}
+	confirmReq := confirmation.Request{ConnectionID: "connection-a", ProfileID: "codex_version", ProfileRevision: "r1", CommandID: "codex_version", VariantID: "short", RequestNonce: "nonce-a"}
+	if err := manager.Consume(req.Confirmation, confirmReq); err != nil {
+		t.Fatalf("reject audit failure consumed confirmation: %v", err)
 	}
 }

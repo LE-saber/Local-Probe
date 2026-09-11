@@ -4,7 +4,7 @@
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心，但尚未完成真实 WFP/broker/service network deny、EnforcementCapability 铸造、生产接线或远程 MCP `run_probe`。P09/P10 及发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心，但尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行；`command.result` 因 probe 尚无可靠完整 outcome 仍未接线，本轮也未做手工、网页或网络测试。P09/P10 及发布级审查仍未完成。
 
 ## 一、能力分层与不变边界
 
@@ -135,8 +135,8 @@ Object 和 resume 前实际映像复核；profile 配置和执行期只接受固
 最终映像 guard handle 计算并比较，config revision lease 覆盖到执行结束，local commandexec
 bridge 在 network capability 缺失时 fail closed。不能再把它描述成单纯
 audit-by-path→execute-by-path。
-但 R4 仍未完成：OS network deny 执行器、capability 铸造、CLI/supervisor 生产接线、audit
-producer 接线、签名校验和 MCP 暴露均缺失。已有 pre-open writable/mapped handle 残余风险；
+但 R4 仍未完成：OS network deny 执行器、capability 铸造、CLI/supervisor 生产接线、可靠
+outcome→`command.result` 接线、签名校验和 MCP 暴露均缺失。已有 pre-open writable/mapped handle 残余风险；
 `LockFileEx` 的字节范围锁不覆盖 mapped view，不能作为完整修复。Unix 当前按路径启动，不能
 仅靠事后检查保证执行的是被审计文件；本轮不做 Linux 测试。
 
@@ -217,7 +217,11 @@ P11 先做 10k/100k/1m 条目的 cold/warm 基准，比较 direct、内存 catal
 - audit sink 不可用时拒绝新增 ingress 或管理变更；
 - 日志字段 schema 版本化；当前 sink 统一发出 audit.v2，audit.v1 只作为历史兼容标识保留。
   禁止把原始命令或环境作为“调试方便”写入。command producer 只能记录固定 selector、identity
-  digest、exit/timeout、stdout/stderr 字节计数和 network enforcement 状态，尚未接入 commandexec。
+  digest、exit/timeout、stdout/stderr 字节计数和 network enforcement 状态。R4-AUDIT-01 已接入
+  local commandexec：拒绝路径同步发出 `command.reject`；`command.admission`/`command.start` 仅做
+  即时校验并进入有界异步队列，校验或入队错误 fail closed，后续落盘失败只标记 `degraded`，
+  尚待 supervisor 阻断新执行；不能声称每条记录都在启动前持久化。当前 probe 尚无可靠完整
+  outcome，`command.result` 尚未接线；不记录 path、argv、env、output 或 token。
 
 运行进程或写入日志本身会产生状态，因此不能轻率使用 `readOnlyHint=true`；新增进程工具的 annotation 必须作为 MCP 契约单独 review。
 
@@ -303,21 +307,28 @@ contract/fake、R4-NET-02 固定 8-family opaque plan/跨平台 DisabledBackend 
    本地幂等清理。该增量不调用 `fwpuclnt.dll`，不实现 WFP ABI/dynamic session/filter install，
    不请求管理员权限，不修改 Windows Firewall，不铸造 capability；本阶段也没有真实/手动
    网络测试证据。
-3. **下一步：真实 WFP adapter**：基于受审查的 `fwpuclnt.dll` user-mode ABI 实现动态会话级
+3. **下一步：developer-mode exact argv/typed slots 本地配置验证**：先验证本地受信配置中的
+   exact argv variants、命名 `variant_id` 和 enum/root-relative path/bounded integer 等 typed
+   slots；验证规则 revision 绑定与服务端逐项构造 argv。该增量只做 local-only 配置校验，不注册
+   MCP `run_probe`，不开放 raw command、arbitrary shell 或任意参数数组。
+4. **随后：outcome/result 接线**：只有在 probe 能提供可靠、完整且可审计的 process outcome 后，
+   才将受限 exit/timeout/byte counts 接入 `command.result`；在此之前不声称 result producer 已
+   接到实际执行。
+5. **后续：真实 WFP adapter**：基于受审查的 `fwpuclnt.dll` user-mode ABI 实现动态会话级
    WFP 过滤器，覆盖上述八个固定 family 以及 loopback/适用的 identity 绑定；不创建持久
    Windows Firewall 规则，未能证明的状态 fail closed。该 adapter 尚不能直接接入当前
-   `internal/probe`：当前 probe 内部自己创建并 resume 进程，下一步必须先建立 broker/launcher
+   `internal/probe`：当前 probe 内部自己创建并 resume 进程，仍需先建立 broker/launcher
    对挂起进程、Job、WFP lease 的统一所有权。
-4. **低权限 broker/service**：把需要 UAC/SID ACL 的安装和 WFP 管理放在签名、低权限 broker/service，
+6. **低权限 broker/service**：把需要 UAC/SID ACL 的安装和 WFP 管理放在签名、低权限 broker/service，
    运行期只返回不可伪造的本地 enforcement capability；拒绝任意模型参数和持久化放行规则。
-5. **suspended Job integration**：将 capability 生命周期接到现有挂起进程/Job 流程，必须在
+7. **suspended Job integration**：将 capability 生命周期接到现有挂起进程/Job 流程，必须在
    resume 前确认网络状态、句柄 identity、revision lease 和子进程边界仍有效。
-6. **VM identity/network adversarial tests**：在 Windows VM 中验证替换、wrapper、pre-open
+8. **VM identity/network adversarial tests**：在 Windows VM 中验证替换、wrapper、pre-open
    writable/mapped handle、IPv4/IPv6、DNS/proxy、existing flow、child process、crash/restart
    和撤权；`LockFileEx` 不能替代 mapped-view 防护。
-7. **audit/commandexec integration**：把 admission/start/result/reject producers 接入实际
-   executor 和 supervisor，audit sink 故障/网络状态不确定时拒绝新增执行；审计不得写入 argv、
-   env、输出、路径或密钥。
+9. **CLI/supervisor 生产接线与剩余 audit integration**：把 local commandexec 接入正式
+   生命周期，并在 sink `degraded` 或网络状态不确定时由 supervisor 阻断新的执行；可靠 outcome
+   具备后再发出 `command.result`。审计不得写入 argv、env、输出、路径或密钥。
 
 此外仍需 Unix fd-based launcher、签名/Authenticode 校验、Windows 本地手测证据和独立审查。
 验收：替换/脚本/wrapper/环境注入/子进程/超时/网络测试通过；无法证明的 OS 状态 fail
@@ -348,11 +359,15 @@ closed。停止条件：network deny 无法证明、profile/bridge 未安全接�
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；R5 与 R6 可在 R4 通过后分别推进；R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据。
 
-现在做：先保持远程能力关闭，从 WFP adapter → 低权限 broker/service → suspended Job integration
-→ VM identity/network adversarial tests → audit/commandexec integration 推进 R4；自动化检查先行，
-Windows 手工/网页复测后置。硬门全部通过前保持 MCP `run_probe` 不注册。
+现在做：先保持远程能力关闭，执行 developer-mode exact argv/typed slots 的本地配置验证；
+随后在 probe 提供可靠完整 outcome 后接 `command.result`。再按 WFP adapter → 低权限 broker/service
+→ suspended Job integration → VM identity/network adversarial tests → CLI/supervisor 生产接线推进
+R4。自动化检查先行；本轮尚未做 Windows 手工、网页或网络测试。硬门全部通过前保持 MCP
+`run_probe` 不注册。
 R1/R2/R3 的读取、搜索和无进程环境能力继续按既有边界演进。日志、审计和资源预算从 R1 起成为基础设施。
 
 暂不做：MCP `run_probe`、raw command line、Shell、allow_any_suffix、模型自定义 args/env/cwd/timeout、未经 network deny/生产接线/SHA256 硬门的 `codex -v`、把 root 直接交给 rg、默认开启 index、统一 workspace_query、自动执行项目脚本、GUI 绕过后端权限以及任何写入能力。
 
-对用户提出的四项调整，当前裁决是：自定义命令可以做，但语义只能是本地规则模板；优先提升 direct 读取能力，索引后置；日志立即建设；GUI/tray 后置，但先冻结 supervisor、audit、权限和配置边界。
+对用户提出的四项调整，当前裁决是：自定义命令可以做，但语义先落在本地规则模板的 exact
+argv/typed slots 验证，不开放 arbitrary shell；优先提升 direct 读取能力，索引后置；日志立即建设；
+GUI/tray 后置，但先冻结 supervisor、audit、权限和配置边界。
