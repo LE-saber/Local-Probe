@@ -319,27 +319,48 @@ Windows 配置中的绝对候选路径允许使用 JSON 友好的 `/` 分隔符�
 ## 十一、R4 固定探针与 developer mode（本地核心，未接入 MCP）
 
 R4 当前只实现可信本地调用方可使用的固定进程核心，不是远程工具契约。`internal/probe`
-只允许固定 `git`、`python`、`node` tool ID；Windows 输入必须是本地绝对 `.exe`，并拒绝
-UNC/device/ADS/保留名/路径别名、reparse/symlink、非普通文件和非 PE 映像。执行窗口会
-持有最终映像及父目录句柄，使用 `CREATE_SUSPENDED` 创建并加入 Job Object，恢复主线程前
-查询实际映像路径并核对句柄 identity；Job 限制为单进程、kill-on-close。私有空 cwd、空/精简
-环境、闭 stdin、无窗口、输出上限、超时和进程回收也属于固定实现，调用方不能覆盖。
+只允许固定 `git`、`python`、`node` tool ID，或由受信任 profile 驱动的 `version` tool ID；
+Windows 输入必须是本地绝对 `.exe`，并拒绝 UNC/device/ADS/保留名/路径别名、reparse/symlink、
+非普通文件和非 PE 映像。执行窗口会持有最终映像及父目录句柄，使用 `CREATE_SUSPENDED` 创建
+并加入 Job Object，恢复主线程前查询实际映像路径并核对句柄 identity；Job 限制为单进程、
+kill-on-close。私有空 cwd、空/精简环境、闭 stdin、无窗口、输出上限、超时和进程回收也属于
+固定实现，调用方不能覆盖。
 
 `internal/commandprofile` 的本地配置层只接受 Windows `version_probe`：绝对 `.exe`、
-命名 exact argv variant、私有空 cwd、空环境、单进程、`network=deny`、`per_call` 本地
-确认和结构化 version 结果。`internal/confirmation` 的 capability 是短期、一次性、绑定
+小写 64 字符 SHA256 pin、命名 exact argv variant（只允许 `-v`、`--version`、`version`）、
+私有空 cwd、空环境、单进程、`network=deny`、`per_call` 本地确认和结构化 version 结果。
+`internal/probe` 从同一最终映像 guard handle 计算并比较该摘要，并在 CreateProcess/resume
+前复核执行期限。`internal/confirmation` 的 capability 是短期、一次性、绑定
 connection/profile/revision/command/variant/request nonce 的 opaque 值；它不能从 MCP JSON
 中的布尔值、文本或伪造 token 产生。`allow_any_suffix`、raw command、任意 args/env/cwd/
 timeout、脚本/wrapper 和模型修改 profile 均被拒绝。
 
+`config.Store.AcquireRevisionLease` 与 `internal/commandexec` 提供本地 fail-closed bridge：
+先持有 profile revision lease，检查 developer/network admission，再消费一次性 confirmation，
+最后由可信 profile 构造 probe descriptor/policy。`commandprofile.EnforcementCapability` 当前没有
+生产铸造器，因此默认拒绝；bridge 尚未接入 CLI/supervisor/MCP。配置层已有的 pre-open writable
+handle 或 mapped view 仍是残余风险；`LockFileEx` 的 byte-range lock 不约束 mapped view，不能
+作为完整修复。
+
+`internal/networkguard` 已完成 NET-01 platform-independent contract/fake：每次操作使用不可
+序列化的独立 lease/capability/run handle，要求完整 IPv4/IPv6 outbound/inbound、bind/listen、
+loopback、children、inherited handles、existing flows、DNS/proxy 与 cleanup coverage；admission
+窗口最多 30 秒，cleanup 默认 5 秒，cleanup 失败会阻塞后续 admission。它不铸造
+`commandprofile.EnforcementCapability`，不触碰 WFP/Windows Firewall，也不等于 production
+network deny；下一步从 WFP adapter 开始。
+
 这些是已实现的本地核心，不代表执行已经安全可发布。当前明确未完成：
 
-- 没有接入操作系统的 network deny 执行器；`network=deny` 只是强制要求 opaque
-  `EnforcementCapability`，没有 enforcement 时 profile 必须拒绝。
-- 配置层可以解析/校验 profile，但 CLI/supervisor 尚未把 profile 接入
-  `probe.AuditExecutable`/`ToolVersion` 的生产路径；不存在完整 profile→probe runtime wiring。
-- `identity.sha256` 当前只校验 64 位十六进制格式。Windows 执行期尚未计算并比较该摘要，
-  也没有签名校验；当前信任依据是固定路径、PE 检查、句柄 identity 和挂起映像复核。
+- 没有接入操作系统的 network deny 执行器；`network=deny` 仍强制要求 opaque
+  `EnforcementCapability`。NET-01 `internal/networkguard` contract/fake 不触碰 WFP/Windows
+  Firewall，也不等于 production network deny；没有 WFP adapter、低权限 broker/service 或
+  capability 生产铸造器时 profile 必须拒绝。设计见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)。
+- local commandexec bridge 已把 profile 接到 `probe.AuditExecutable`/`ToolVersionWithPolicy`，
+  但 CLI/supervisor 尚未建立其生产生命周期，不能把它描述成完整 runtime wiring。
+- `identity.sha256` 已从同一 Windows guard handle 计算并比较；尚无签名/Authenticode 校验，
+  也没有完成 VM identity/network 对抗证据。
+- `internal/audit` 已提供 `command.admission`、`command.start`、`command.result`、
+  `command.reject` 的 audit.v2 producers，但尚未接入 commandexec 或 supervisor。
 - MCP 没有 `run_probe` 注册、输入/输出 schema 或 confirmation 流程。ChatGPT、Cloudflare
   Tunnel 和其它远程入口继续不能启动 probe、选择 command profile 或传递命令参数。
 
@@ -349,12 +370,18 @@ timeout、脚本/wrapper 和模型修改 profile 均被拒绝。
 [`manual-test-targets/r4/README.md`](../manual-test-targets/r4/README.md)；本轮不宣称 Linux
 或其它 Unix runtime 已验证。
 
-## 十二、audit.v1（当前最小实现）
+## 十二、audit.v1 与 audit.v2 command producers（当前最小实现）
 
-CLI 已接入本地 typed JSONL audit sink，默认目录为用户配置目录下的
+CLI 已接入本地 typed JSONL audit sink；当前 sink 统一使用 `local-probe.audit.v2`，而 audit.v1
+标识和旧 `command.exit` wire value 仅保留历史兼容用途。默认目录为用户配置目录下的
 `Local-Probe/audit`，也可用 `-audit-dir` 覆盖。启动时若 sink 无法初始化则不监听；目录/文件
 权限、文件大小轮转和保留数均有界。普通事件使用有界异步队列，队列满时允许丢弃并将 sink
 标记为 degraded；安全事件（当前为最终 HTTP 401/403 的 `auth.reject`）同步 write-through。
+
+command producers 固定为 `command.admission`、`command.start`、`command.result` 和
+`command.reject`。它们只接受受限 command/variant selector、lowercase identity digest、
+exit/timeout、stdout/stderr 字节计数和 network enforcement 状态；不会写入路径、完整 argv/env、
+输出正文、请求正文或密钥。producer 尚未接到 commandexec。
 
 MCP 适配层当前记录 `auth.accept`、`mcp.list`、`mcp.call` 和 `mcp.result`。调用事件只记录
 受校验的 action（工具名或 `unknown`）及计数/预算字段；参数、请求正文、响应正文、文件路径、
@@ -362,6 +389,7 @@ token、JWT、key 和错误 message 均不写入。typed error envelope 只提�
 未知或格式错误的错误结果统一记为 `unavailable`；401/403 不会再由内部 MCP 事件重复记一条
 security reject。
 
-尚未完成的部分必须单独看待：当前没有 command、network-tunnel、policy、fs-search 事件生产者，
+尚未完成的部分必须单独看待：command producer 尚未接入实际执行，仍没有 network-tunnel、policy、
+fs-search 事件生产者，
 也没有运行时 sink 故障后的 fail-closed ingress、全局并发/线级配额或管理变更审计。audit 的
 `Stats.Degraded` 可供后续 supervisor/GUI 读取，但目前不会自动拒绝已启动 listener 的新请求。

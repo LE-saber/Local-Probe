@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const validJSON = `{
@@ -359,6 +360,74 @@ func TestStoreAtomicRevisionReplacement(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestStoreRevisionLeaseRejectsWrongRevisionWithoutLock(t *testing.T) {
+	c, err := Parse([]byte(validJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release, ok := store.AcquireRevisionLease("r999"); ok || release != nil {
+		t.Fatal("wrong revision acquired a lease")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, replaceErr := store.ReplaceIfRevision("r1", c)
+		done <- replaceErr
+	}()
+	select {
+	case replaceErr := <-done:
+		if replaceErr != nil {
+			t.Fatalf("replace after rejected lease failed: %v", replaceErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rejected lease unexpectedly held the store")
+	}
+}
+
+func TestStoreRevisionLeaseBlocksReplaceUntilIdempotentRelease(t *testing.T) {
+	c, err := Parse([]byte(validJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, ok := store.AcquireRevisionLease("r1")
+	if !ok || release == nil {
+		t.Fatal("current revision lease was not acquired")
+	}
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		_, replaceErr := store.ReplaceIfRevision("r1", c)
+		done <- replaceErr
+	}()
+	<-started
+	select {
+	case replaceErr := <-done:
+		t.Fatalf("replace completed while revision lease was held: %v", replaceErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	release()
+	select {
+	case replaceErr := <-done:
+		if replaceErr != nil {
+			t.Fatalf("replace after lease release failed: %v", replaceErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replace remained blocked after idempotent release")
+	}
+	if got := store.Snapshot().Revision(); got != "r2" {
+		t.Fatalf("unexpected revision after released replacement: %s", got)
+	}
 }
 
 func TestMarshalRoundTrip(t *testing.T) {

@@ -4,7 +4,7 @@
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、command profile 和一次性确认本地核心，但尚未完成 network deny 执行器、profile→probe 生产接线、执行期 SHA256 或远程 MCP `run_probe`。P09/P10 及发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、audit.v2 command producers、NET-01 networkguard contract/fake 和一次性确认本地核心，但尚未完成 WFP/broker/service network deny、EnforcementCapability 铸造、生产接线或远程 MCP `run_probe`。P09/P10 及发布级审查仍未完成。
 
 ## 一、能力分层与不变边界
 
@@ -117,30 +117,36 @@ Git、解释器、网络、写入和可产生项目状态的动作必须单独�
 契约约束：
 
 - `executable` 必须是绝对路径；Windows 本地核心会重新检查 regular file、PE、reparse/symlink、
-  handle identity 和挂起进程实际映像。当前 profile 的 `sha256` 只做格式校验，执行期摘要/签名
-  校验尚未接入；模型不能传路径。
+  handle identity 和挂起进程实际映像。当前 profile 要求小写 64 字符 `sha256` pin，执行期从
+  同一最终映像 guard handle 计算并比较摘要；签名/Authenticode 校验尚未接入，模型不能传路径。
 - `argv.variants[].exact` 是服务端拥有的完整参数序列；远端只能引用已配置的 `variant_id`。slot 只允许枚举、受限路径或有界整数，不能允许自由字符串。路径必须是 `root_id + relative path`，不能拼接 OS 绝对路径。
 - `kind`、variants、exact argv 和 slot 定义均不可由 MCP 修改；规则 revision 改变后旧授权失效。
 - `cwd` 只允许 `private_empty` 或已授权 root-relative 目录。cwd 本身不是文件系统沙箱；没有 OS 级隔离时不得声称子进程只能访问该 root。
 - `env` 默认清空，不继承 `PATH`、`HOME`、`USERPROFILE`、`PYTHONPATH`、`NODE_OPTIONS`、`LD_PRELOAD`、`GIT_EXTERNAL_DIFF`、pager 或 hooks 相关变量。任何秘密值禁止通过 MCP 参数传入。
-- `network=deny` 只有在 OS 层确实执行时才成立；无法证明时必须拒绝该 profile 或标为 local-only，不能用配置字段冒充隔离。
+- `network=deny` 只有在 OS 层确实执行时才成立；当前 local commandexec bridge 在没有可信
+  capability 时拒绝，无法证明时必须拒绝该 profile 或标为 local-only，不能用配置字段冒充隔离。
 - `confirmation` 必须由本地 UI/CLI 产生一次性、短期、绑定 request/command revision 的授权；模型文本中的“我确认”不算确认。
 - `result` 优先是 `version`、`exists`、受限 `paths`、`exit_status` 等结构化结果。绝对路径、完整 argv、原始输出默认不出远程端。
 
-## 三、P08 前置硬门：Windows 本地 TOCTOU 核心已实现，生产硬门仍未全部通过
+## 三、P08 前置硬门：Windows 本地 TOCTOU 核心第二增量已实现，生产硬门仍未全部通过
 
 Windows 本地 launcher 已使用固定路径/PE 检查、父目录与最终映像句柄守卫、挂起进程、Job
-Object 和 resume 前实际映像复核，不能再把它描述成单纯 audit-by-path→execute-by-path。
-但 R4 仍未完成：执行期 SHA256/签名校验、OS network deny 执行器、profile→probe 生产接线、
-完整 command/network/policy audit 和 MCP 暴露均缺失。Unix 当前按路径启动，不能仅靠事后检查
-保证执行的是被审计文件；本轮不做 Linux 测试。
+Object 和 resume 前实际映像复核；profile 配置和执行期只接受固定 version args，SHA256 从同一
+最终映像 guard handle 计算并比较，config revision lease 覆盖到执行结束，local commandexec
+bridge 在 network capability 缺失时 fail closed。不能再把它描述成单纯
+audit-by-path→execute-by-path。
+但 R4 仍未完成：OS network deny 执行器、capability 铸造、CLI/supervisor 生产接线、audit
+producer 接线、签名校验和 MCP 暴露均缺失。已有 pre-open writable/mapped handle 残余风险；
+`LockFileEx` 的字节范围锁不覆盖 mapped view，不能作为完整修复。Unix 当前按路径启动，不能
+仅靠事后检查保证执行的是被审计文件；本轮不做 Linux 测试。
 
 ### Windows 硬门
 
 1. **已实现（Windows 核心）**：使用显式 application name，不让命令行解析决定实际 executable。
 2. **已实现（Windows 核心）**：只允许经过检查的 PE executable；拒绝 `.cmd`、`.bat`、`.ps1`、`.lnk`、`.url` 等 wrapper/脚本。
 3. **已实现（Windows 核心）**：以 `CREATE_SUSPENDED` 创建并立即加入 Job Object。
-4. **部分实现**：resume 前查询实际进程映像并比较路径/handle identity；配置的 SHA256/签名尚未在执行期核对。
+4. **已实现（当前核心）**：resume 前查询实际进程映像并比较路径/handle identity；执行前从同一
+   guard handle 核对配置的小写 SHA256。签名/Authenticode 尚未接入。
 5. **已实现（Windows 核心）**：验证失败终止 Job；验证通过才恢复主线程。
 6. **已实现（Windows 核心）**：保留 Job Object kill-on-close、单进程限制、无窗口、输出/超时和完整子进程回收。
 
@@ -193,7 +199,7 @@ Object 和 resume 前实际映像复核，不能再把它描述成单纯 audit-b
 
 P11 先做 10k/100k/1m 条目的 cold/warm 基准，比较 direct、内存 catalog、SQLite metadata、FTS 的延迟、内存、漏项和变化目录行为。索引只产生候选，最终必须 live verify；没有收益则默认关闭。symbol index 和统一 `workspace_query` 只有模型评测证明能减少遗漏和往返时才增加，避免工具爆炸。
 
-## 五、audit.v1 基础设施
+## 五、audit.v1 基础设施与 audit.v2 command 扩展
 
 日志先于 GUI 和 supervisor 落地，采用 typed JSONL。每条记录至少包含：
 
@@ -209,7 +215,9 @@ P11 先做 10k/100k/1m 条目的 cold/warm 基准，比较 direct、内存 catal
 - ACL、rotation、retention、bounded ring 和 sanitized support bundle；
 - 普通日志允许受控丢弃，但 drop 必须产生 degraded 状态；安全事件 write-through；
 - audit sink 不可用时拒绝新增 ingress 或管理变更；
-- 日志字段 schema 版本化，禁止把原始命令或环境作为“调试方便”写入。
+- 日志字段 schema 版本化；当前 sink 统一发出 audit.v2，audit.v1 只作为历史兼容标识保留。
+  禁止把原始命令或环境作为“调试方便”写入。command producer 只能记录固定 selector、identity
+  digest、exit/timeout、stdout/stderr 字节计数和 network enforcement 状态，尚未接入 commandexec。
 
 运行进程或写入日志本身会产生状态，因此不能轻率使用 `readOnlyHint=true`；新增进程工具的 annotation 必须作为 MCP 契约单独 review。
 
@@ -272,12 +280,35 @@ GUI 页面后端先定义：overview、connections、roots/profile/egress previe
 ### R4：P08 TOCTOU 与固定 command profiles/developer mode
 
 状态：Windows 固定路径/PE/句柄守卫、挂起映像复核、单进程 Job、私有环境/cwd/输出/超时、
-固定 command profile 校验和一次性确认核心已实现；仍属于 local-only，不能接入远程 MCP。
+严格 version profile（含固定 args 和小写 SHA256）、同一 guard handle 的执行期 hash、config
+revision lease、local commandexec fail-closed bridge、固定 command audit.v2 producers 和一次性
+确认核心已实现；仍属于 local-only，不能接入远程 MCP。
 依赖：R0、P04/P05；可与 R1/R2/R3 的非进程部分并行，但远程暴露必须等全部硬门通过。
-剩余产物：OS network deny 执行器、profile→probe 生产接线、执行期 SHA256/签名校验、Unix
-fd-based launcher、结构化 probe/audit 事件和 Windows 本地手测证据。验收：替换/脚本/wrapper/
-环境注入/子进程/超时/网络测试通过；无法证明的 OS fail closed。停止条件：network deny
-无法证明、profile 仍未安全接线、SHA256/签名约束未执行、或原始输出会泄露秘密时不接 MCP。
+剩余产物按以下顺序推进（设计见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)）：
+
+1. **已实现：NET-01 contract/fake**：`internal/networkguard` 已冻结平台无关的 network
+   enforcement lifecycle contract，并用无系统状态的 fake 验证每操作 opaque lease/capability/run、
+   完整 IPv4/IPv6 outbound/inbound、bind/listen、loopback、children、inherited handles、existing
+   flows、DNS/proxy 与 cleanup coverage；admission 最多 30 秒，cleanup 默认 5 秒，cleanup 失败
+   阻塞后续 admission。它不铸造 `commandprofile.EnforcementCapability`，不触碰 WFP/Windows
+   Firewall，也不等于 production network deny。
+2. **下一步：WFP adapter**：实现动态会话级 WFP 过滤器，覆盖 outbound/inbound/listen/bind/loopback，
+   不创建持久 Windows Firewall 规则；未能证明的状态 fail closed。
+3. **低权限 broker/service**：把需要 UAC/SID ACL 的安装和 WFP 管理放在签名、低权限 broker/service，
+   运行期只返回不可伪造的本地 enforcement capability；拒绝任意模型参数和持久化放行规则。
+4. **suspended Job integration**：将 capability 生命周期接到现有挂起进程/Job 流程，必须在
+   resume 前确认网络状态、句柄 identity、revision lease 和子进程边界仍有效。
+5. **VM identity/network adversarial tests**：在 Windows VM 中验证替换、wrapper、pre-open
+   writable/mapped handle、IPv4/IPv6、DNS/proxy、existing flow、child process、crash/restart
+   和撤权；`LockFileEx` 不能替代 mapped-view 防护。
+6. **audit/commandexec integration**：把 admission/start/result/reject producers 接入实际
+   executor 和 supervisor，audit sink 故障/网络状态不确定时拒绝新增执行；审计不得写入 argv、
+   env、输出、路径或密钥。
+
+此外仍需 Unix fd-based launcher、签名/Authenticode 校验、Windows 本地手测证据和独立审查。
+验收：替换/脚本/wrapper/环境注入/子进程/超时/网络测试通过；无法证明的 OS 状态 fail
+closed。停止条件：network deny 无法证明、profile/bridge 未安全接线、SHA256/签名约束未执行、
+或原始输出会泄露秘密时不接 MCP。
 
 ### R5：受控 Git read actions
 
@@ -303,7 +334,10 @@ fd-based launcher、结构化 probe/audit 事件和 Windows 本地手测证据�
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；R5 与 R6 可在 R4 通过后分别推进；R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据。
 
-现在做：先完成 Windows R4 本地手测和文档/契约冻结，再补 network deny、profile→probe、执行期 SHA256/签名与审计接线；在硬门全部通过前保持 MCP `run_probe` 不注册。R1/R2/R3 的读取、搜索和无进程环境能力继续按既有边界演进。日志、审计和资源预算从 R1 起成为基础设施。
+现在做：先保持远程能力关闭，从 WFP adapter → 低权限 broker/service → suspended Job integration
+→ VM identity/network adversarial tests → audit/commandexec integration 推进 R4；自动化检查先行，
+Windows 手工/网页复测后置。硬门全部通过前保持 MCP `run_probe` 不注册。
+R1/R2/R3 的读取、搜索和无进程环境能力继续按既有边界演进。日志、审计和资源预算从 R1 起成为基础设施。
 
 暂不做：MCP `run_probe`、raw command line、Shell、allow_any_suffix、模型自定义 args/env/cwd/timeout、未经 network deny/生产接线/SHA256 硬门的 `codex -v`、把 root 直接交给 rg、默认开启 index、统一 workspace_query、自动执行项目脚本、GUI 绕过后端权限以及任何写入能力。
 

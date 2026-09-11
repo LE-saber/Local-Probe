@@ -6,7 +6,7 @@
 
 **[总体计划与逐步骤实施手册](docs/MASTER_PLAN.zh-CN.md)** 是本项目的主要交付物，包含 P00–P14 的输入、具体文件、命令、实施步骤、依赖、测试和停止条件。它作为空仓库的第一个提交保存，早于任何代码。
 
-[实际进度与验证记录](docs/IMPLEMENTATION_STATUS.md) · [下一阶段执行路线](docs/NEXT_PHASE_PLAN.zh-CN.md) · [接口与边界](docs/TOOL_CONTRACTS.md) · [威胁模型](docs/THREAT_MODEL.md) · [兼容性预检](docs/COMPATIBILITY.md) · [上游来源与复用决定](docs/UPSTREAM_REVIEW.md)
+[实际进度与验证记录](docs/IMPLEMENTATION_STATUS.md) · [下一阶段执行路线](docs/NEXT_PHASE_PLAN.zh-CN.md) · [接口与边界](docs/TOOL_CONTRACTS.md) · [R4 Windows network deny 设计](docs/R4_WINDOWS_NETWORK_DENY.md) · [威胁模型](docs/THREAT_MODEL.md) · [兼容性预检](docs/COMPATIBILITY.md) · [上游来源与复用决定](docs/UPSTREAM_REVIEW.md)
 
 ## 当前状态：K0 内核原型，P04 平台有界验证，P05/P06 真实链路已验证，R1/R2/R3 已接入本地 MCP，R4 仅完成本地核心
 

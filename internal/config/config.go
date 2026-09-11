@@ -422,6 +422,23 @@ func (s *Store) Snapshot() Snapshot {
 	return Snapshot{config: s.config.Clone(), revision: revisionString(s.generation)}
 }
 
+// AcquireRevisionLease holds the store's read lock while a trusted local
+// operation uses a configuration snapshot. A replacement waits for release,
+// so a command executor cannot check a revision and then launch an old profile
+// after the configuration has changed. The release function is idempotent.
+func (s *Store) AcquireRevisionLease(expected string) (release func(), ok bool) {
+	if s == nil || expected == "" {
+		return nil, false
+	}
+	s.mu.RLock()
+	if revisionString(s.generation) != expected {
+		s.mu.RUnlock()
+		return nil, false
+	}
+	var once sync.Once
+	return func() { once.Do(s.mu.RUnlock) }, true
+}
+
 func (s *Store) Replace(next Config) (Snapshot, error) {
 	return s.replace("", next, false)
 }

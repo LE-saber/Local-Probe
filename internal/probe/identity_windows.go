@@ -3,7 +3,11 @@
 package probe
 
 import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +30,9 @@ type windowsExecutionGuard struct {
 
 func openWindowsExecutionGuard(path string, expected fileIdentity) (*windowsExecutionGuard, error) {
 	if err := validateExecutablePath(path); err != nil {
+		return nil, err
+	}
+	if err := checkWindowsDriveType(path[:3]); err != nil {
 		return nil, err
 	}
 	guard := &windowsExecutionGuard{final: windows.InvalidHandle, identity: fileIdentity{}}
@@ -181,12 +188,8 @@ func captureIdentity(path string) (fileIdentity, error) {
 	if err != nil {
 		return fileIdentity{}, ErrInvalidInput
 	}
-	driveType := windows.GetDriveType(rootPtr)
-	switch driveType {
-	case windows.DRIVE_REMOTE:
-		return fileIdentity{}, ErrRejected
-	case windows.DRIVE_UNKNOWN, windows.DRIVE_NO_ROOT_DIR, windows.DRIVE_CDROM:
-		return fileIdentity{}, ErrUnavailable
+	if err := validateWindowsDriveType(windows.GetDriveType(rootPtr)); err != nil {
+		return fileIdentity{}, err
 	}
 	if err := checkWindowsPathComponents(path); err != nil {
 		return fileIdentity{}, err
@@ -234,12 +237,102 @@ func captureIdentity(path string) (fileIdentity, error) {
 	return fileIdentity{key: key, valid: true}, nil
 }
 
+func checkWindowsDriveType(root string) error {
+	ptr, err := windows.UTF16PtrFromString(root)
+	if err != nil {
+		return ErrInvalidInput
+	}
+	return validateWindowsDriveType(windows.GetDriveType(ptr))
+}
+
+func validateWindowsDriveType(driveType uint32) error {
+	switch driveType {
+	case windows.DRIVE_REMOTE:
+		return ErrRejected
+	case windows.DRIVE_UNKNOWN, windows.DRIVE_NO_ROOT_DIR, windows.DRIVE_CDROM:
+		return ErrUnavailable
+	default:
+		return nil
+	}
+}
+
 func identityFromWindowsHandle(info windows.ByHandleFileInformation) fileIdentity {
 	key := fmt.Sprintf("%08x:%08x:%08x:%08x:%08x",
 		info.VolumeSerialNumber,
 		info.FileIndexHigh, info.FileIndexLow,
 		info.CreationTime.HighDateTime, info.CreationTime.LowDateTime)
 	return fileIdentity{key: key, valid: key != ""}
+}
+
+// verifyWindowsSHA256 computes a configured digest from the already audited
+// final handle. The handle is held with write/delete sharing disabled by the
+// caller, so this does not create a hash-by-path then execute-by-path gap.
+// Memory is bounded to one fixed chunk; unusually large executables fail
+// closed before a potentially unbounded hash operation.
+func verifyWindowsSHA256(ctx context.Context, handle windows.Handle, expected string) error {
+	if handle == windows.InvalidHandle || len(expected) != 64 {
+		return ErrInvalidInput
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	want, err := hex.DecodeString(expected)
+	if err != nil || len(want) != sha256.Size {
+		return ErrInvalidInput
+	}
+	var before windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &before); err != nil {
+		return ErrUnavailable
+	}
+	size := windowsFileSize(before)
+	if size > maxHashBytes {
+		return ErrHashLimit
+	}
+	if _, err := windows.Seek(handle, 0, io.SeekStart); err != nil {
+		return ErrUnavailable
+	}
+	hasher := sha256.New()
+	buffer := make([]byte, 64<<10)
+	var total uint64
+	for total < size {
+		if err := ctx.Err(); err != nil {
+			return contextExecutionError(ctx)
+		}
+		remaining := size - total
+		readSize := uint64(len(buffer))
+		if remaining < readSize {
+			readSize = remaining
+		}
+		var count uint32
+		if err := windows.ReadFile(handle, buffer[:int(readSize)], &count, nil); err != nil {
+			return ErrIdentityChanged
+		}
+		if count == 0 || uint64(count) > readSize {
+			return ErrIdentityChanged
+		}
+		if _, err := hasher.Write(buffer[:count]); err != nil {
+			return ErrUnavailable
+		}
+		total += uint64(count)
+	}
+	if err := ctx.Err(); err != nil {
+		return contextExecutionError(ctx)
+	}
+	var after windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &after); err != nil {
+		return ErrIdentityChanged
+	}
+	if windowsFileSize(after) != size || before.LastWriteTime != after.LastWriteTime {
+		return ErrIdentityChanged
+	}
+	if subtle.ConstantTimeCompare(hasher.Sum(nil), want) != 1 {
+		return ErrHashMismatch
+	}
+	return nil
+}
+
+func windowsFileSize(info windows.ByHandleFileInformation) uint64 {
+	return uint64(info.FileSizeHigh)<<32 | uint64(info.FileSizeLow)
 }
 
 func checkWindowsPathComponents(path string) error {

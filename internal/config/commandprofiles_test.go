@@ -22,7 +22,7 @@ func commandProfileJSON() []byte {
     "kind": "version_probe",
     "platform": ["windows"],
     "executable": "C:\\Program Files\\Codex\\codex.exe",
-    "identity": {"require_regular": true, "reject_reparse": true, "sha256": ""},
+    "identity": {"require_regular": true, "reject_reparse": true, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
     "argv": {"variants": [
       {"variant_id": "short", "exact": ["-v"]},
       {"variant_id": "long", "exact": ["--version"]}
@@ -92,6 +92,12 @@ func TestCommandProfileConfigRejectsSelfCertificationAndEscapeHatches(t *testing
 		}},
 		{"wrapper executable", func(value string) string {
 			return strings.Replace(value, `C:\\Program Files\\Codex\\codex.exe`, `C:\\Program Files\\Codex\\codex.cmd`, 1)
+		}},
+		{"missing executable sha256", func(value string) string {
+			return strings.Replace(value, `"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, `"sha256": ""`, 1)
+		}},
+		{"uppercase executable sha256", func(value string) string {
+			return strings.Replace(value, `"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, `"sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"`, 1)
 		}},
 		{"verified field", func(value string) string {
 			return strings.Replace(value, `"mode": "deny", "require_enforcement": true`, `"mode": "deny", "require_enforcement": true, "verified": true`, 1)

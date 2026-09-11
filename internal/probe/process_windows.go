@@ -3,6 +3,7 @@
 package probe
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sort"
@@ -27,15 +28,34 @@ type windowsProcess struct {
 	closed   bool
 }
 
-func startFixedProcess(path string, args []string, cwd string, env []string, expected fileIdentity) (*managedProcess, error) {
+func startFixedProcess(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity, expectedSHA256 string) (*managedProcess, error) {
 	if path == "" || cwd == "" {
 		return nil, ErrInvalidInput
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, contextExecutionError(ctx)
 	}
 	guard, err := openWindowsExecutionGuard(path, expected)
 	if err != nil {
 		return nil, err
 	}
 	defer guard.close()
+	// Hash the final object through the same no-share handle that guards the
+	// audited identity and launch window.  Never hash a pathname and then
+	// execute a separately opened pathname.
+	if expectedSHA256 != "" {
+		if err := verifyWindowsSHA256(ctx, guard.final, expectedSHA256); err != nil {
+			return nil, err
+		}
+	}
+	// Hashing and process creation share the same execution budget. Do not
+	// create a process if the budget expired immediately after the final read.
+	if err := ctx.Err(); err != nil {
+		return nil, contextExecutionError(ctx)
+	}
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, ErrUnavailable
@@ -108,6 +128,13 @@ func startFixedProcess(path string, args []string, cwd string, env []string, exp
 	info := &windows.ProcessInformation{}
 	var flags uint32 = windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW |
 		windows.CREATE_UNICODE_ENVIRONMENT | windows.EXTENDED_STARTUPINFO_PRESENT
+	// Keep this check immediately adjacent to CreateProcess. Hashing and
+	// setup share the same deadline; an expired request must not create even a
+	// suspended child.
+	if err := ctx.Err(); err != nil {
+		state.close()
+		return nil, contextExecutionError(ctx)
+	}
 	if err := windows.CreateProcess(
 		appName,
 		commandLine,
@@ -120,6 +147,7 @@ func startFixedProcess(path string, args []string, cwd string, env []string, exp
 		&startup.StartupInfo,
 		info,
 	); err != nil {
+		state.close()
 		return nil, processStartFailure(err)
 	}
 	state.process = info.Process
@@ -142,6 +170,13 @@ func startFixedProcess(path string, args []string, cwd string, env []string, exp
 	if err := verifySuspendedImage(state.process, path, expected, guard.identity); err != nil {
 		state.terminateSetup()
 		return nil, err
+	}
+	// The image is still suspended. Recheck immediately before the only call
+	// that permits user code to run; a timeout here terminates the suspended
+	// process through its job and never resumes it.
+	if err := ctx.Err(); err != nil {
+		state.terminateSetup()
+		return nil, contextExecutionError(ctx)
 	}
 	resumed, err := windows.ResumeThread(state.thread)
 	if err != nil || resumed != 1 {

@@ -136,10 +136,10 @@ func (d DeveloperMode) validate() error {
 	return nil
 }
 
-// IdentitySpec is the executable identity policy.  The booleans are required
-// to be true for a version probe.  SHA256 is optional because the Windows
-// enforcer may bind a native file identity instead; when present it must be a
-// complete local hexadecimal digest.
+// IdentitySpec is the executable identity policy. The booleans and the
+// lowercase SHA256 pin are required for a version probe. The digest is a
+// configuration-time approval and is checked against the audited Windows
+// image handle immediately before launch.
 type IdentitySpec struct {
 	RequireRegular bool
 	RejectReparse  bool
@@ -377,13 +377,14 @@ func validateSpec(spec Spec) error {
 	if !spec.Identity.RequireRegular || !spec.Identity.RejectReparse {
 		return invalid("command_profile.identity", "regular and non-reparse checks are required")
 	}
-	if spec.Identity.SHA256 != "" {
-		if len(spec.Identity.SHA256) != 64 {
-			return invalid("command_profile.identity.sha256", "must be a SHA-256 digest")
-		}
-		if _, err := hex.DecodeString(spec.Identity.SHA256); err != nil {
-			return invalid("command_profile.identity.sha256", "must be hexadecimal")
-		}
+	if len(spec.Identity.SHA256) != 64 {
+		return invalid("command_profile.identity.sha256", "must be a 64-character lowercase SHA-256 digest")
+	}
+	if spec.Identity.SHA256 != strings.ToLower(spec.Identity.SHA256) {
+		return invalid("command_profile.identity.sha256", "must use lowercase hexadecimal")
+	}
+	if _, err := hex.DecodeString(spec.Identity.SHA256); err != nil {
+		return invalid("command_profile.identity.sha256", "must be hexadecimal")
 	}
 	if len(spec.Variants) == 0 || len(spec.Variants) > maxVariantsPerProfile {
 		return invalid("command_profile.argv.variants", "invalid number of variants")
@@ -398,12 +399,15 @@ func validateSpec(spec Spec) error {
 			return invalid(field+".variant_id", "duplicate variant id")
 		}
 		seen[variant.ID] = struct{}{}
-		if len(variant.Exact) == 0 || len(variant.Exact) > maxVariantArguments {
-			return invalid(field+".exact", "invalid exact argument count")
+		if len(variant.Exact) != 1 || len(variant.Exact) > maxVariantArguments {
+			return invalid(field+".exact", "version probe requires one fixed argument")
 		}
 		for j, argument := range variant.Exact {
 			if argument == "" || len(argument) > maxArgumentBytes || !utf8.ValidString(argument) || strings.ContainsRune(argument, 0) {
 				return invalid(fmt.Sprintf("%s.exact[%d]", field, j), "invalid exact argument")
+			}
+			if !validVersionArgument(argument) {
+				return invalid(fmt.Sprintf("%s.exact[%d]", field, j), "unsupported version argument")
 			}
 		}
 	}
@@ -432,6 +436,15 @@ func validateSpec(spec Spec) error {
 		return invalid("command_profile.result", "only structured version output is supported")
 	}
 	return nil
+}
+
+func validVersionArgument(argument string) bool {
+	switch argument {
+	case "-v", "--version", "version":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateProfile(profile Profile) error {

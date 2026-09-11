@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestWindowsRejectsPathAliasesAndRemoteForms(t *testing.T) {
@@ -38,6 +40,26 @@ func TestWindowsRejectsPathAliasesAndRemoteForms(t *testing.T) {
 	}
 	if _, err := AuditExecutable(ToolNode, path); err != nil {
 		t.Fatalf("local regular file unexpectedly rejected: %v", err)
+	}
+}
+
+func TestWindowsDriveTypePolicyFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		driveType uint32
+		want      error
+	}{
+		{name: "remote", driveType: windows.DRIVE_REMOTE, want: ErrRejected},
+		{name: "unknown", driveType: windows.DRIVE_UNKNOWN, want: ErrUnavailable},
+		{name: "no-root", driveType: windows.DRIVE_NO_ROOT_DIR, want: ErrUnavailable},
+		{name: "cdrom", driveType: windows.DRIVE_CDROM, want: ErrUnavailable},
+		{name: "fixed", driveType: windows.DRIVE_FIXED, want: nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validateWindowsDriveType(test.driveType); !errors.Is(got, test.want) {
+				t.Fatalf("drive type %d: want %v, got %v", test.driveType, test.want, got)
+			}
+		})
 	}
 }
 

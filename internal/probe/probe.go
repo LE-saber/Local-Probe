@@ -11,6 +11,7 @@ package probe
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -27,6 +28,11 @@ const (
 	ToolGit    ToolID = "git"
 	ToolPython ToolID = "python"
 	ToolNode   ToolID = "node"
+	// ToolVersionGeneric is used by a command profile whose executable is
+	// configured locally (for example a vendor CLI).  It still uses the
+	// narrowly bounded version-flag grammar below; it is not an arbitrary
+	// command tool.
+	ToolVersionGeneric ToolID = "version"
 )
 
 // ErrorCode is a stable, path-free error category returned by this package.
@@ -42,6 +48,8 @@ const (
 	CodeDeadlineExceeded ErrorCode = "deadline_exceeded"
 	CodeCancelled        ErrorCode = "cancelled"
 	CodeInvalidOutput    ErrorCode = "invalid_output"
+	CodeHashMismatch     ErrorCode = "hash_mismatch"
+	CodeHashLimit        ErrorCode = "hash_limit"
 	CodeUnsupported      ErrorCode = "unsupported_platform"
 )
 
@@ -70,6 +78,8 @@ var (
 	ErrDeadlineExceeded = &Error{Code: CodeDeadlineExceeded}
 	ErrCancelled        = &Error{Code: CodeCancelled}
 	ErrInvalidOutput    = &Error{Code: CodeInvalidOutput}
+	ErrHashMismatch     = &Error{Code: CodeHashMismatch}
+	ErrHashLimit        = &Error{Code: CodeHashLimit}
 	ErrUnsupported      = &Error{Code: CodeUnsupported}
 )
 
@@ -106,7 +116,27 @@ const (
 	hardTimeout    = 10 * time.Second
 	maxStdout      = 64 << 10
 	maxStderr      = 16 << 10
+	maxHashBytes   = 512 << 20
 )
+
+// VersionExecutionPolicy is a trusted local execution policy.  It is not a
+// wire request: commandexec fills it from an immutable command profile.  The
+// SHA256 field, when present, is checked from the same audited Windows handle
+// used for the launch guard before CreateProcess is called.
+type VersionExecutionPolicy struct {
+	WallTimeout time.Duration
+	StdoutBytes int
+	StderrBytes int
+	SHA256      string
+}
+
+func DefaultVersionExecutionPolicy() VersionExecutionPolicy {
+	return VersionExecutionPolicy{
+		WallTimeout: defaultTimeout,
+		StdoutBytes: maxStdout,
+		StderrBytes: maxStderr,
+	}
+}
 
 // AuditExecutable verifies and snapshots an absolute local regular file for
 // one of the fixed tool IDs.  It performs no process execution.  The returned
@@ -160,8 +190,27 @@ func ToolExists(ctx context.Context, descriptor ExecutableDescriptor) (ToolExist
 // started with a private empty cwd, an exact package-owned environment, bounded
 // concurrent output readers, and platform process-tree supervision.
 func ToolVersion(ctx context.Context, descriptor ExecutableDescriptor) (ToolVersionResult, error) {
+	args, ok := fixedVersionArgs(descriptor.Tool)
+	if !ok {
+		return ToolVersionResult{Tool: descriptor.Tool}, ErrInvalidInput
+	}
+	return ToolVersionWithPolicy(ctx, descriptor, args, DefaultVersionExecutionPolicy())
+}
+
+// ToolVersionWithPolicy executes one of the fixed version argument forms.
+// The caller must have obtained descriptor from AuditExecutable and must pass
+// a policy constructed by trusted local code.  The function deliberately
+// rejects arbitrary argument strings and unsafe policy values even though it
+// is not a network-facing API.
+func ToolVersionWithPolicy(ctx context.Context, descriptor ExecutableDescriptor, args []string, policy VersionExecutionPolicy) (ToolVersionResult, error) {
 	result := ToolVersionResult{Tool: descriptor.Tool}
 	if err := validateDescriptor(descriptor); err != nil {
+		return result, err
+	}
+	if err := validateVersionArgs(args); err != nil {
+		return result, err
+	}
+	if err := validateVersionExecutionPolicy(policy); err != nil {
 		return result, err
 	}
 	if ctx == nil {
@@ -192,11 +241,7 @@ func ToolVersion(ctx context.Context, descriptor ExecutableDescriptor) (ToolVers
 		return result, ErrUnavailable
 	}
 
-	args, ok := fixedVersionArgs(descriptor.Tool)
-	if !ok {
-		return result, ErrInvalidInput
-	}
-	run, runErr := runFixedProcess(ctx, descriptor.Path, args, cwd, env, descriptor.identity)
+	run, runErr := runFixedProcessWithPolicy(ctx, descriptor.Path, args, cwd, env, descriptor.identity, policy)
 
 	// The identity check is performed even when the child timed out or failed;
 	// a replacement must never be hidden by an unrelated process error.
@@ -221,7 +266,7 @@ func ToolVersion(ctx context.Context, descriptor ExecutableDescriptor) (ToolVers
 
 func validTool(tool ToolID) bool {
 	switch tool {
-	case ToolGit, ToolPython, ToolNode:
+	case ToolGit, ToolPython, ToolNode, ToolVersionGeneric:
 		return true
 	default:
 		return false
@@ -243,11 +288,40 @@ func validateDescriptor(descriptor ExecutableDescriptor) error {
 
 func fixedVersionArgs(tool ToolID) ([]string, bool) {
 	switch tool {
-	case ToolGit, ToolPython, ToolNode:
+	case ToolGit, ToolPython, ToolNode, ToolVersionGeneric:
 		return []string{"--version"}, true
 	default:
 		return nil, false
 	}
+}
+
+func validateVersionArgs(args []string) error {
+	if len(args) != 1 {
+		return ErrInvalidInput
+	}
+	switch args[0] {
+	case "-v", "--version", "version":
+		return nil
+	default:
+		return ErrInvalidInput
+	}
+}
+
+func validateVersionExecutionPolicy(policy VersionExecutionPolicy) error {
+	if policy.WallTimeout <= 0 || policy.WallTimeout > hardTimeout ||
+		policy.StdoutBytes <= 0 || policy.StdoutBytes > maxStdout ||
+		policy.StderrBytes <= 0 || policy.StderrBytes > maxStderr {
+		return ErrInvalidInput
+	}
+	if policy.SHA256 != "" {
+		if len(policy.SHA256) != 64 {
+			return ErrInvalidInput
+		}
+		if _, err := hex.DecodeString(policy.SHA256); err != nil {
+			return ErrInvalidInput
+		}
+	}
+	return nil
 }
 
 func makePrivateWorkdir() (string, error) {
@@ -275,8 +349,23 @@ type streamResult struct {
 }
 
 func runFixedProcess(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity) (processOutput, error) {
+	return runFixedProcessWithPolicy(ctx, path, args, cwd, env, expected, DefaultVersionExecutionPolicy())
+}
+
+func runFixedProcessWithPolicy(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity, policy VersionExecutionPolicy) (processOutput, error) {
 	var result processOutput
-	process, err := startFixedProcess(path, args, cwd, env, expected)
+	if err := validateVersionArgs(args); err != nil {
+		return result, err
+	}
+	if err := validateVersionExecutionPolicy(policy); err != nil {
+		return result, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	executionCtx, cancel := context.WithTimeout(ctx, policy.WallTimeout)
+	defer cancel()
+	process, err := startFixedProcess(executionCtx, path, args, cwd, env, expected, policy.SHA256)
 	if err != nil {
 		return result, err
 	}
@@ -284,17 +373,12 @@ func runFixedProcess(ctx context.Context, path string, args []string, cwd string
 
 	stdoutCh := make(chan streamResult, 1)
 	stderrCh := make(chan streamResult, 1)
-	go captureStream(process.stdout, maxStdout, stdoutCh)
-	go captureStream(process.stderr, maxStderr, stderrCh)
+	go captureStream(process.stdout, policy.StdoutBytes, stdoutCh)
+	go captureStream(process.stderr, policy.StderrBytes, stderrCh)
 
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- process.wait() }()
 
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	deadline := time.NewTimer(defaultTimeout)
-	defer deadline.Stop()
 	hard := time.NewTimer(hardTimeout)
 	defer hard.Stop()
 
@@ -329,13 +413,9 @@ func runFixedProcess(ctx context.Context, path string, args []string, cwd string
 			}
 		case waitErr = <-waitCh:
 			waitDone = true
-		case <-ctx.Done():
+		case <-executionCtx.Done():
 			if !waitDone {
-				kill(ErrCancelled)
-			}
-		case <-deadline.C:
-			if !waitDone {
-				kill(ErrDeadlineExceeded)
+				kill(contextExecutionError(executionCtx))
 			}
 		case <-hard.C:
 			if !waitDone {
@@ -350,6 +430,13 @@ func runFixedProcess(ctx context.Context, path string, args []string, cwd string
 		return result, ErrUnavailable
 	}
 	return result, nil
+}
+
+func contextExecutionError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ErrDeadlineExceeded
+	}
+	return ErrCancelled
 }
 
 func captureStream(reader io.Reader, limit int, out chan<- streamResult) {
@@ -407,6 +494,11 @@ var (
 	gitVersionRE    = regexp.MustCompile(`(?m)^git version ([0-9]+(?:\.[0-9]+){1,3}(?:[-+._a-zA-Z0-9]*)?)\s*$`)
 	pythonVersionRE = regexp.MustCompile(`(?m)^(?:Python|python) ([0-9]+\.[0-9]+\.[0-9]+(?:[-+._a-zA-Z0-9]*)?)\s*$`)
 	nodeVersionRE   = regexp.MustCompile(`(?m)^v([0-9]+\.[0-9]+\.[0-9]+(?:[-+._a-zA-Z0-9]*)?)\s*$`)
+	// Generic profiles may identify a vendor CLI not known to this package.
+	// Keep the accepted output intentionally narrow: one optional ASCII tool
+	// label, an optional "version" word or "v" prefix, and a semantic-looking
+	// numeric version.  In particular, arbitrary stdout is never returned.
+	genericVersionRE = regexp.MustCompile(`(?mi)^(?:[a-z][a-z0-9_.-]*(?:\s+version)?\s+)?v?([0-9]+\.[0-9]+\.[0-9]+(?:[-+._a-zA-Z0-9]*)?)\s*$`)
 )
 
 func parseVersion(tool ToolID, stdout, stderr []byte) (string, bool) {
@@ -425,6 +517,8 @@ func parseVersion(tool ToolID, stdout, stderr []byte) (string, bool) {
 		match = pythonVersionRE.FindStringSubmatch(text)
 	case ToolNode:
 		match = nodeVersionRE.FindStringSubmatch(text)
+	case ToolVersionGeneric:
+		match = genericVersionRE.FindStringSubmatch(text)
 	default:
 		return "", false
 	}
