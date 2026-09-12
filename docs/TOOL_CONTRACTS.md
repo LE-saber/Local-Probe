@@ -35,7 +35,10 @@ expected_version 可省略。要续读时使用前一结果返回的 version.tok
 
 执行前按请求需求做确定性 max-min 分配，总配额不超过正文/I/O 限额较小者；舍入余量按输入顺序分配。结果始终保持输入顺序，不以完成速度抢占预算。短文件/失败项剩余配额本版本不回收，因此简单稳定但有时预算利用率较低；后续是否二轮回收由基准决定。
 
-worker 上限是**每个 batch** 的，不是所有账号的全局上限。后续服务层必须增加全局并发、每连接配额、公平排队和句柄限制。
+worker 上限是**每个 batch** 的，不是所有账号的全局上限。R6 已提供独立的本地
+`admission.Gate`，可按全局与每 connection 限制 permits，并绑定 connection/profile/revision；
+它尚未接入当前 MCP listener 的全局 wire 配额、公平排队和完整服务生命周期，不能把 readcore
+的 batch worker 上限当成服务级配额。
 
 `bytes_read` 是 ReaderAt 实际返回的逻辑字节，包括随后因 UTF-8 裁切或版本变化被丢弃的字节；不代表 OS 的物理磁盘读取量。`returned_bytes` 是正文 UTF-8 字节数。它们均不是 token 数，也不是包含 JSON 转义/元数据的完整 wire 字节数。
 
@@ -81,7 +84,7 @@ metadata 是弱版本：相同 size/mtime 的内容修改可能无法检测，�
 
 ## 七、MCP 工具面（当前与未来）
 
-当前本地 MCP 服务已注册并按 connection/profile allowlist 暴露：`server_info`、`ping`、`read_file`、`batch_read`、`list_directory`、`find_files`、`search_text`、`tree_directory`、`get_environment`、`discover_tools`、`workspace_snapshot`。`run_probe`、`git_status` 和 `git_diff` 仍是未来能力，不能从当前工具列表推断已实现。
+当前本地 MCP 服务已注册并按 connection/profile allowlist 暴露：`server_info`、`ping`、`read_file`、`batch_read`、`list_directory`、`find_files`、`search_text`、`tree_directory`、`get_environment`、`discover_tools`、`workspace_snapshot`。R4/R5/R6 新增的 commandpath、gitprobe、transport、FileStore、admission 和 supervisor 都是本地核心，不会自动扩大 MCP 工具面；`run_probe`、`git_status` 和 `git_diff` 仍未注册，不能从本地包的存在推断已实现远程能力。
 
 发现/搜索/目录树/工作区轮廓工具已经返回 request_id、coverage、warnings、预算和 continuation；`read_file`/`batch_read` 的 byte/line/tail 结果按第四、五节约束。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
 
@@ -460,3 +463,46 @@ security reject。
 CLI/supervisor 的正式生命周期接线、network-tunnel、policy、fs-search 事件生产者，
 也没有运行时 sink 故障后的 fail-closed ingress、全局并发/线级配额或管理变更审计。audit 的
 `Stats.Degraded` 可供后续 supervisor/GUI 读取，但目前不会自动拒绝已启动 listener 的新请求。
+
+## 十三、R4–R6 本地核心契约（2026-09-12）
+
+本节是新增包的实现边界，不是 MCP 远程工具契约。
+
+### R4 `commandpath`
+
+`commandpath.PathBinding`/`TrustedResolver` 只在本地进程内使用，不能 JSON 序列化。binding
+保留 final handle、identity commitment，并提供 `Revalidate` 与 `Close`；`PreviewToken` 只能
+用于本地诊断预览，不能作为 launcher argv 或执行授权。当前 `rootfs.Source` 的
+`Source.New` 根目录 Lstat→OpenRoot 竞态、祖先 reparse/长路径和 launcher 的同一 handle 原子
+启动硬门尚未完成，所以它不是完整 TOCTOU 或生产执行保证。
+
+### R5 `gitprobe`
+
+`gitprobe.PlanAction` 只接受固定 `git_status`/`git_diff`、逻辑 `RootID`、受限 root-relative
+paths 和有界 parser limits；它输出 plan/结构化 parser 结果，不启动 Git。每个 Plan 的
+`PreviewExecutable()` 都是 `false`，`PreviewBlockedReason()` 为 `repository_filters`：
+repo-local clean/smudge/process filters 无法由当前固定 flags 完整关闭，且 `RootID` 不是
+rootfs binding/cwd。因此 plan 的 preview args/environment 不能交给 launcher；没有
+`git_status`/`git_diff` MCP 注册。
+
+### R6 transport、FileStore、admission、supervisor
+
+- transport config 只保存 `local`、`openai_runtime`、`cloudflare_named` 等非秘密元数据；旧
+  connection JSON 缺省 transport 时按 `local` 兼容。它不建立 Tunnel，也不接收 token/key。
+- `config.FileStore` 只提供显式路径下的本地 config snapshot/revision/backup 辅助，且
+  `ProductionReady=false`。它不是生产授权边界；祖先 reparse、Lstat→open/replace、hardlink/
+  ACL、跨进程 OS lock、路径别名和崩溃恢复保证仍待补齐。
+- `admission.Gate` 以不可序列化 binding 绑定 connection/profile/revision，提供全局/每
+  connection bounded permits、disable/revoke/replace、audit health fail-closed、可取消等待和
+  幂等 release。它不执行命令、不打开文件、不建立网络，也不替代 MCP/OS 隔离。
+- `supervisor` 是注入式 fake automation core：支持 `stopped`、`starting`、
+  `local_mcp_ready`、`polling`、`ready`、`degraded`、`backoff`、`auth_failed`、`sleeping`、
+  `resuming`、`stopping`、`cleanup_failed`，以及 backoff/jitter、认证 circuit breaker、
+  revision replace、sleep/wake/reconnect 和 cleanup failure 阻断。`ready` 只表示注入的
+  local/remote checker 对当前 owned-child 与 revision 返回 ready，不证明真实 PID+creation
+  time+Job、MCP ping、Cloudflare health 或外部可达性；fake core 不创建真实 child/tunnel。
+
+以上 R4–R6 包通过本地 `go test -race -count=3` 与 `go vet` 目标包检查，但尚未完成真实
+Windows runtime、MCP ping/server_info、Cloudflare `/ready`/HA/tunnel health、双 connection
+并发与至少一小时 soak，也未完成 FileStore 跨进程 OS lock、R4 root/launcher 硬门、R5
+repository-filter/root binding 安全执行链、WFP/broker/capability、CLI 生产接线或独立安全审查。

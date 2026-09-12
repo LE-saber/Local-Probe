@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-12。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4/P08 Windows 固定探针、严格 version profile、fixed_command exact argv/typed slots 本地解析、typed input 本地 prepare/confirm 边界、执行期 SHA256、revision lease、local commandexec fail-closed bridge、一次性确认、canonical resolved-input digest、confirmation v2、结构化 ProcessOutcome、command.result 本地审计接线、R4-AUDIT-01 commandexec 审计边界、audit.v2 command producers 和 R4-NET-02 固定 WFP deny plan/跨平台 DisabledBackend 已实现；这些进程能力尚未接入 MCP，网络仍未在操作系统层执行。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
+日期：2026-09-12。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate 和 fake supervisor automation core 已实现。** R4/R5/R6 的新增能力仍未接入远程 MCP；R4 的 OS network enforcement、生产 launcher/broker、R6 的真实 Windows runtime 与 Cloudflare health 证据仍未完成。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -23,9 +23,10 @@
 | P05 | 最小 MCP 与真实 Cloudflare ingress 已验证 | 官方 MCP Go SDK v1.7.0、现代无状态/旧版有状态 Streamable HTTP 协商、本地 bearer 与 Cloudflare Access JWT/JWKS、Host 校验；ChatGPT“极高”实际调用 server_info/ping/read_file/batch_read 通过，Tunnel 重连后无需重新登录 |
 | P06 | 第一增量已实现并通过本机与真实链路验证；手工靶场已加入 | list_directory、find_files、search_text、tree_directory；有界迭代、扁平深度优先树、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；四个发现工具已由 ChatGPT Business“极高”验证，`manual-test-targets/` 提供分页、嵌套、Unicode、空文件和拒绝负例；R1 已补充单次调用打开文件/目录预算与不可推进游标防护 |
 | P07 | 第一增量完成 | MCP `bytes`/`lines`/`tail` 范围读取、受策略绑定的 `workspace_snapshot`、Windows 手工靶场；模型任务效果评测和强一致快照仍未完成 |
-| P08 | Windows 本地核心第二增量已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；`version_probe` 仍兼容 `slots:[]`，`fixed_command` 的 exact argv、enum/bounded_integer/root_relative_path typed slots、配置解析、root ID 交叉校验与纯 `ResolveVariant` 已实现；`ResolvedInput` 为最终 exact argv 提供 canonical、长度前缀的 SHA256 digest，version-probe 的一次性 confirmation v2 绑定该 digest 与 config revision，旧 v1 token fail closed；执行期从同一最终映像 guard handle 计算小写 SHA256；`ProcessOutcome` 记录真实自然退出码或明确的 timeout/cancel/output-limit 状态及有界时长/字节计数；local commandexec 已将该 outcome 映射为 `command.result`；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8 个 ALE family 的 opaque plan 与跨平台 DisabledBackend 已实现；`fixed_command` typed runtime values 已进入 commandexec 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界：prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv，Prepare/Confirm 各自覆盖关键 revision lease；但现有 `PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前由 commandexec 以 `unsupported_profile` fail closed，因而没有新增 fixed 执行能力；后续落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行；真实 WFP/broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线、MCP `run_probe` 与任意命令仍关闭 |
+| P08 | Windows 本地核心第二增量与 commandpath identity binding 已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；`version_probe` 仍兼容 `slots:[]`，`fixed_command` 的 exact argv、enum/bounded_integer/root_relative_path typed slots、配置解析、root ID 交叉校验与纯 `ResolveVariant` 已实现；`ResolvedInput` 为最终 exact argv 提供 canonical、长度前缀的 SHA256 digest，version-probe 的一次性 confirmation v2 绑定该 digest 与 config revision，旧 v1 token fail closed；执行期从同一最终映像 guard handle 计算小写 SHA256；`ProcessOutcome` 记录真实自然退出码或明确的 timeout/cancel/output-limit 状态及有界时长/字节计数；local commandexec 已将该 outcome 映射为 `command.result`；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8 个 ALE family 的 opaque plan 与跨平台 DisabledBackend 已实现；`internal/commandpath` 与 rootfs adapter 已实现本地 final handle/identity commitment、revalidate 和不可序列化 binding，但 `Source.New` 的根目录 Lstat→OpenRoot 竞态、长路径与最终 launcher 原子硬门仍未闭合；typed runtime values 已进入 commandexec 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界，fixed execution 仍在 confirmation/admission/start/runner 前由 commandexec 以 `unsupported_profile` fail closed，因而没有新增 fixed 执行能力；真实 WFP/broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线、MCP `run_probe` 与任意命令仍关闭 |
+| R5 | 本地固定 Git plan/parser 已实现，保持不可执行且未接入 MCP | `git_status`/`git_diff` 的固定参数、受限 root-relative path、bounded output/entries/hunks/lines、porcelain-v1/统一 diff 结构化解析和 capture completeness 已实现；`Plan.PreviewExecutable()` 固定为 `false`，原因是 repo-local clean/smudge/process filters 无法由当前固定 flags 完整关闭，且 `RootID` 仍不是 rootfs binding/cwd。Git 不启动、不解析 raw command、不接入 launcher 或 MCP |
 | R1/R2/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、`get_environment`/`discover_tools`、R2 范围读取和 `workspace_snapshot` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed、强快照和真实 Business 复测仍未完成 |
-| P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
+| P09/P10 | 第一增量（本地核心）已实现，生产 runtime/真实验证未完成 | R6 transport-aware connection config、非生产 FileStore、全局/每 connection admission gate、disable/revoke/revision binding、健康状态机、backoff/circuit breaker、sleep/wake/reconnect、cleanup failure 状态和 connection isolation 的 fake automation core；不创建真实 child/tunnel，不等于 PID/creation time/Job/MCP ping/Cloudflare health 或双连接 soak 证据 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
 代码位置：`internal/config/`、`internal/environment/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
@@ -332,18 +333,89 @@ key、完整 argv/env/stdout/stderr 不会写入。普通事件进入有界异�
 外层包装统一写一条同步 `auth.reject`；typed `CallToolResult` 只提取有限的稳定错误码，未知
 格式降级为 `unavailable`，不记录错误 message。运行时 sink 故障不会自动使已启动 listener
 fail-closed；R4-AUDIT-01 仅保证 commandexec 对 `AuditRecorder` 的即时校验/入队错误 fail closed；
-`command.admission`/`command.start` 通过有界异步队列，后续磁盘写失败只标记 `degraded`，尚待
-supervisor 阻断新执行。command producers 不记录 path、argv、env、output 或 token。local commandexec
-现在在 probe 执行尝试结束后，以 path-free 的 `ProcessOutcome` 产生 `command.result`；结果审计失败
-不会被伪装成新的 `command.reject`。`command.start` 的语义是确认后的 launch-dispatch intent，不是
-OS 已启动证明。CLI/supervisor 生产接线、network-tunnel、policy、fs-search 事件生产者、全局配额/
-admission 调度和管理变更审计均未实现。
+`command.admission`/`command.start` 通过有界异步队列，后续磁盘写失败只标记 `degraded`，由 R6
+admission gate 提供独立的健康输入，但尚未完成把整个已启动 listener 与该状态的生产接线。
+command producers 不记录 path、argv、env、output 或 token。local commandexec 现在在 probe 执行
+尝试结束后，以 path-free 的 `ProcessOutcome` 产生 `command.result`；结果审计失败不会被伪装成新的
+`command.reject`。`command.start` 的语义是确认后的 launch-dispatch intent，不是 OS 已启动证明。
+R6 的 admission gate 与 fake supervisor automation core 已实现，但 CLI/supervisor 生产接线、
+network-tunnel、policy、fs-search 事件生产者和管理变更审计仍未实现。
 
-## 四、已知未完成边界
+## 四、R4–R6 本轮新增本地核心（2026-09-12）
+
+本节只记录已经落在代码中的**本地、可测试核心**。它们不是生产 runtime，也没有因此扩大
+当前 MCP 工具面。
+
+### R4 commandpath：本地 identity binding
+
+`internal/commandpath` 与 `internal/rootfs` 已提供不可 JSON 序列化的本地
+`PathBinding`/`TrustedResolver` 边界：解析结果保留 final handle、identity commitment，支持
+`Revalidate`/`Close`，并按当前 `BoundScope`、root ID 和相对路径再次校验。binding 可供本地
+诊断预览，但不能把 `PreviewToken` 当成安全的 launcher argv；未来 launcher 必须接收 binding，
+在同一受信操作中重新验证并启动。
+
+以下硬门仍未闭合：`Source.New` 的根目录 Lstat→OpenRoot 竞态、祖先 reparse/长路径和最终
+launcher 的 handle-based 原子启动边界。因此本实现不能宣称完整 TOCTOU 防护、生产命令执行或
+fixed MCP execution；`commandexec` 对 fixed profile 仍 fail closed。
+
+### R5 gitprobe：固定 plan/parser，但不可执行
+
+`internal/gitprobe` 已实现固定 `git_status`/`git_diff` plan 和有界结构化 parser：请求只包含
+逻辑 `RootID`、固定 action、受限 root-relative paths 与 bounded limits；status 使用
+porcelain-v1 解析，diff 解析固定 unified-diff 形状，并区分正常 EOF 与截断/超限 capture。
+
+`Plan.PreviewExecutable()` 固定为 `false`，`PreviewBlockedReason()` 为
+`repository_filters`。原因是 repo-local clean/smudge/process filters、配置与属性扩展无法由
+当前固定 Git flags 完整关闭；`RootID` 也只是逻辑标识，不是 rootfs binding 或 cwd。该包不启动
+Git、不接受 raw command，不连接 launcher，也没有注册 `git_status`/`git_diff` MCP 工具。
+
+### R6：transport config、FileStore、admission 与 fake supervisor
+
+- `internal/config` 增加 `local`、`openai_runtime`、`cloudflare_named` 三种 transport 元数据。
+  transport/tunnel 字段只接受受限非秘密标识；旧连接 JSON 缺省 transport 仍按 `local` 解析。
+  transport 配置本身不创建连接、不建立 Tunnel，也不包含 token/key。
+- `internal/config.FileStore` 提供显式路径、校验后的 config snapshot、revision、备份/恢复和
+  进程内并发保护；它明确 `ProductionReady=false`。祖先 symlink/junction/reparse、Lstat→open/
+  replace 交换、hardlink/ACL、跨进程 OS lock、别名路径和掉电恢复语义仍不能由此 helper 保证。
+  因而不能直接作为生产授权或 runtime 配置边界。
+- `internal/admission.Gate` 提供全局与每 connection 的 bounded permits，binding 绑定
+  connection/profile/revision；disable、revoke、replace 会阻止或取消后续操作，audit sink 不健康
+  时新 admission fail closed，等待支持取消，permit release 幂等。它是 transport-neutral 的
+  本地 gate，不执行命令、不打开文件、不建立网络连接，也不替代 MCP/OS 沙箱。
+- `internal/supervisor` 提供注入式 RuntimeFactory、HealthChecker、Clock/Timer 的 fake
+  automation core，按 connection 隔离状态、端口和重试；支持 backoff（含 jitter、上限 60 秒）、
+  auth circuit breaker、revision replace、sleep/wake/reconnect、关闭/移除竞态以及 cleanup
+  failure 终态。该 core 不创建真实 child/tunnel；`ready` 只表示注入的 local/remote checker 对
+  当前 owned-child 与 revision 返回 ready。
+
+稳定状态值如下（`stopping`、`resuming` 为过渡态）：
+
+`stopped`、`starting`、`local_mcp_ready`、`polling`、`ready`、`degraded`、`backoff`、
+`auth_failed`、`sleeping`、`resuming`、`stopping`、`cleanup_failed`。
+
+其中 `local_mcp_ready` 不是已完成真实 MCP ping 的证明；`ready` 不是 PID+creation time+Job
+ownership、Cloudflare `/ready`/HA、Tunnel health 或外部可达性的证明；`cleanup_failed` 表示
+child cleanup 未被确认完成，不能转写为 `stopped`，并会阻止继续启动直到显式恢复/清理。
+
+### 自动化验证证据
+
+在 Windows amd64 / Go 1.26.0 环境，新增核心已运行并通过：
+
+- `go test -race -count=3 ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor`
+- `go vet ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor`
+- `git diff --check`
+
+这些是本机单元/竞争/静态检查证据，不是生产运行证据。尚待人工与后续实现的关键项包括：真实
+Windows child 的 PID+creation time+Job ownership、真实 local MCP ping/server_info、Cloudflare
+Tunnel `/ready` 与 HA/health、两个真实 connection 的并发/故障隔离和至少一小时 soak；FileStore
+跨进程 OS lock、R4 根目录/长路径/launcher 硬门、R5 Git root binding/filter 安全执行链、WFP/
+broker/capability、CLI 生产接线和独立安全审查也仍未完成。
+
+## 五、已知未完成边界
 
 - Cloudflare Access JWT/JWKS 与 ChatGPT 身份链路已经过一次真实账号验证；该证据不等于多账号、长期稳定性或 Cloudflare/OpenAI 后端兼容性保证。Scope 仍只能由可信代码创建。
 - 已有最小生产 rootfs adapter：使用 `os.Root`、逐组件 symlink/reparse 拒绝、普通文件检查、handle identity/link-count 检查和 bound adapter。Windows 本轮、WSL2 历史轮次已完成明确次数的特殊文件、路径、symlink/junction swap 及临时 loopback SMB remote-root 有界验证；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台和完整 TOCTOU/OS 攻击覆盖仍是残余风险。
-- P06 已有绑定 connection/profile/revision/root/query/预算的短期 HMAC cursor；仍没有全局多连接公平调度、完整 MCP wire 限额或强快照。默认 cursor key 为进程随机值，因此重启后旧 cursor 会安全失效。
+- P06 已有绑定 connection/profile/revision/root/query/预算的短期 HMAC cursor；R6 已有独立的全局/每 connection admission gate 核心，但尚未接入 MCP 的全局 wire 配额、公平排队和完整服务生命周期，也仍没有强快照。默认 cursor key 为进程随机值，因此重启后旧 cursor 会安全失效。
 - R2 的 workspace snapshot 是 live、有界的目录/路径证据，不是跨文件强一致快照；其 continuation 仍需绑定当前 connection/profile/root/generation，不能直接作为可跨账号转移的授权凭证。
 - Metadata 版本是弱证据，无法检测保持相同元数据的内容更改；batch 也不是全仓快照。
 - 暂不回收短文件/错误项的剩余配额；优先保证可解释和确定性。
@@ -357,10 +429,15 @@ admission 调度和管理变更审计均未实现。
   trusted final resolver、签名校验和 MCP `run_probe` 均未完成，远程命令必须保持关闭；typed
   runtime values 目前只进入本地 Prepare/Confirm/BuildRequest 边界，不能据此声称 fixed 可执行。
   已有 pre-open writable/mapped handle 残余风险；`LockFileEx` 不覆盖 mapped view，不能作为完整修复。
+- R4 的 commandpath binding、R5 的 Git plan/parser 和 R6 的 transport/admission/supervisor 均仍是
+  本地核心。R4 尚缺 `Source.New` 根目录交换竞态、长路径和 launcher 原子硬门；R5 的 `Plan` 明确
+  `Executable=false`，repo-local filters 与 root binding 未解决，故不接 MCP；R6 的 FileStore 明确
+  `ProductionReady=false`，跨进程 OS lock、真实 Windows child/tunnel runtime、MCP/Cloudflare health、
+  双 connection/soak 和 CLI/GUI 生产接线均未完成。
 
-## 五、下一执行者的明确入口
+## 六、下一执行者的明确入口
 
-P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R4 已补齐严格 version args、`version_probe` 的 `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical resolved-input digest、confirmation v2（绑定 digest+revision，旧 v1 fail closed）、revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与本地 `command.result` 接线、R4-AUDIT-01（AuditRecorder、`command.reject`、`command.admission`/`command.start` 和审计失败 fail closed）、NET-01 contract/fake 以及 R4-NET-02 固定 plan/DisabledBackend；`fixed_command` typed runtime values 已进入本地 Prepare/Confirm/BuildRequest 边界，但字符串 `PathResolver` 尚不是可信 final path binding，执行仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝。下一增量实现可信 path resolver/final identity 和 Windows UTF-16/escaping 边界，并继续保持 shell/interpreter 与 fixed MCP execution 关闭；真实 WFP ABI adapter、低权限 broker/service、由 broker 持有的 suspended Job integration 和 VM identity/network adversarial tests 仍按后续路线推进。硬门全部通过前不注册 MCP `run_probe`，也不开放 arbitrary shell 或模型自定义命令行。
+P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R4 已补齐严格 version args、`version_probe` 的 `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical resolved-input digest、confirmation v2（绑定 digest+revision，旧 v1 fail closed）、revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与本地 `command.result` 接线、R4-AUDIT-01（AuditRecorder、`command.reject`、`command.admission`/`command.start` 和审计失败 fail closed）、NET-01 contract/fake 以及 R4-NET-02 固定 plan/DisabledBackend；`fixed_command` typed runtime values 已进入本地 Prepare/Confirm/BuildRequest 边界，但字符串 `PathResolver` 尚不是可信 final path binding，执行仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝。R4 的 commandpath identity binding、R5 的固定 Git plan/parser 和 R6 的 transport config、非生产 FileStore、admission gate、fake supervisor automation core 已完成，但均不等于生产接线。下一增量实现可信 path resolver/final identity 和 Windows UTF-16/escaping 边界，并继续保持 shell/interpreter、Git plan 与 fixed MCP execution 关闭；真实 WFP ABI adapter、低权限 broker/service、由 broker 持有的 suspended Job integration、VM identity/network adversarial tests、Windows runtime/MCP/Tunnel health、双 connection soak 和 CLI/supervisor 生产接线仍按后续路线推进。硬门全部通过前不注册 MCP `run_probe`，也不开放 arbitrary shell 或模型自定义命令行。
 
 
 R5 受控 Git read actions、R6 P09/P10 多 connection/supervisor/recovery、R7 证据驱动的 index、R8 GUI/tray、R9 发布与独立审查依次推进；P14 写入始终独立。P04 的本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台仍按路线的停止条件跟踪，不把本地有界验证写成生产安全结论。
