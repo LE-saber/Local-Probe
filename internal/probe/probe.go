@@ -51,6 +51,7 @@ const (
 	CodeHashMismatch     ErrorCode = "hash_mismatch"
 	CodeHashLimit        ErrorCode = "hash_limit"
 	CodeUnsupported      ErrorCode = "unsupported_platform"
+	CodeChildExit        ErrorCode = "child_exit"
 )
 
 // Error is intentionally path-free.  In particular, callers may safely
@@ -81,6 +82,7 @@ var (
 	ErrHashMismatch     = &Error{Code: CodeHashMismatch}
 	ErrHashLimit        = &Error{Code: CodeHashLimit}
 	ErrUnsupported      = &Error{Code: CodeUnsupported}
+	ErrChildExit        = &Error{Code: CodeChildExit}
 )
 
 // ExecutableDescriptor is an audited absolute executable.  Path is input
@@ -109,6 +111,21 @@ type ToolExistsResult struct {
 type ToolVersionResult struct {
 	Tool    ToolID
 	Version string
+}
+
+// ProcessOutcome is the bounded, path-free result of one fixed process
+// attempt. StdoutBytes and StderrBytes count bytes copied into the bounded
+// capture buffers, not bytes on the wire or bytes written by the child after
+// the limit was reached. Output buffers are intentionally not part of this
+// type; they remain private to the version parser.
+type ProcessOutcome struct {
+	ExitCode    *int64
+	TimedOut    bool
+	Cancelled   bool
+	DurationMS  int64
+	StdoutBytes int64
+	StderrBytes int64
+	ErrorCode   ErrorCode
 }
 
 const (
@@ -203,65 +220,88 @@ func ToolVersion(ctx context.Context, descriptor ExecutableDescriptor) (ToolVers
 // rejects arbitrary argument strings and unsafe policy values even though it
 // is not a network-facing API.
 func ToolVersionWithPolicy(ctx context.Context, descriptor ExecutableDescriptor, args []string, policy VersionExecutionPolicy) (ToolVersionResult, error) {
+	result, _, err := ToolVersionWithPolicyOutcome(ctx, descriptor, args, policy)
+	return result, err
+}
+
+// ToolVersionWithPolicyOutcome is the structured counterpart to
+// ToolVersionWithPolicy. It preserves the old parsed-version API while
+// exposing only bounded process metadata for a future local audit producer.
+// The returned outcome never contains the executable path, argv, environment,
+// or raw process output.
+func ToolVersionWithPolicyOutcome(ctx context.Context, descriptor ExecutableDescriptor, args []string, policy VersionExecutionPolicy) (ToolVersionResult, ProcessOutcome, error) {
 	result := ToolVersionResult{Tool: descriptor.Tool}
+	outcome := ProcessOutcome{}
+	started := time.Now()
+	finish := func(err error) (ToolVersionResult, ProcessOutcome, error) {
+		outcome.DurationMS = time.Since(started).Milliseconds()
+		if err != nil {
+			setProcessOutcomeError(&outcome, err)
+		}
+		return result, outcome, err
+	}
+
 	if err := validateDescriptor(descriptor); err != nil {
-		return result, err
+		return finish(err)
 	}
 	if err := validateVersionArgs(args); err != nil {
-		return result, err
+		return finish(err)
 	}
 	if err := validateVersionExecutionPolicy(policy); err != nil {
-		return result, err
+		return finish(err)
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return result, ErrCancelled
+		return finish(contextExecutionError(ctx))
 	}
 	if !processExecutionSupported() {
-		return result, ErrUnsupported
+		return finish(ErrUnsupported)
 	}
 
 	before, err := captureIdentity(descriptor.Path)
 	if err != nil {
-		return result, err
+		return finish(err)
 	}
 	if !sameIdentity(descriptor.identity, before) {
-		return result, ErrIdentityChanged
+		return finish(ErrIdentityChanged)
 	}
 
 	cwd, err := makePrivateWorkdir()
 	if err != nil {
-		return result, ErrUnavailable
+		return finish(ErrUnavailable)
 	}
 	defer os.RemoveAll(cwd)
 	env, err := fixedEnvironment(cwd)
 	if err != nil {
-		return result, ErrUnavailable
+		return finish(ErrUnavailable)
 	}
 
-	run, runErr := runFixedProcessWithPolicy(ctx, descriptor.Path, args, cwd, env, descriptor.identity, policy)
+	run, runOutcome, runErr := runFixedProcessWithPolicyOutcome(ctx, descriptor.Path, args, cwd, env, descriptor.identity, policy)
+	outcome = runOutcome
 
 	// The identity check is performed even when the child timed out or failed;
 	// a replacement must never be hidden by an unrelated process error.
 	after, afterErr := captureIdentity(descriptor.Path)
 	if afterErr != nil {
-		return result, ErrIdentityChanged
+		clearProcessOutcomeTermination(&outcome)
+		return finish(ErrIdentityChanged)
 	}
 	if !sameIdentity(descriptor.identity, after) {
-		return result, ErrIdentityChanged
+		clearProcessOutcomeTermination(&outcome)
+		return finish(ErrIdentityChanged)
 	}
 	if runErr != nil {
-		return result, runErr
+		return finish(runErr)
 	}
 
 	version, ok := parseVersion(descriptor.Tool, run.stdout, run.stderr)
 	if !ok {
-		return result, ErrInvalidOutput
+		return finish(ErrInvalidOutput)
 	}
 	result.Version = version
-	return result, nil
+	return finish(nil)
 }
 
 func validTool(tool ToolID) bool {
@@ -353,21 +393,41 @@ func runFixedProcess(ctx context.Context, path string, args []string, cwd string
 }
 
 func runFixedProcessWithPolicy(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity, policy VersionExecutionPolicy) (processOutput, error) {
+	result, _, err := runFixedProcessWithPolicyOutcome(ctx, path, args, cwd, env, expected, policy)
+	return result, err
+}
+
+func runFixedProcessWithPolicyOutcome(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity, policy VersionExecutionPolicy) (processOutput, ProcessOutcome, error) {
 	var result processOutput
+	outcome := ProcessOutcome{}
+	started := time.Now()
+	finish := func(err error) (processOutput, ProcessOutcome, error) {
+		outcome.DurationMS = time.Since(started).Milliseconds()
+		if err != nil {
+			setProcessOutcomeError(&outcome, err)
+		}
+		return result, outcome, err
+	}
 	if err := validateVersionArgs(args); err != nil {
-		return result, err
+		return finish(err)
 	}
 	if err := validateVersionExecutionPolicy(policy); err != nil {
-		return result, err
+		return finish(err)
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if !processExecutionSupported() {
+		return finish(ErrUnsupported)
+	}
+	if err := ctx.Err(); err != nil {
+		return finish(contextExecutionError(ctx))
 	}
 	executionCtx, cancel := context.WithTimeout(ctx, policy.WallTimeout)
 	defer cancel()
 	process, err := startFixedProcess(executionCtx, path, args, cwd, env, expected, policy.SHA256)
 	if err != nil {
-		return result, err
+		return finish(err)
 	}
 	defer process.close()
 
@@ -376,8 +436,11 @@ func runFixedProcessWithPolicy(ctx context.Context, path string, args []string, 
 	go captureStream(process.stdout, policy.StdoutBytes, stdoutCh)
 	go captureStream(process.stderr, policy.StderrBytes, stderrCh)
 
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- process.wait() }()
+	waitCh := make(chan processWaitResult, 1)
+	go func() {
+		exitCode, err := process.wait()
+		waitCh <- processWaitResult{exitCode: exitCode, err: err}
+	}()
 
 	hard := time.NewTimer(hardTimeout)
 	defer hard.Stop()
@@ -387,6 +450,7 @@ func runFixedProcessWithPolicy(ctx context.Context, path string, args []string, 
 		stderrDone bool
 		waitDone   bool
 		waitErr    error
+		waitExit   int64
 		firstErr   error
 		killOnce   sync.Once
 	)
@@ -402,17 +466,21 @@ func runFixedProcessWithPolicy(ctx context.Context, path string, args []string, 
 		case out := <-stdoutCh:
 			stdoutDone = true
 			result.stdout = out.data
+			outcome.StdoutBytes = int64(len(out.data))
 			if out.err != nil {
 				kill(out.err)
 			}
 		case out := <-stderrCh:
 			stderrDone = true
 			result.stderr = out.data
+			outcome.StderrBytes = int64(len(out.data))
 			if out.err != nil {
 				kill(out.err)
 			}
-		case waitErr = <-waitCh:
+		case waitResult := <-waitCh:
 			waitDone = true
+			waitErr = waitResult.err
+			waitExit = waitResult.exitCode
 		case <-executionCtx.Done():
 			if !waitDone {
 				kill(contextExecutionError(executionCtx))
@@ -424,12 +492,21 @@ func runFixedProcessWithPolicy(ctx context.Context, path string, args []string, 
 		}
 	}
 	if firstErr != nil {
-		return result, normalizeProcessError(firstErr)
+		return finish(normalizeProcessError(firstErr))
 	}
 	if waitErr != nil {
-		return result, ErrUnavailable
+		return finish(ErrUnavailable)
 	}
-	return result, nil
+	outcome.ExitCode = int64Pointer(waitExit)
+	if waitExit != 0 {
+		return finish(ErrChildExit)
+	}
+	return finish(nil)
+}
+
+type processWaitResult struct {
+	exitCode int64
+	err      error
 }
 
 func contextExecutionError(ctx context.Context) error {
@@ -478,9 +555,60 @@ func normalizeProcessError(err error) error {
 		return ErrDeadlineExceeded
 	case errors.Is(err, ErrCancelled):
 		return ErrCancelled
+	case errors.Is(err, ErrChildExit):
+		return ErrChildExit
 	default:
 		return ErrUnavailable
 	}
+}
+
+func setProcessOutcomeError(outcome *ProcessOutcome, err error) {
+	if outcome == nil || err == nil {
+		return
+	}
+	switch {
+	case errors.Is(err, ErrInvalidInput):
+		outcome.ErrorCode = CodeInvalidInput
+	case errors.Is(err, ErrNotFound):
+		outcome.ErrorCode = CodeNotFound
+	case errors.Is(err, ErrRejected):
+		outcome.ErrorCode = CodeRejected
+	case errors.Is(err, ErrIdentityChanged):
+		outcome.ErrorCode = CodeIdentityChanged
+	case errors.Is(err, ErrOutputLimit):
+		outcome.ErrorCode = CodeOutputLimit
+	case errors.Is(err, ErrDeadlineExceeded):
+		outcome.ErrorCode = CodeDeadlineExceeded
+		outcome.TimedOut = true
+	case errors.Is(err, ErrCancelled):
+		outcome.ErrorCode = CodeCancelled
+		outcome.Cancelled = true
+	case errors.Is(err, ErrInvalidOutput):
+		outcome.ErrorCode = CodeInvalidOutput
+	case errors.Is(err, ErrHashMismatch):
+		outcome.ErrorCode = CodeHashMismatch
+	case errors.Is(err, ErrHashLimit):
+		outcome.ErrorCode = CodeHashLimit
+	case errors.Is(err, ErrUnsupported):
+		outcome.ErrorCode = CodeUnsupported
+	case errors.Is(err, ErrChildExit):
+		outcome.ErrorCode = CodeChildExit
+	default:
+		outcome.ErrorCode = CodeUnavailable
+	}
+}
+
+func clearProcessOutcomeTermination(outcome *ProcessOutcome) {
+	if outcome == nil {
+		return
+	}
+	outcome.ExitCode = nil
+	outcome.TimedOut = false
+	outcome.Cancelled = false
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }
 
 func minInt(a, b int) int {

@@ -15,6 +15,7 @@ func testRequest() Request {
 	return Request{
 		ConnectionID: "connection-a", ProfileID: "read-project", ProfileRevision: "r7",
 		CommandID: "codex_version", VariantID: "short", RequestNonce: "nonce-123",
+		ResolvedInputDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
 }
 
@@ -59,6 +60,58 @@ func TestMintConsumeBindsRequestAndIsOneTime(t *testing.T) {
 	}
 	if _, err := json.Marshal(capability); err == nil {
 		t.Fatal("capability was JSON serializable")
+	}
+}
+
+func TestResolvedInputDigestIsRequiredAndBound(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	manager := testManager(t, &now)
+	missing := testRequest()
+	missing.ResolvedInputDigest = ""
+	if _, err := manager.Mint(missing, time.Minute); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing resolved input digest accepted: %v", err)
+	}
+	invalid := testRequest()
+	invalid.ResolvedInputDigest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	if _, err := manager.Mint(invalid, time.Minute); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("uppercase resolved input digest accepted: %v", err)
+	}
+	capability, err := manager.Mint(testRequest(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := testRequest()
+	w := []byte(wrong.ResolvedInputDigest)
+	w[0] = 'b'
+	wrong.ResolvedInputDigest = string(w)
+	if err := manager.Consume(capability, wrong); !errors.Is(err, ErrRequestMismatch) {
+		t.Fatalf("resolved input digest mismatch result = %v", err)
+	}
+	if err := manager.Consume(capability, testRequest()); err != nil {
+		t.Fatalf("matching resolved input digest rejected: %v", err)
+	}
+}
+
+func TestLegacyTokenVersionIsRejected(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	manager := testManager(t, &now)
+	capability, err := manager.Mint(testRequest(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(capability.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[0] = 1
+	// Parse only checks the bounded token shape; Consume must reject this
+	// legacy version byte in decode before any request can be authorized.
+	legacy, err := manager.Parse(base64.RawURLEncoding.EncodeToString(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Consume(legacy, testRequest()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("legacy token version result = %v", err)
 	}
 }
 

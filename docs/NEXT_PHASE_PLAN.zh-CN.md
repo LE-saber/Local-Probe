@@ -1,10 +1,10 @@
 # Local-Probe 下一阶段执行路线（R0–R9）
 
-日期：2026-09-11
+日期：2026-09-12
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、config revision lease、local commandexec fail-closed bridge、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心；`fixed_command` 当前仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新执行能力。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行；`command.result` 因 probe 尚无可靠完整 outcome 仍未接线，本轮也未做手工、网页或网络测试。P09/P10 及发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心；`fixed_command` 的 typed runtime values 尚未进入 Request/执行/confirmation 链，当前仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行。本轮也未做 Windows 手工、网页、Tunnel 或真实网络测试；P09/P10 及发布级审查仍未完成。
 
 ## 一、能力分层与不变边界
 
@@ -28,7 +28,9 @@ P08 的 `tool_exists` 和 `tool_version` 只能由本地配置的 command profil
 - 默认关闭，由本地用户显式开启；
 - 绑定 `connection + profile + command rule`，不能只由 URL、模型提示或 GUI 文本决定；
 - 配置 revision 变化立即撤权；
-- 每次执行使用本地确认，确认不能由 MCP JSON 中的布尔字段伪造；
+- 每次执行使用本地确认，confirmation v2 绑定 connection/profile/command/variant、config
+  revision、request nonce 和 canonical resolved-input digest；旧 v1 token 必须 fail closed，
+  确认不能由 MCP JSON 中的布尔字段伪造；
 - 禁止 raw command line、Shell、任意 args/env/cwd、任意后缀和模型修改规则；
 - 动态参数只能是 typed slots，例如 enum、root-relative path、bounded integer；服务端逐项构造 argv；
 - 只返回结构化结果，原始 stdout/stderr 默认不返回。
@@ -106,9 +108,11 @@ Git、解释器、网络、写入和可产生项目状态的动作必须单独�
 `variant_id=short|long`，不能传 `suffix`、`argv`、`executable` 或命令字符串。`fixed_command`
 还可在本地规则中使用逐项 literal/slot 模板；slot 只允许 `enum`、`root-relative path`、
 `bounded integer`，由服务端逐项组装 argv。`version_probe` 的旧 `slots:[]` 配置继续兼容。
-root-relative path 采用 `/` 规范，限制为 4096 字节并拒绝 Windows 保留名/非法字符；可信
-resolver 对同一 slot 只做一次解析并复用结果，resolved argv 受 32767 字节保守预算约束。`allow_any_suffix`、
-通配后缀和任意参数数组首版明确拒绝。
+可信本地调用方通过 `ResolveInput` 得到不可变 argv 和 canonical resolved-input digest；digest
+对 profile/variant/固定 identity 与带边界的完整 argv 做域分离和长度前缀编码，并由
+confirmation v2 绑定 config revision。root-relative path 采用 `/` 规范，限制为 4096 字节并
+拒绝 Windows 保留名/非法字符；可信 resolver 对同一 slot 只做一次解析并复用结果，resolved
+argv 受 32767 字节保守预算约束。`allow_any_suffix`、通配后缀和任意参数数组首版明确拒绝。
 
 | `kind` | 执行语义 | 首批范围 |
 |---|---|---|
@@ -138,8 +142,10 @@ Object 和 resume 前实际映像复核；profile 配置和执行期只接受固
 最终映像 guard handle 计算并比较，config revision lease 覆盖到执行结束，local commandexec
 bridge 在 network capability 缺失时 fail closed。不能再把它描述成单纯
 audit-by-path→execute-by-path。
-但 R4 仍未完成：OS network deny 执行器、capability 铸造、CLI/supervisor 生产接线、可靠
-outcome→`command.result` 接线、签名校验和 MCP 暴露均缺失。已有 pre-open writable/mapped handle 残余风险；
+但 R4 仍未完成：OS network deny 执行器、capability 铸造、CLI/supervisor 生产接线、fixed_command
+typed runtime values 的执行/确认链、可信最终 resolver、签名校验和 MCP 暴露均缺失。当前 local
+commandexec 已将 version-probe 的结构化 `ProcessOutcome` 接入 `command.result`；这不等于 CLI/
+supervisor 的生产接线。已有 pre-open writable/mapped handle 残余风险；
 `LockFileEx` 的字节范围锁不覆盖 mapped view，不能作为完整修复。Unix 当前按路径启动，不能
 仅靠事后检查保证执行的是被审计文件；本轮不做 Linux 测试。
 
@@ -223,8 +229,9 @@ P11 先做 10k/100k/1m 条目的 cold/warm 基准，比较 direct、内存 catal
   digest、exit/timeout、stdout/stderr 字节计数和 network enforcement 状态。R4-AUDIT-01 已接入
   local commandexec：拒绝路径同步发出 `command.reject`；`command.admission`/`command.start` 仅做
   即时校验并进入有界异步队列，校验或入队错误 fail closed，后续落盘失败只标记 `degraded`，
-  尚待 supervisor 阻断新执行；不能声称每条记录都在启动前持久化。当前 probe 尚无可靠完整
-  outcome，`command.result` 尚未接线；不记录 path、argv、env、output 或 token。
+  尚待 supervisor 阻断新执行；不能声称每条记录都在启动前持久化。version-probe 的结构化
+  `ProcessOutcome` 已在本地 bridge 映射为 `command.result`；`command.start` 是确认后的
+  launch-dispatch intent，不是 OS 已启动证明。不记录 path、argv、env、output 或 token。
 
 运行进程或写入日志本身会产生状态，因此不能轻率使用 `readOnlyHint=true`；新增进程工具的 annotation 必须作为 MCP 契约单独 review。
 
@@ -287,10 +294,12 @@ GUI 页面后端先定义：overview、connections、roots/profile/egress previe
 ### R4：P08 TOCTOU 与固定 command profiles/developer mode
 
 状态：Windows 固定路径/PE/句柄守卫、挂起映像复核、单进程 Job、私有环境/cwd/输出/超时、
-严格 version profile（含固定 args 和小写 SHA256）、同一 guard handle 的执行期 hash、config
-revision lease、local commandexec fail-closed bridge、固定 command audit.v2 producers、NET-01
-contract/fake、R4-NET-02 固定 8-family opaque plan/跨平台 DisabledBackend 和一次性确认核心已
-实现；仍属于 local-only，不能接入远程 MCP。
+严格 version profile（含固定 args 和小写 SHA256）、同一 guard handle 的执行期 hash、canonical
+resolved-input digest、绑定 digest+revision 且旧 v1 fail closed 的 confirmation v2、config
+revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与本地
+`command.result` 接线、固定 command audit.v2 producers、NET-01 contract/fake、R4-NET-02
+固定 8-family opaque plan/跨平台 DisabledBackend 和一次性确认核心已实现；仍属于 local-only，
+不能接入远程 MCP。`command.start` 是确认后的 launch-dispatch intent，不是 OS 已启动证明。
 依赖：R0、P04/P05；可与 R1/R2/R3 的非进程部分并行，但远程暴露必须等全部硬门通过。
 剩余产物按以下顺序推进（设计见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)）：
 
@@ -316,11 +325,13 @@ contract/fake、R4-NET-02 固定 8-family opaque plan/跨平台 DisabledBackend 
    字节/Windows 保留名与非法字符检查，并由纯 `ResolveVariant` 在 32767 字节保守预算内构造
    argv。可信 resolver 的最终授权仍未被该纯函数取代；该增量不注册 MCP `run_probe`，而且
    commandexec 在 confirmation/admission/start/runner 前对 `fixed_command` fail closed。
-4. **下一步：resolved input 与执行边界闭合**：将 resolved-input digest、config revision
-   和 local confirmation 绑定，再建立可靠、可审计的 outcome/runner 边界并接入受限的
-   `command.result`；最终 resolver 仍须做 root 授权、deny/reparse/final identity，launcher
-   仍须检查 Windows UTF-16/escaping。`cmd`、PowerShell 或其它 shell/interpreter 方案在此
-   边界前必须明确闭合；在完成前不执行 `fixed_command`，不注册 MCP。
+4. **下一步：fixed typed input 的本地 prepare/confirm 与执行边界闭合**：为
+   `fixed_command` 增加仅供本地调用方使用的 typed runtime input prepare/confirm 流程，将
+   最终 resolved-input digest、config revision 与一次性 local confirmation 绑定，并让
+   commandexec 只接收该绑定结果；version-probe 已有的 digest/outcome/`command.result` 接线
+   不能被误认为 fixed_command 已开放。最终 resolver 仍须做 root 授权、deny/reparse/final
+   identity，launcher 仍须检查 Windows UTF-16/escaping；在这些硬门完成前保持
+   `fixed_command` fail closed，不执行、不注册 MCP。
 5. **后续：真实 WFP adapter**：基于受审查的 `fwpuclnt.dll` user-mode ABI 实现动态会话级
    WFP 过滤器，覆盖上述八个固定 family 以及 loopback/适用的 identity 绑定；不创建持久
    Windows Firewall 规则，未能证明的状态 fail closed。该 adapter 尚不能直接接入当前
@@ -334,8 +345,9 @@ contract/fake、R4-NET-02 固定 8-family opaque plan/跨平台 DisabledBackend 
    writable/mapped handle、IPv4/IPv6、DNS/proxy、existing flow、child process、crash/restart
    和撤权；`LockFileEx` 不能替代 mapped-view 防护。
 9. **CLI/supervisor 生产接线与剩余 audit integration**：把 local commandexec 接入正式
-   生命周期，并在 sink `degraded` 或网络状态不确定时由 supervisor 阻断新的执行；可靠 outcome
-   具备后再发出 `command.result`。审计不得写入 argv、env、输出、路径或密钥。
+   生命周期，并在 sink `degraded` 或网络状态不确定时由 supervisor 阻断新的执行；将已有
+   `ProcessOutcome`→`command.result` 本地接线纳入正式生命周期，补齐异常、恢复和丢失事件策略。
+   审计不得写入 argv、env、输出、路径或密钥。
 
 此外仍需 Unix fd-based launcher、签名/Authenticode 校验、Windows 本地手测证据和独立审查。
 验收：替换/脚本/wrapper/环境注入/子进程/超时/网络测试通过；无法证明的 OS 状态 fail
@@ -366,11 +378,14 @@ closed。停止条件：network deny 无法证明、profile/bridge 未安全接�
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；R5 与 R6 可在 R4 通过后分别推进；R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据。
 
-现在做：先保持远程能力关闭，完成 resolved-input digest、revision、local confirmation 的绑定，
-并闭合可靠 outcome/runner 边界后再接 `command.result`。再按 WFP adapter → 低权限 broker/service
-→ suspended Job integration → VM identity/network adversarial tests → CLI/supervisor 生产接线推进
-R4。自动化检查先行；本轮尚未做 Windows 手工、网页或网络测试。硬门全部通过前保持 MCP
-`run_probe` 不注册。
+现在做：先保持远程能力关闭，推进 `fixed_command` typed input 的本地 prepare/confirm，完成
+可信 path resolver、root 授权、deny/reparse/final identity 和 Windows UTF-16/escaping 边界；
+version-probe 已完成的 resolved-input digest、revision、confirmation v2、结构化 outcome 和
+`command.result` 本地接线作为可复用基础，但不能据此开放 fixed 执行。继续禁止 cmd、PowerShell
+及其它 shell/interpreter 间接路径；fixed MCP execution 仍不注册。随后按 WFP adapter → 低权限
+broker/service → suspended Job integration → VM identity/network adversarial tests →
+CLI/supervisor 生产接线推进 R4。自动化检查先行；本轮尚未做 Windows 手工、网页、Tunnel 或
+网络测试。硬门全部通过前保持 MCP `run_probe` 不注册。
 R1/R2/R3 的读取、搜索和无进程环境能力继续按既有边界演进。日志、审计和资源预算从 R1 起成为基础设施。
 
 暂不做：MCP `run_probe`、raw command line、Shell、allow_any_suffix、模型自定义 args/env/cwd/timeout、未经 network deny/生产接线/SHA256 硬门的 `codex -v`、把 root 直接交给 rg、默认开启 index、统一 workspace_query、自动执行项目脚本、GUI 绕过后端权限以及任何写入能力。

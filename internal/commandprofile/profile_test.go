@@ -330,3 +330,153 @@ func TestFixedCommandSlotDataIsDeeplyImmutable(t *testing.T) {
 		t.Fatalf("slot data was not deeply copied: %#v", got)
 	}
 }
+
+func TestResolvedInputDigestIsDeterministicAndImmutable(t *testing.T) {
+	profile, err := New(validSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := profile.ResolveInput("short", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := profile.ResolveInput("short", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Digest()) != 64 || first.Digest() != strings.ToLower(first.Digest()) || first.Digest() != second.Digest() {
+		t.Fatalf("unexpected deterministic digest: %q vs %q", first.Digest(), second.Digest())
+	}
+	argv := first.Argv()
+	argv[0] = "changed"
+	if got := first.Argv(); !reflect.DeepEqual(got, []string{"-v"}) {
+		t.Fatalf("resolved input argv leaked mutable state: %#v", got)
+	}
+
+	changedVariant := validSpec()
+	changedVariant.Variants[0].Exact = []string{"--version"}
+	other, err := New(changedVariant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedInput, err := other.ResolveInput("short", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInput.Digest() == first.Digest() {
+		t.Fatal("argv token change did not change resolved input digest")
+	}
+
+	changedVariantID := validSpec()
+	changedVariantID.Variants[0].ID = "short_alt"
+	other, err = New(changedVariantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedInput, err = other.ResolveInput("short_alt", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInput.Digest() == first.Digest() {
+		t.Fatal("variant id change did not change resolved input digest")
+	}
+
+	changedIdentity := validSpec()
+	changedIdentity.Identity.SHA256 = strings.Repeat("b", 64)
+	other, err = New(changedIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedInput, err = other.ResolveInput("short", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInput.Digest() == first.Digest() {
+		t.Fatal("identity change did not change resolved input digest")
+	}
+
+	changedProfile := validSpec()
+	changedProfile.ID = "other_version"
+	other, err = New(changedProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedInput, err = other.ResolveInput("short", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInput.Digest() == first.Digest() {
+		t.Fatal("profile id change did not change resolved input digest")
+	}
+
+	changedKind := validSpec()
+	changedKind.Kind = KindFixedCommand
+	changedKind.Result = ResultSpec{Type: ResultExitStatus}
+	other, err = New(changedKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedInput, err = other.ResolveInput("short", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInput.Digest() == first.Digest() {
+		t.Fatal("profile kind change did not change resolved input digest")
+	}
+}
+
+func TestResolvedInputDigestSeparatesArgvBoundariesAndMetadata(t *testing.T) {
+	base := fixedCommandSpec()
+	base.Slots = nil
+	base.Variants = []VariantSpec{{ID: "same", Exact: []string{"ab", "c"}}}
+	profile, err := New(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := profile.ResolveInput("same", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.Variants[0].Exact = []string{"a", "bc"}
+	other, err := New(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := other.ResolveInput("same", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest() == second.Digest() {
+		t.Fatal("argv token boundary change did not change digest")
+	}
+	base.Variants[0].Exact = []string{"ab"}
+	other, err = New(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := other.ResolveInput("same", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest() == third.Digest() {
+		t.Fatal("argc change did not change digest")
+	}
+}
+
+func TestResolveVariantRemainsCompatibilityWrapper(t *testing.T) {
+	profile, err := New(validSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := profile.ResolveInput("long", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv, err := profile.ResolveVariant("long", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(argv, input.Argv()) {
+		t.Fatalf("compatibility wrapper argv = %#v, resolved input = %#v", argv, input.Argv())
+	}
+}

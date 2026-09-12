@@ -208,7 +208,14 @@ func startFixedProcess(ctx context.Context, path string, args []string, cwd stri
 		stderr: stderr,
 		wait:   state.wait,
 		kill:   state.kill,
-		close:  state.close,
+		close: func() {
+			// Closing the readers is safe after the capture goroutines have
+			// completed and also makes the ownership explicit if a future
+			// caller closes a process during cleanup.
+			_ = stdout.Close()
+			_ = stderr.Close()
+			state.close()
+		},
 	}, nil
 }
 
@@ -255,23 +262,27 @@ func configureKillOnClose(job windows.Handle) error {
 	return err
 }
 
-func (state *windowsProcess) wait() error {
+func (state *windowsProcess) wait() (int64, error) {
 	state.mu.Lock()
 	process := state.process
 	closed := state.closed
 	state.mu.Unlock()
 	if closed || process == windows.InvalidHandle {
-		return ErrUnavailable
+		return 0, ErrUnavailable
 	}
 	result, err := windows.WaitForSingleObject(process, windows.INFINITE)
 	if err != nil || result != windows.WAIT_OBJECT_0 {
-		return ErrUnavailable
+		return 0, ErrUnavailable
 	}
 	var exitCode uint32
-	if err := windows.GetExitCodeProcess(process, &exitCode); err != nil || exitCode != 0 {
-		return ErrUnavailable
+	if err := windows.GetExitCodeProcess(process, &exitCode); err != nil {
+		return 0, ErrUnavailable
 	}
-	return nil
+	// A non-zero natural exit is still a valid process outcome. The caller
+	// decides whether a prior timeout/cancel/output-limit termination means
+	// this code must be discarded; wait itself must not turn it into a generic
+	// unavailable error.
+	return int64(exitCode), nil
 }
 
 func (state *windowsProcess) kill() error {

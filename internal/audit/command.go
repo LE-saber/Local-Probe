@@ -19,6 +19,7 @@ type CommandContext struct {
 type CommandResult struct {
 	ExitCode    *int64
 	TimedOut    bool
+	Cancelled   bool
 	DurationMS  int64
 	StdoutBytes int64
 	StderrBytes int64
@@ -58,9 +59,10 @@ func (r *CommandRecorder) RecordAdmission(ctx CommandContext) error {
 	}, false)
 }
 
-// RecordStart records the start of an already admitted command. It is kept
-// separate from admission so a caller can distinguish policy acceptance from
-// an actual process launch.
+// RecordStart records dispatch intent for an already admitted command,
+// immediately before the launcher is invoked. It is separate from admission
+// but is not proof that the operating system created or resumed a process;
+// command.result records the observable terminal outcome.
 func (r *CommandRecorder) RecordStart(ctx CommandContext) error {
 	if err := validateCommandContext(ctx, true, true); err != nil {
 		return err
@@ -95,17 +97,30 @@ func (r *CommandRecorder) RecordResult(ctx CommandContext, result CommandResult)
 
 	outcome := OutcomeSucceeded
 	errorCode := normalizeCommandError(result.ErrorCode)
+	if err := validateExplicitResultCode(result, errorCode, ctx.Network); err != nil {
+		return err
+	}
 	switch {
 	case result.TimedOut:
 		outcome = OutcomeFailed
 		errorCode = "deadline_exceeded"
+	case result.Cancelled:
+		outcome = OutcomeFailed
+		errorCode = "cancelled"
 	case result.ExitCode == nil:
-		return ErrInvalidEvent
+		if result.ErrorCode == "" || !validNoExitResultCode(errorCode) {
+			return ErrInvalidEvent
+		}
+		outcome = OutcomeFailed
 	case *result.ExitCode != 0:
 		outcome = OutcomeFailed
-		if result.ErrorCode == "" || errorCode == "unavailable" || errorCode == "deadline_exceeded" {
-			errorCode = "child_exit"
-		}
+		// A natural non-zero exit is represented by the exit code itself.
+		// Ignore any caller text or contradictory category rather than writing
+		// it to the audit record.
+		errorCode = "child_exit"
+	case result.ErrorCode == "invalid_output":
+		outcome = OutcomeFailed
+		errorCode = "invalid_output"
 	case ctx.Network != NetworkEnforcementVerified:
 		outcome = OutcomeDegraded
 		errorCode = "unavailable"
@@ -129,10 +144,48 @@ func (r *CommandRecorder) RecordResult(ctx CommandContext, result CommandResult)
 		IdentityDigest:     ctx.IdentityDigest,
 		ExitCode:           cloneInt64Pointer(result.ExitCode),
 		TimedOut:           result.TimedOut,
+		Cancelled:          result.Cancelled,
 		CommandBytes:       CommandBytes{Stdout: result.StdoutBytes, Stderr: result.StderrBytes},
 		NetworkEnforcement: ctx.Network,
 	}
 	return r.emit(event, false)
+}
+
+func validateExplicitResultCode(result CommandResult, normalized string, network NetworkEnforcement) error {
+	if result.TimedOut {
+		if result.ErrorCode != "" && (!validErrorCode(result.ErrorCode) || normalized != "deadline_exceeded") {
+			return ErrInvalidEvent
+		}
+		return nil
+	}
+	if result.Cancelled {
+		if result.ErrorCode != "" && (!validErrorCode(result.ErrorCode) || normalized != "cancelled") {
+			return ErrInvalidEvent
+		}
+		return nil
+	}
+	if result.ExitCode == nil {
+		if normalized == "deadline_exceeded" || normalized == "cancelled" {
+			return ErrInvalidEvent
+		}
+		if result.ErrorCode != "" && validErrorCode(result.ErrorCode) && !validNoExitResultCode(normalized) {
+			return ErrInvalidEvent
+		}
+		return nil
+	}
+	if *result.ExitCode == 0 {
+		if result.ErrorCode == "invalid_output" {
+			return nil
+		}
+		if validErrorCode(result.ErrorCode) && (result.ErrorCode != "unavailable" || network == NetworkEnforcementVerified) {
+			return ErrInvalidEvent
+		}
+		return nil
+	}
+	if validErrorCode(result.ErrorCode) && result.ErrorCode != "child_exit" {
+		return ErrInvalidEvent
+	}
+	return nil
 }
 
 // RecordReject records a command admission or policy rejection as a security
@@ -232,7 +285,10 @@ func validateCommandResult(value CommandResult) error {
 	if value.StdoutBytes > maxCounter-value.StderrBytes {
 		return ErrInvalidEvent
 	}
-	if value.TimedOut && value.ExitCode != nil {
+	if value.TimedOut && value.Cancelled {
+		return ErrInvalidEvent
+	}
+	if (value.TimedOut || value.Cancelled) && value.ExitCode != nil {
 		return ErrInvalidEvent
 	}
 	if value.ExitCode != nil && (*value.ExitCode < 0 || uint64(*value.ExitCode) > uint64(^uint32(0))) {
@@ -246,6 +302,13 @@ func normalizeCommandError(value string) string {
 		return value
 	}
 	return "unavailable"
+}
+
+func validNoExitResultCode(value string) bool {
+	return oneOf(value,
+		"invalid_input", "not_found", "rejected_executable", "identity_changed",
+		"output_limit", "unavailable", "invalid_output", "hash_mismatch", "hash_limit",
+		"unsupported_platform")
 }
 
 func cloneInt64Pointer(value *int64) *int64 {

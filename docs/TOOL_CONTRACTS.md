@@ -334,29 +334,41 @@ literal/typed-slot 模板，slot 限定为 `enum`、`bounded_integer`、`root_re
 配置解析会做 variant/slot/root ID 交叉校验；纯 `ResolveVariant` 不执行命令。路径使用 `/` 规范，
 最多 4096 字节，拒绝 Windows 保留名/非法字符，并通过可信 resolver 对同一 slot 单次解析复用结果；resolved
 argv 受 32767 字节保守预算。`internal/probe` 仍从同一最终映像 guard handle 计算并比较摘要，
-并在 CreateProcess/resume 前复核执行期限。`internal/confirmation` 的 capability 是短期、一次性、
-绑定 connection/profile/revision/command/variant/request nonce 的 opaque 值；它不能从 MCP JSON
-中的布尔值、文本或伪造 token 产生。`allow_any_suffix`、raw command、任意 args/env/cwd、
-timeout、把 `.cmd/.bat/.ps1` wrapper 直接配置为 executable，以及模型修改 profile 均被拒绝；
-通过 `.exe` 解释器间接执行脚本的策略仍须在启用 `fixed_command` 前闭合。
+并在 CreateProcess/resume 前复核执行期限。`ResolveInput` 由可信本地调用方使用，返回不可变的
+resolved argv 和 canonical resolved-input digest；digest 对 profile/种类/variant、固定 identity
+和带边界的完整 argv 做域分离、长度前缀编码。它不是 path/argv 的审计输出，也不替代最终
+resolver 的 root 授权与 launcher 检查。`internal/confirmation` 的 capability 是短期、一次性、
+绑定 connection/profile/revision/command/variant/request nonce 和 resolved-input digest 的
+confirmation v2 opaque 值；旧 v1 token fail closed。它不能从 MCP JSON 中的布尔值、文本或伪造
+token 产生。`allow_any_suffix`、raw command、任意 args/env/cwd、timeout、把 `.cmd/.bat/.ps1`
+wrapper 直接配置为 executable，以及模型修改 profile 均被拒绝；通过 `.exe` 解释器间接执行脚本
+的策略仍须在启用 `fixed_command` 前闭合。
 
 `config.Store.AcquireRevisionLease` 与 `internal/commandexec` 提供本地 fail-closed bridge：
-对当前可执行的 profile，先持有 profile revision lease，检查 developer/network admission，再消费
-一次性 confirmation，最后由可信 profile 构造 probe descriptor/policy。对 `fixed_command`，当前
-`Executor` 在 confirmation、admission、start 和 runner 之前直接返回 `unsupported_profile`，
-因此该配置/解析增量没有新增执行能力。`Executor` 要求调用方提供 `AuditRecorder`：拒绝路径同步
-记录 `command.reject`；成功准入和确认消费后分别将 `command.admission`、`command.start` 送入
-有界异步队列。只有即时校验或入队错误会 fail closed、不启动 probe；后续磁盘写失败只标记
-`degraded`，尚待 supervisor 阻断新执行，不能声称每条事件都在启动前持久化。审计上下文不包含
-path、argv、env、output 或 token。当前 probe 尚未提供可靠完整 outcome，因此 `command.result`
-仍未接线。`commandprofile.EnforcementCapability` 当前没有生产铸造器，因此默认拒绝；bridge
-尚未接入 CLI/supervisor/MCP。配置层已有的 pre-open writable handle 或 mapped view 仍是残余风险；
-`LockFileEx` 的 byte-range lock 不约束 mapped view，不能作为完整修复。
+对当前可执行的 version-probe profile，先持有 profile revision lease，解析 `ResolvedInput`，
+检查 developer/network admission，再消费绑定 digest+revision 的一次性 confirmation，最后由可信
+profile 构造 probe descriptor/policy。`ProcessOutcome` 是 path-free 的结构化结果：自然结束时保留
+真实 exit code，timeout/cancel/output-limit 不合成 exit code，并只报告有界 duration 与 captured-byte
+计数；原始输出、path、argv、env 不进入 outcome。local commandexec 在每次执行尝试后映射该
+outcome 并记录 `command.result`。对 `fixed_command`，typed runtime values 尚未进入 Request 或
+执行/confirmation 链；当前 `Executor` 仍在 confirmation、admission、start 和 runner 之前直接
+返回 `unsupported_profile`，因此该配置/解析增量没有新增 fixed 执行能力。
 
-下一增量绑定 resolved-input digest、config revision 与 local confirmation，并闭合可靠 outcome/runner
-边界后再接入 `command.result`；最终 resolver 仍须重新执行 root 授权、deny/reparse/final identity，
-launcher 仍须做 Windows UTF-16/escaping 检查。`cmd`、PowerShell 及其它 shell/interpreter 方案也
-必须在执行前闭合；该路线不开放 raw command、arbitrary shell 或任意参数数组。
+`Executor` 要求调用方提供 `AuditRecorder`：拒绝路径同步记录 `command.reject`；成功准入和确认消费
+后分别将 `command.admission`、`command.start` 送入有界异步队列。`command.start` 表示确认后的
+launch-dispatch intent，不是操作系统已经创建/恢复进程的证明。只有即时校验或入队错误会 fail
+closed、不启动 probe；结果审计失败发生在进程尝试之后，会返回稳定 audit failure，不伪造新的
+reject。后续磁盘写失败只标记 `degraded`，尚待 supervisor 阻断新执行，不能声称每条事件都在启动前
+持久化。审计上下文不包含 path、argv、env、output 或 token。`commandprofile.EnforcementCapability`
+当前没有生产铸造器，因此默认拒绝；bridge 尚未接入 CLI/supervisor/MCP。配置层已有的 pre-open
+writable handle 或 mapped view 仍是残余风险；`LockFileEx` 的 byte-range lock 不约束 mapped view，
+不能作为完整修复。
+
+下一增量针对 `fixed_command` 增加仅供本地调用方使用的 typed input prepare/confirm 流程：typed
+runtime values 先经可信 resolver 完成 root 授权、deny/reparse/final identity，再构造最终 argv 和
+digest，绑定 config revision 与一次性 local confirmation。launcher 仍须做 Windows UTF-16/escaping
+检查；`cmd`、PowerShell 及其它 shell/interpreter 方案继续在执行边界外，不能由模板间接引入。完成
+这些硬门前不执行 `fixed_command`，不注册 fixed MCP execution。
 
 `internal/networkguard` 已完成 NET-01 platform-independent contract/fake：每次操作使用不可
 序列化的独立 lease/capability/run handle，要求完整 IPv4/IPv6 outbound/inbound、bind/listen、
@@ -388,7 +400,7 @@ session，不安装 filter，不启动进程，不修改 Windows Firewall/WFP，
   WFP/Windows Firewall，也不等于 production network deny；没有真实 `fwpuclnt.dll`/WFP ABI
   adapter、dynamic session、filter install、低权限 broker/service、管理员权限/ACL 流程或
   capability 生产铸造器时 profile 必须拒绝。设计见 [`docs/R4_WINDOWS_NETWORK_DENY.md`](R4_WINDOWS_NETWORK_DENY.md)。
-- local commandexec bridge 已把 profile 接到 `probe.AuditExecutable`/`ToolVersionWithPolicy`，
+- local commandexec bridge 已把 profile 接到 `probe.AuditExecutable`/`ToolVersionWithPolicyOutcome`，
   但 CLI/supervisor 尚未建立其生产生命周期，不能把它描述成完整 runtime wiring。当前 probe
   内部直接创建并 resume 目标进程，尚未交给 broker 持有挂起进程/Job/WFP lease 的统一所有权，
   所以 R4-NET-02 不能提前接入。
@@ -398,8 +410,8 @@ session，不安装 filter，不启动进程，不修改 Windows Firewall/WFP，
   `command.reject` 的 audit.v2 producers。R4-AUDIT-01 已接入 local commandexec：拒绝路径同步
   发出 `command.reject`，成功路径将 `command.admission`/`command.start` 有界异步入队；即时
   校验/入队错误 fail closed，后续落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行。
-  当前 probe 没有可靠完整 outcome，`command.result` 尚未接线；producer 不写入 path、argv、env、
-  output 或 token，CLI/supervisor 生产接线仍未完成。
+  local commandexec 已把 path-free 的 `ProcessOutcome` 映射到 `command.result`；producer 不写入
+  path、argv、env、output 或 token，CLI/supervisor 生产接线仍未完成。
 - MCP 没有 `run_probe` 注册、输入/输出 schema 或 confirmation 流程。ChatGPT、Cloudflare
   Tunnel 和其它远程入口继续不能启动 probe、选择 command profile 或传递命令参数。
 
@@ -419,9 +431,11 @@ CLI 已接入本地 typed JSONL audit sink；当前 sink 统一使用 `local-pro
 
 command producers 固定为 `command.admission`、`command.start`、`command.result` 和
 `command.reject`。它们只接受受限 command/variant selector、lowercase identity digest、
-exit/timeout、stdout/stderr 字节计数和 network enforcement 状态；不会写入路径、完整 argv/env、
-输出正文、请求正文或密钥。R4-AUDIT-01 已将 admission/start/reject 接到 local commandexec；
-`command.result` 因 probe 尚无可靠完整 outcome 仍未接线。
+exit/timeout/cancelled、stdout/stderr 字节计数和 network enforcement 状态；不会写入路径、完整
+argv/env、输出正文、请求正文或密钥。R4-AUDIT-01 已将 admission/start/reject 接到 local
+commandexec；version-probe 的结构化 `ProcessOutcome` 也已在本地 bridge 映射到 `command.result`。
+`command.start` 仍表示 launch-dispatch intent，不是 OS started proof；CLI/supervisor 生产接线
+尚未完成。
 
 MCP 适配层当前记录 `auth.accept`、`mcp.list`、`mcp.call` 和 `mcp.result`。调用事件只记录
 受校验的 action（工具名或 `unknown`）及计数/预算字段；参数、请求正文、响应正文、文件路径、
@@ -429,7 +443,7 @@ token、JWT、key 和错误 message 均不写入。typed error envelope 只提�
 未知或格式错误的错误结果统一记为 `unavailable`；401/403 不会再由内部 MCP 事件重复记一条
 security reject。
 
-尚未完成的部分必须单独看待：command.result 尚未接入实际执行 outcome，仍没有 network-tunnel、policy、
-fs-search 事件生产者，
+尚未完成的部分必须单独看待：`command.result` 已接入本地 version-probe outcome，但仍没有
+CLI/supervisor 的正式生命周期接线、network-tunnel、policy、fs-search 事件生产者，
 也没有运行时 sink 故障后的 fail-closed ingress、全局并发/线级配额或管理变更审计。audit 的
 `Stats.Degraded` 可供后续 supervisor/GUI 读取，但目前不会自动拒绝已启动 listener 的新请求。

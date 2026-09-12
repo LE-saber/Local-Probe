@@ -7,7 +7,7 @@ import (
 type managedProcess struct {
 	stdout ioReadCloser
 	stderr ioReadCloser
-	wait   func() error
+	wait   func() (int64, error)
 	kill   func() error
 	close  func()
 }

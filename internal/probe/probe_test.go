@@ -25,7 +25,7 @@ func TestMain(m *testing.M) {
 	helperDir = dir
 	modes := []string{
 		"fake-node", "fake-git", "fake-python", "fake-env", "fake-overoutput",
-		"fake-stderroveroutput", "fake-path-output", "fake-timeout",
+		"fake-stderroveroutput", "fake-path-output", "fake-timeout", "fake-exit",
 	}
 	for _, mode := range modes {
 		name := mode
@@ -102,6 +102,22 @@ func TestCancelledContextDoesNotStartProcess(t *testing.T) {
 	}
 }
 
+func TestVersionOutcomeCancelledHasNoSyntheticExit(t *testing.T) {
+	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-node"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, outcome, err := ToolVersionWithPolicyOutcome(ctx, descriptor, []string{"--version"}, DefaultVersionExecutionPolicy())
+	if !errors.Is(err, ErrCancelled) {
+		t.Fatalf("want ErrCancelled, got %v", err)
+	}
+	if outcome.ExitCode != nil || outcome.TimedOut || !outcome.Cancelled || outcome.ErrorCode != CodeCancelled {
+		t.Fatalf("cancelled outcome = %#v", outcome)
+	}
+}
+
 func TestFixedVersionArgumentsAndParsers(t *testing.T) {
 	requireProcessExecution(t)
 	tests := []struct {
@@ -128,6 +144,39 @@ func TestFixedVersionArgumentsAndParsers(t *testing.T) {
 				t.Fatalf("unexpected result: %+v", got)
 			}
 		})
+	}
+}
+
+func TestVersionOutcomePreservesNaturalExitCode(t *testing.T) {
+	requireProcessExecution(t)
+	descriptor, err := AuditExecutable(ToolVersionGeneric, helperPath("fake-exit"))
+	if err != nil {
+		t.Fatalf("AuditExecutable: %v", err)
+	}
+	result, outcome, err := ToolVersionWithPolicyOutcome(context.Background(), descriptor, []string{"--version"}, DefaultVersionExecutionPolicy())
+	if !errors.Is(err, ErrChildExit) {
+		t.Fatalf("want ErrChildExit, got %v", err)
+	}
+	if result.Version != "" {
+		t.Fatalf("non-zero result exposed version: %#v", result)
+	}
+	if outcome.ExitCode == nil || *outcome.ExitCode != 7 || outcome.ErrorCode != CodeChildExit || outcome.TimedOut || outcome.Cancelled {
+		t.Fatalf("natural non-zero outcome = %#v", outcome)
+	}
+}
+
+func TestVersionOutcomePreservesZeroExitCode(t *testing.T) {
+	requireProcessExecution(t)
+	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-node"))
+	if err != nil {
+		t.Fatalf("AuditExecutable: %v", err)
+	}
+	result, outcome, err := ToolVersionWithPolicyOutcome(context.Background(), descriptor, []string{"--version"}, DefaultVersionExecutionPolicy())
+	if err != nil {
+		t.Fatalf("ToolVersionWithPolicyOutcome: %v", err)
+	}
+	if result.Version != "1.2.3" || outcome.ExitCode == nil || *outcome.ExitCode != 0 || outcome.ErrorCode != "" || outcome.TimedOut || outcome.Cancelled || outcome.StdoutBytes == 0 {
+		t.Fatalf("zero-exit outcome = %#v, result=%#v", outcome, result)
 	}
 }
 
@@ -164,6 +213,21 @@ func TestOutputLimitsAreBounded(t *testing.T) {
 	}
 }
 
+func TestVersionOutcomeOutputLimitHasNoSyntheticExit(t *testing.T) {
+	requireProcessExecution(t)
+	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-overoutput"))
+	if err != nil {
+		t.Fatalf("AuditExecutable: %v", err)
+	}
+	_, outcome, err := ToolVersionWithPolicyOutcome(context.Background(), descriptor, []string{"--version"}, DefaultVersionExecutionPolicy())
+	if !errors.Is(err, ErrOutputLimit) {
+		t.Fatalf("want ErrOutputLimit, got %v", err)
+	}
+	if outcome.ExitCode != nil || outcome.TimedOut || outcome.Cancelled || outcome.ErrorCode != CodeOutputLimit || outcome.StdoutBytes != maxStdout {
+		t.Fatalf("output limit outcome = %#v", outcome)
+	}
+}
+
 func TestTimeoutKillsProcessTree(t *testing.T) {
 	requireProcessExecution(t)
 	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-timeout"))
@@ -177,6 +241,49 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("timeout was not bounded: %s", elapsed)
+	}
+}
+
+func TestVersionOutcomeTimeoutHasNoSyntheticExit(t *testing.T) {
+	requireProcessExecution(t)
+	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-timeout"))
+	if err != nil {
+		t.Fatalf("AuditExecutable: %v", err)
+	}
+	_, outcome, err := ToolVersionWithPolicyOutcome(context.Background(), descriptor, []string{"--version"}, DefaultVersionExecutionPolicy())
+	if !errors.Is(err, ErrDeadlineExceeded) {
+		t.Fatalf("want ErrDeadlineExceeded, got %v", err)
+	}
+	if outcome.ExitCode != nil || !outcome.TimedOut || outcome.Cancelled || outcome.ErrorCode != CodeDeadlineExceeded {
+		t.Fatalf("timeout outcome = %#v", outcome)
+	}
+}
+
+func TestVersionOutcomeCancellationHasNoSyntheticExit(t *testing.T) {
+	requireProcessExecution(t)
+	descriptor, err := AuditExecutable(ToolNode, helperPath("fake-timeout"))
+	if err != nil {
+		t.Fatalf("AuditExecutable: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type probeResult struct {
+		outcome ProcessOutcome
+		err     error
+	}
+	done := make(chan probeResult, 1)
+	go func() {
+		_, outcome, err := ToolVersionWithPolicyOutcome(ctx, descriptor, []string{"--version"}, DefaultVersionExecutionPolicy())
+		done <- probeResult{outcome: outcome, err: err}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	result := <-done
+	if !errors.Is(result.err, ErrCancelled) {
+		t.Fatalf("want ErrCancelled, got %v", result.err)
+	}
+	if result.outcome.ExitCode != nil || result.outcome.TimedOut || !result.outcome.Cancelled || result.outcome.ErrorCode != CodeCancelled {
+		t.Fatalf("cancelled outcome = %#v", result.outcome)
 	}
 }
 

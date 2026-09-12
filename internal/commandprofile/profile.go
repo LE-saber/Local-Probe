@@ -6,6 +6,8 @@
 package commandprofile
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -117,6 +119,24 @@ type SlotValue struct {
 // validates the root-relative syntax and treats the returned string as one
 // argv token.
 type PathResolver func(rootID, relative string) (string, error)
+
+// ResolvedInput is the immutable, canonical argv input for one profile
+// variant. The argv slice is kept private so callers cannot mutate the value
+// after it has been bound to a confirmation capability. Digest is a
+// domain-separated SHA-256 over the profile identity and every argv token;
+// it is intended only for confirmation/internal commitment and is not a
+// default audit value because correlation can reveal information about input.
+type ResolvedInput struct {
+	argv   []string
+	digest string
+}
+
+// Argv returns a defensive copy of the resolved argv tokens.
+func (r ResolvedInput) Argv() []string { return append([]string(nil), r.argv...) }
+
+// Digest returns the lowercase hexadecimal SHA-256 of the canonical resolved
+// input. It contains no raw argv token and should not be logged by default.
+func (r ResolvedInput) Digest() string { return r.digest }
 
 // DeveloperMode is local configuration.  The zero value is deliberately
 // disabled and denies every connection.
@@ -747,20 +767,21 @@ func templateFromSpecs(values []TemplateItemSpec) []templateItem {
 	return out
 }
 
-// ResolveVariant validates the selected variant's typed inputs and returns a
-// fresh argv slice. It never starts a process or performs OS path lookup.
+// ResolveInput validates the selected variant's typed inputs and returns an
+// immutable resolved argv plus the digest that binds that exact input to this
+// profile identity. It never starts a process or performs OS path lookup.
 // Path authorization and conversion to one argv token are delegated to the
 // trusted resolver supplied by the local caller.
-func (p Profile) ResolveVariant(variantID string, values map[string]SlotValue, resolver PathResolver) ([]string, error) {
+func (p Profile) ResolveInput(variantID string, values map[string]SlotValue, resolver PathResolver) (ResolvedInput, error) {
 	if err := validateProfile(p); err != nil {
-		return nil, err
+		return ResolvedInput{}, err
 	}
 	variant, ok := p.Variant(variantID)
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrVariantNotFound, variantID)
+		return ResolvedInput{}, fmt.Errorf("%w: %s", ErrVariantNotFound, variantID)
 	}
 	if len(values) > maxSlotsPerProfile {
-		return nil, fmt.Errorf("%w: too many values", ErrInvalid)
+		return ResolvedInput{}, fmt.Errorf("%w: too many values", ErrInvalid)
 	}
 	expected := make(map[string]Slot, len(variant.template))
 	for _, item := range variant.template {
@@ -776,17 +797,18 @@ func (p Profile) ResolveVariant(variantID string, values map[string]SlotValue, r
 	}
 	for slotID := range expected {
 		if _, ok := values[slotID]; !ok {
-			return nil, fmt.Errorf("%w: %s", ErrMissingSlotValue, slotID)
+			return ResolvedInput{}, fmt.Errorf("%w: %s", ErrMissingSlotValue, slotID)
 		}
 	}
 	for slotID := range values {
 		if _, ok := expected[slotID]; !ok {
-			return nil, fmt.Errorf("%w: %s", ErrExtraSlotValue, slotID)
+			return ResolvedInput{}, fmt.Errorf("%w: %s", ErrExtraSlotValue, slotID)
 		}
 	}
 
 	if len(variant.exact) != 0 {
-		return append([]string(nil), variant.exact...), nil
+		argv := append([]string(nil), variant.exact...)
+		return newResolvedInput(p, variantID, argv), nil
 	}
 	argv := make([]string, 0, len(variant.template))
 	resolvedSlots := make(map[string]string, len(expected))
@@ -801,7 +823,7 @@ func (p Profile) ResolveVariant(variantID string, values map[string]SlotValue, r
 			} else {
 				value, err := resolveSlot(slot, values[item.slot], resolver)
 				if err != nil {
-					return nil, fmt.Errorf("%w: slot %s", err, item.slot)
+					return ResolvedInput{}, fmt.Errorf("%w: slot %s", err, item.slot)
 				}
 				resolvedSlots[item.slot] = value
 				token = value
@@ -810,18 +832,58 @@ func (p Profile) ResolveVariant(variantID string, values map[string]SlotValue, r
 		}
 		if pathToken {
 			if err := validateResolvedPathToken(token); err != nil {
-				return nil, err
+				return ResolvedInput{}, err
 			}
 		} else if err := validateArgument(token, "resolved argv"); err != nil {
-			return nil, err
+			return ResolvedInput{}, err
 		}
 		totalBytes += len(token)
 		if totalBytes > maxResolvedArgvBytes {
-			return nil, fmt.Errorf("%w: resolved argv exceeds byte limit", ErrInvalid)
+			return ResolvedInput{}, fmt.Errorf("%w: resolved argv exceeds byte limit", ErrInvalid)
 		}
 		argv = append(argv, token)
 	}
-	return argv, nil
+	return newResolvedInput(p, variantID, argv), nil
+}
+
+// ResolveVariant is retained for callers that only need a defensive argv
+// copy. New confirmation and execution code should use ResolveInput so the
+// exact input digest is bound before authorization.
+func (p Profile) ResolveVariant(variantID string, values map[string]SlotValue, resolver PathResolver) ([]string, error) {
+	input, err := p.ResolveInput(variantID, values, resolver)
+	if err != nil {
+		return nil, err
+	}
+	return input.Argv(), nil
+}
+
+const resolvedInputDigestDomain = "local-probe/resolved-input/v1"
+
+func newResolvedInput(profile Profile, variantID string, argv []string) ResolvedInput {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(resolvedInputDigestDomain))
+	writeDigestField(hash, profile.id)
+	writeDigestField(hash, string(profile.kind))
+	writeDigestField(hash, variantID)
+	writeDigestField(hash, profile.identity.SHA256)
+	writeDigestUint64(hash, uint64(len(argv)))
+	for _, token := range argv {
+		writeDigestField(hash, token)
+	}
+	return ResolvedInput{argv: append([]string(nil), argv...), digest: hex.EncodeToString(hash.Sum(nil))}
+}
+
+func writeDigestField(hash interface{ Write([]byte) (int, error) }, value string) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = hash.Write(length[:])
+	_, _ = hash.Write([]byte(value))
+}
+
+func writeDigestUint64(hash interface{ Write([]byte) (int, error) }, value uint64) {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	_, _ = hash.Write(encoded[:])
 }
 
 func resolveSlot(slot Slot, value SlotValue, resolver PathResolver) (string, error) {

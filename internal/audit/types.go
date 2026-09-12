@@ -188,6 +188,7 @@ type Event struct {
 	IdentityDigest     string             `json:"-"`
 	ExitCode           *int64             `json:"-"`
 	TimedOut           bool               `json:"-"`
+	Cancelled          bool               `json:"-"`
 	CommandBytes       CommandBytes       `json:"-"`
 	NetworkEnforcement NetworkEnforcement `json:"-"`
 	Timestamp          time.Time          `json:"-"`
@@ -217,6 +218,7 @@ type wireEvent struct {
 	IdentityDigest     string             `json:"identity_digest,omitempty"`
 	ExitCode           *int64             `json:"exit_code,omitempty"`
 	TimedOut           bool               `json:"timed_out,omitempty"`
+	Cancelled          bool               `json:"cancelled,omitempty"`
 	Bytes              *CommandBytes      `json:"bytes,omitempty"`
 	NetworkEnforcement NetworkEnforcement `json:"network_enforcement,omitempty"`
 }
@@ -230,7 +232,7 @@ func toWireEvent(event Event, instanceID string) wireEvent {
 		DurationMS: event.DurationMS, Connection: event.ConnectionID, Profile: event.ProfileID,
 		Revision: event.ProfileRevision, Budget: event.Budget, CommandID: event.CommandID,
 		VariantID: event.VariantID, IdentityDigest: event.IdentityDigest, ExitCode: event.ExitCode,
-		TimedOut: event.TimedOut, Bytes: commandBytesPointer(event), NetworkEnforcement: event.NetworkEnforcement,
+		TimedOut: event.TimedOut, Cancelled: event.Cancelled, Bytes: commandBytesPointer(event), NetworkEnforcement: event.NetworkEnforcement,
 	}
 }
 
@@ -298,7 +300,7 @@ func validateCommandEvent(event Event) error {
 		return validateLegacyCommandExit(event)
 	}
 	if !isCommandEvent(event.EventType) {
-		if event.CommandID != "" || event.VariantID != "" || event.IdentityDigest != "" || event.ExitCode != nil || event.TimedOut || event.CommandBytes != (CommandBytes{}) || event.NetworkEnforcement != "" {
+		if event.CommandID != "" || event.VariantID != "" || event.IdentityDigest != "" || event.ExitCode != nil || event.TimedOut || event.Cancelled || event.CommandBytes != (CommandBytes{}) || event.NetworkEnforcement != "" {
 			return ErrInvalidEvent
 		}
 		return nil
@@ -336,7 +338,7 @@ func validateCommandEvent(event Event) error {
 		return ErrInvalidEvent
 	}
 	if event.EventType != EventCommandResult {
-		if event.ExitCode != nil || event.TimedOut || event.CommandBytes != (CommandBytes{}) {
+		if event.ExitCode != nil || event.TimedOut || event.Cancelled || event.CommandBytes != (CommandBytes{}) {
 			return ErrInvalidEvent
 		}
 	} else {
@@ -379,16 +381,34 @@ func isWarningOrHigher(value Severity) bool {
 }
 
 func validateCommandResultState(event Event) error {
+	if event.TimedOut && event.Cancelled {
+		return ErrInvalidEvent
+	}
 	if event.TimedOut {
 		if event.ExitCode != nil || event.Outcome != OutcomeFailed || event.ErrorCode != "deadline_exceeded" {
 			return ErrInvalidEvent
 		}
 		return nil
 	}
+	if event.Cancelled {
+		if event.ExitCode != nil || event.Outcome != OutcomeFailed || event.ErrorCode != "cancelled" {
+			return ErrInvalidEvent
+		}
+		return nil
+	}
 	if event.ExitCode == nil {
-		return ErrInvalidEvent
+		if event.Outcome != OutcomeFailed || !validNoExitResultCode(event.ErrorCode) {
+			return ErrInvalidEvent
+		}
+		return nil
 	}
 	if *event.ExitCode == 0 {
+		if event.ErrorCode == "invalid_output" {
+			if event.Outcome != OutcomeFailed {
+				return ErrInvalidEvent
+			}
+			return nil
+		}
 		if event.NetworkEnforcement == NetworkEnforcementVerified {
 			if event.Outcome != OutcomeSucceeded || event.ErrorCode != "" {
 				return ErrInvalidEvent
@@ -413,7 +433,7 @@ func validateLegacyCommandExit(event Event) error {
 	if event.Class != ClassNormal {
 		return ErrInvalidEvent
 	}
-	if event.ExitCode != nil || event.TimedOut || event.CommandBytes != (CommandBytes{}) {
+	if event.ExitCode != nil || event.TimedOut || event.Cancelled || event.CommandBytes != (CommandBytes{}) {
 		return ErrInvalidEvent
 	}
 	// Validate optional new metadata if a legacy producer starts supplying it,
@@ -542,5 +562,5 @@ func validErrorCode(value string) bool {
 	if validateAtom(value, 64) != nil {
 		return false
 	}
-	return oneOf(value, "invalid_request", "denied", "not_found", "unsupported_type", "unsupported_encoding", "stale_version", "budget_exhausted", "deadline_exceeded", "cancelled", "unavailable", "auth_failed", "connection_refused", "port_conflict", "config_invalid", "queue_full", "child_exit", "identity_changed", "output_limit")
+	return oneOf(value, "invalid_request", "denied", "not_found", "unsupported_type", "unsupported_encoding", "stale_version", "budget_exhausted", "deadline_exceeded", "cancelled", "unavailable", "auth_failed", "connection_refused", "port_conflict", "config_invalid", "queue_full", "child_exit", "identity_changed", "output_limit", "invalid_input", "rejected_executable", "invalid_output", "hash_mismatch", "hash_limit", "unsupported_platform")
 }

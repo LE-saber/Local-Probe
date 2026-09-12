@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +21,7 @@ import (
 )
 
 const (
-	tokenVersion  = byte(1)
+	tokenVersion  = byte(2)
 	macBytes      = sha256.Size
 	maxFieldBytes = 256
 	maxTokenBytes = 4096
@@ -38,14 +39,15 @@ var (
 
 // Request identifies exactly one local action authorization.  All fields are
 // required and are compared during Consume; a model cannot replace one of
-// them with a different command, profile or request nonce.
+// them with a different command, profile, resolved input or request nonce.
 type Request struct {
-	ConnectionID    string
-	ProfileID       string
-	ProfileRevision string
-	CommandID       string
-	VariantID       string
-	RequestNonce    string
+	ConnectionID        string
+	ProfileID           string
+	ProfileRevision     string
+	CommandID           string
+	VariantID           string
+	RequestNonce        string
+	ResolvedInputDigest string
 }
 
 // Capability is opaque.  Call String only when a trusted local API must pass
@@ -153,7 +155,13 @@ func (m *Manager) Consume(capability Capability, request Request) error {
 	if expiresAt <= now.UnixNano() {
 		return ErrExpired
 	}
-	if tokenRequest != request {
+	if tokenRequest.ConnectionID != request.ConnectionID ||
+		tokenRequest.ProfileID != request.ProfileID ||
+		tokenRequest.ProfileRevision != request.ProfileRevision ||
+		tokenRequest.CommandID != request.CommandID ||
+		tokenRequest.VariantID != request.VariantID ||
+		tokenRequest.RequestNonce != request.RequestNonce ||
+		subtle.ConstantTimeCompare([]byte(tokenRequest.ResolvedInputDigest), []byte(request.ResolvedInputDigest)) != 1 {
 		return ErrRequestMismatch
 	}
 	digest := sha256.Sum256(capability.raw)
@@ -189,11 +197,18 @@ func validateRequest(request Request) error {
 		{"command_id", request.CommandID},
 		{"variant_id", request.VariantID},
 		{"request_nonce", request.RequestNonce},
+		{"resolved_input_digest", request.ResolvedInputDigest},
 	}
 	for _, value := range values {
 		if value.value == "" || len(value.value) > maxFieldBytes || !utf8.ValidString(value.value) || strings.ContainsRune(value.value, 0) {
 			return fmt.Errorf("%w: invalid %s", ErrInvalid, value.field)
 		}
+	}
+	if len(request.ResolvedInputDigest) != sha256.Size*2 || request.ResolvedInputDigest != strings.ToLower(request.ResolvedInputDigest) {
+		return fmt.Errorf("%w: invalid resolved_input_digest", ErrInvalid)
+	}
+	if _, err := hex.DecodeString(request.ResolvedInputDigest); err != nil {
+		return fmt.Errorf("%w: invalid resolved_input_digest", ErrInvalid)
 	}
 	return nil
 }
@@ -202,12 +217,12 @@ func encodePayload(request Request, expiresAt int64) ([]byte, error) {
 	if err := validateRequest(request); err != nil {
 		return nil, err
 	}
-	payload := make([]byte, 0, 1+8+6*(2+maxFieldBytes))
+	payload := make([]byte, 0, 1+8+7*(2+maxFieldBytes))
 	payload = append(payload, tokenVersion)
 	var expiry [8]byte
 	binary.BigEndian.PutUint64(expiry[:], uint64(expiresAt))
 	payload = append(payload, expiry[:]...)
-	for _, field := range []string{request.ConnectionID, request.ProfileID, request.ProfileRevision, request.CommandID, request.VariantID, request.RequestNonce} {
+	for _, field := range []string{request.ConnectionID, request.ProfileID, request.ProfileRevision, request.CommandID, request.VariantID, request.RequestNonce, request.ResolvedInputDigest} {
 		if len(field) > 0xffff {
 			return nil, ErrInvalid
 		}
@@ -239,8 +254,8 @@ func decode(raw []byte) (payload []byte, request Request, expiresAt int64, mac [
 	}
 	expiresAt = int64(binary.BigEndian.Uint64(payload[1:9]))
 	position := 9
-	fields := make([]string, 0, 6)
-	for i := 0; i < 6; i++ {
+	fields := make([]string, 0, 7)
+	for i := 0; i < 7; i++ {
 		if position+2 > len(payload) {
 			return nil, Request{}, 0, nil, ErrInvalid
 		}
@@ -262,6 +277,7 @@ func decode(raw []byte) (payload []byte, request Request, expiresAt int64, mac [
 	request = Request{
 		ConnectionID: fields[0], ProfileID: fields[1], ProfileRevision: fields[2],
 		CommandID: fields[3], VariantID: fields[4], RequestNonce: fields[5],
+		ResolvedInputDigest: fields[6],
 	}
 	return payload, request, expiresAt, append([]byte(nil), mac...), nil
 }

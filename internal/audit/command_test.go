@@ -416,6 +416,88 @@ func TestCommandRecorderDowngradesUnverifiedResultAndRecordsTimeout(t *testing.T
 	}
 }
 
+func TestCommandRecorderRecordsNoExitTerminalOutcomes(t *testing.T) {
+	capture := &commandCapture{}
+	recorder := NewCommandRecorder(capture)
+	ctx := testCommandContext()
+	cases := []struct {
+		name       string
+		result     CommandResult
+		wantCode   string
+		wantCancel bool
+	}{
+		{name: "cancelled", result: CommandResult{Cancelled: true, ErrorCode: "cancelled", DurationMS: 4}, wantCode: "cancelled", wantCancel: true},
+		{name: "output limit", result: CommandResult{ErrorCode: "output_limit", StdoutBytes: 64}, wantCode: "output_limit"},
+		{name: "identity", result: CommandResult{ErrorCode: "identity_changed"}, wantCode: "identity_changed"},
+		{name: "start unavailable", result: CommandResult{ErrorCode: "unavailable"}, wantCode: "unavailable"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if err := recorder.RecordResult(ctx, test.result); err != nil {
+				t.Fatalf("RecordResult() = %v", err)
+			}
+			normal, _ := capture.snapshot()
+			event := normal[len(normal)-1]
+			if event.ExitCode != nil || event.Outcome != OutcomeFailed || event.ErrorCode != test.wantCode || event.Cancelled != test.wantCancel {
+				t.Fatalf("event = %#v", event)
+			}
+		})
+	}
+}
+
+func TestCommandRecorderRejectsAmbiguousTerminalOutcomes(t *testing.T) {
+	recorder := NewCommandRecorder(&commandCapture{})
+	ctx := testCommandContext()
+	cases := []CommandResult{
+		{TimedOut: true, Cancelled: true},
+		{Cancelled: true, ExitCode: int64Pointer(1)},
+		{TimedOut: true, ErrorCode: "cancelled"},
+		{Cancelled: true, ErrorCode: "output_limit"},
+		{ErrorCode: "deadline_exceeded"},
+		{ErrorCode: "cancelled"},
+		{ErrorCode: "child_exit"},
+		{ExitCode: int64Pointer(0), ErrorCode: "output_limit"},
+		{},
+	}
+	for i, result := range cases {
+		if err := recorder.RecordResult(ctx, result); !errors.Is(err, ErrInvalidEvent) {
+			t.Errorf("case %d: RecordResult() = %v, want ErrInvalidEvent", i, err)
+		}
+	}
+}
+
+func TestCommandRecorderDoesNotCopyNoExitErrorText(t *testing.T) {
+	capture := &commandCapture{}
+	recorder := NewCommandRecorder(capture)
+	secret := `C:\private\secret\tool.exe --token Bearer output-secret-123456`
+	if err := recorder.RecordResult(testCommandContext(), CommandResult{ErrorCode: secret}); err != nil {
+		t.Fatalf("RecordResult() = %v", err)
+	}
+	normal, _ := capture.snapshot()
+	if len(normal) != 1 || normal[0].ExitCode != nil || normal[0].ErrorCode != "unavailable" {
+		t.Fatalf("sanitized result = %#v", normal)
+	}
+}
+
+func TestCommandRecorderAcceptsProbeOutcomeErrorCodesWithoutExit(t *testing.T) {
+	recorder := NewCommandRecorder(&commandCapture{})
+	codes := []string{
+		"invalid_input", "not_found", "rejected_executable", "identity_changed",
+		"output_limit", "invalid_output",
+		"hash_mismatch", "hash_limit", "unsupported_platform", "unavailable",
+	}
+	for _, code := range codes {
+		t.Run(code, func(t *testing.T) {
+			if err := recorder.RecordResult(testCommandContext(), CommandResult{ErrorCode: code}); err != nil {
+				t.Fatalf("RecordResult(%q) = %v", code, err)
+			}
+		})
+	}
+	if err := recorder.RecordResult(testCommandContext(), CommandResult{ExitCode: int64Pointer(0), ErrorCode: "invalid_output"}); err != nil {
+		t.Fatalf("successful process with invalid output = %v", err)
+	}
+}
+
 func TestLegacyCommandExitWireValueIsPreserved(t *testing.T) {
 	dir := t.TempDir()
 	sink, err := New(testConfig(dir))

@@ -37,6 +37,9 @@ func main() {
 	case "fake-path-output":
 		workingDirectory, _ := os.Getwd()
 		fmt.Fprintln(os.Stdout, workingDirectory)
+	case "fake-exit":
+		fmt.Fprintln(os.Stdout, "1.2.3")
+		os.Exit(7)
 	case "fake-timeout":
 		if !child {
 			childCommand := exec.Command(os.Args[0], "child")

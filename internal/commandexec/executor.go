@@ -79,6 +79,7 @@ type Result struct {
 type AuditRecorder interface {
 	RecordAdmission(audit.CommandContext) error
 	RecordStart(audit.CommandContext) error
+	RecordResult(audit.CommandContext, audit.CommandResult) error
 	RecordReject(audit.CommandContext, string) error
 }
 
@@ -91,7 +92,7 @@ type Executor struct {
 	enforcement commandprofile.EnforcementCapability
 	audit       AuditRecorder
 	admit       func(commandprofile.Profile, commandprofile.DeveloperMode, string, commandprofile.EnforcementCapability) error
-	run         func(context.Context, commandprofile.Profile, commandprofile.Variant) (Result, error)
+	run         func(context.Context, commandprofile.Profile, commandprofile.Variant) (Result, probe.ProcessOutcome, error)
 }
 
 func New(binding Binding, mode commandprofile.DeveloperMode, confirmations *confirmation.Manager, enforcement commandprofile.EnforcementCapability, recorder AuditRecorder) (*Executor, error) {
@@ -113,9 +114,10 @@ func New(binding Binding, mode commandprofile.DeveloperMode, confirmations *conf
 }
 
 // Execute performs admission, records the admission, consumes the one-time
-// local confirmation, records the start, then asks the Windows probe to launch
-// the exact profile executable and variant. It never accepts an executable,
-// argv, cwd, environment or timeout from req.
+// local confirmation, records launch-dispatch intent, then asks the Windows
+// probe to launch the exact profile executable and variant and records its
+// terminal outcome. It never accepts an executable, argv, cwd, environment or
+// timeout from req.
 func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	var result Result
 	if e == nil || e.confirm == nil || e.binding.AcquireRevision == nil || e.audit == nil || e.admit == nil || e.run == nil {
@@ -129,14 +131,6 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	if req.CommandID != profile.ID() {
 		return e.reject(initialAudit, ErrInvalidRequest, "invalid_request")
 	}
-	// fixed_command is configuration/resolve-only in this increment. Typed
-	// slot values are not represented in Request or bound into confirmation;
-	// a future executor must bind a resolved-input digest and profile revision
-	// before this gate can be relaxed. Reject before consuming confirmation or
-	// invoking the runner so a fixed profile cannot execute accidentally.
-	if profile.Kind() != commandprofile.KindVersionProbe {
-		return e.reject(initialAudit, fmt.Errorf("%w: unsupported_profile", ErrNotAdmitted), "unsupported_profile")
-	}
 	variant, ok := profile.Variant(req.VariantID)
 	if !ok {
 		return e.reject(initialAudit, ErrInvalidRequest, "invalid_request")
@@ -146,6 +140,22 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 		return e.reject(e.auditContext(req, profile, e.networkState()), ErrProfileChanged, "stale_version")
 	}
 	defer release()
+
+	// fixed_command is configuration/resolve-only in this increment. Typed
+	// slot values are not represented in Request, so reject it after selecting
+	// the bound variant/revision but before admission, confirmation, start or
+	// runner. This keeps the future execution boundary explicit and fail
+	// closed.
+	if profile.Kind() != commandprofile.KindVersionProbe {
+		return e.reject(e.auditContext(req, profile, e.networkState()), fmt.Errorf("%w: unsupported_profile", ErrNotAdmitted), "unsupported_profile")
+	}
+	// Resolve while the revision lease is held. The resulting digest is bound
+	// into the one-time local confirmation below; no model-supplied argv or
+	// typed value participates in this version-probe request.
+	resolvedInput, err := profile.ResolveInput(req.VariantID, nil, nil)
+	if err != nil {
+		return e.reject(e.auditContext(req, profile, e.networkState()), ErrInvalidRequest, "invalid_request")
+	}
 
 	// The profile/network gate is checked before the confirmation is consumed
 	// so a permanently unavailable executor does not burn a user's token.
@@ -159,12 +169,13 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	}
 
 	confirmationRequest := confirmation.Request{
-		ConnectionID:    e.binding.ConnectionID,
-		ProfileID:       profile.ID(),
-		ProfileRevision: e.binding.ProfileRevision,
-		CommandID:       req.CommandID,
-		VariantID:       req.VariantID,
-		RequestNonce:    req.RequestNonce,
+		ConnectionID:        e.binding.ConnectionID,
+		ProfileID:           profile.ID(),
+		ProfileRevision:     e.binding.ProfileRevision,
+		CommandID:           req.CommandID,
+		VariantID:           req.VariantID,
+		RequestNonce:        req.RequestNonce,
+		ResolvedInputDigest: resolvedInput.Digest(),
 	}
 	if err := e.confirm.Consume(req.Confirmation, confirmationRequest); err != nil {
 		return e.reject(auditContext, ErrConfirmation, "denied")
@@ -173,20 +184,30 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 		return e.auditFailure(auditContext, err)
 	}
 
-	return e.run(ctx, profile, variant)
+	result, outcome, runErr := e.run(ctx, profile, variant)
+	if err := e.audit.RecordResult(auditContext, auditResult(outcome)); err != nil {
+		// The process attempt has already completed, so this is not an admission
+		// rejection. Return a stable audit failure without emitting a misleading
+		// command.reject event.
+		return Result{}, fmt.Errorf("%w: %s", ErrAuditFailed, stableAuditError(err))
+	}
+	if runErr != nil {
+		return Result{}, runErr
+	}
+	return result, nil
 }
 
 func admitProfile(profile commandprofile.Profile, mode commandprofile.DeveloperMode, connectionID string, enforcement commandprofile.EnforcementCapability) error {
 	return profile.Admit(mode, connectionID, enforcement)
 }
 
-func runFixedVersion(ctx context.Context, profile commandprofile.Profile, variant commandprofile.Variant) (Result, error) {
+func runFixedVersion(ctx context.Context, profile commandprofile.Profile, variant commandprofile.Variant) (Result, probe.ProcessOutcome, error) {
 	// This is the only probe descriptor construction in the production bridge.
 	// The descriptor is private-state-bearing and cannot be built from a wire
 	// request. The profile executable is audited immediately before execution.
 	descriptor, err := probe.AuditExecutable(probe.ToolVersionGeneric, profile.Executable())
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrExecutionFailed, err)
+		return Result{}, probe.ProcessOutcome{ErrorCode: probeErrorCode(err)}, fmt.Errorf("%w: %v", ErrExecutionFailed, err)
 	}
 	limits := profile.Limits()
 	policy := probe.VersionExecutionPolicy{
@@ -195,11 +216,38 @@ func runFixedVersion(ctx context.Context, profile commandprofile.Profile, varian
 		StderrBytes: limits.StderrBytes,
 		SHA256:      profile.Identity().SHA256,
 	}
-	version, err := probe.ToolVersionWithPolicy(ctx, descriptor, variant.Exact(), policy)
+	version, outcome, err := probe.ToolVersionWithPolicyOutcome(ctx, descriptor, variant.Exact(), policy)
 	if err != nil {
-		return Result{}, err
+		return Result{}, outcome, err
 	}
-	return Result{CommandID: profile.ID(), VariantID: variant.ID(), Version: version.Version}, nil
+	return Result{CommandID: profile.ID(), VariantID: variant.ID(), Version: version.Version}, outcome, nil
+}
+
+func auditResult(outcome probe.ProcessOutcome) audit.CommandResult {
+	return audit.CommandResult{
+		ExitCode: outcome.ExitCode, TimedOut: outcome.TimedOut, Cancelled: outcome.Cancelled,
+		DurationMS: outcome.DurationMS, StdoutBytes: outcome.StdoutBytes, StderrBytes: outcome.StderrBytes,
+		ErrorCode: string(outcome.ErrorCode),
+	}
+}
+
+func probeErrorCode(err error) probe.ErrorCode {
+	for _, candidate := range []struct {
+		err  error
+		code probe.ErrorCode
+	}{
+		{probe.ErrInvalidInput, probe.CodeInvalidInput}, {probe.ErrNotFound, probe.CodeNotFound},
+		{probe.ErrRejected, probe.CodeRejected}, {probe.ErrIdentityChanged, probe.CodeIdentityChanged},
+		{probe.ErrOutputLimit, probe.CodeOutputLimit}, {probe.ErrDeadlineExceeded, probe.CodeDeadlineExceeded},
+		{probe.ErrCancelled, probe.CodeCancelled}, {probe.ErrInvalidOutput, probe.CodeInvalidOutput},
+		{probe.ErrHashMismatch, probe.CodeHashMismatch}, {probe.ErrHashLimit, probe.CodeHashLimit},
+		{probe.ErrUnsupported, probe.CodeUnsupported}, {probe.ErrChildExit, probe.CodeChildExit},
+	} {
+		if errors.Is(err, candidate.err) {
+			return candidate.code
+		}
+	}
+	return probe.CodeUnavailable
 }
 
 func (e *Executor) auditContext(req Request, profile commandprofile.Profile, network audit.NetworkEnforcement) audit.CommandContext {
