@@ -42,6 +42,14 @@ type RuntimeView interface {
 	runtimeView()
 }
 
+// opaqueRuntimeView is deliberately a different concrete value from
+// ownedChild. It carries no exported methods, so a HealthChecker receiving a
+// RuntimeView cannot type-assert its way back to Child.Stop or supervisor
+// ownership. The view is only an opaque capability marker for health checks.
+type opaqueRuntimeView struct{}
+
+func (*opaqueRuntimeView) runtimeView() {}
+
 // ownedChild serializes cleanup at the supervisor boundary. A child can be
 // reached by both a failure path and the worker defer; a failed Stop can be
 // retried, while a successful Stop is never repeated.
@@ -54,7 +62,14 @@ type ownedChild struct {
 	err      error
 }
 
-func (*ownedChild) runtimeView() {}
+var (
+	// These sentinels are intentionally private. They only let the lifecycle
+	// code distinguish a recovered panic from an ordinary injected error before
+	// publishing the stable Error* category in a Snapshot.
+	errRuntimePanic = errors.New("runtime implementation panic")
+	errHealthPanic  = errors.New("health implementation panic")
+	errCleanupPanic = errors.New("cleanup implementation panic")
+)
 
 func (c *ownedChild) Stop(ctx context.Context) error {
 	ctx = nonNilContext(ctx)
@@ -70,7 +85,7 @@ func (c *ownedChild) Stop(ctx context.Context) error {
 		c.done = done
 		child := c.child
 		go func() {
-			err := child.Stop(ctx)
+			err := callChildStop(child, ctx)
 			c.mu.Lock()
 			c.err = err
 			if err == nil {
@@ -199,14 +214,17 @@ func normalizeOptions(options Options) (normalizedOptions, error) {
 // connection. A failure in one entry only changes that entry and never
 // cancels another connection's worker.
 type Supervisor struct {
-	mu        sync.RWMutex
-	factory   RuntimeFactory
-	health    HealthChecker
-	options   normalizedOptions
-	entries   map[string]*entry
-	closed    bool
-	closeDone chan struct{}
-	closeErr  error
+	mu      sync.RWMutex
+	factory RuntimeFactory
+	health  HealthChecker
+	options normalizedOptions
+	entries map[string]*entry
+	// portReservations closes the Replace check-to-install gap without
+	// holding the supervisor lock while an old worker is being stopped.
+	portReservations map[uint16]*entry
+	closed           bool
+	closeDone        chan struct{}
+	closeErr         error
 	// detachedCleanupFailed records a child that could not be stopped after
 	// its entry/generation ceased to be current. It prevents Close from
 	// reporting success when ownership can no longer be represented by an
@@ -278,7 +296,13 @@ func New(factory RuntimeFactory, health HealthChecker, options Options) (*Superv
 	if err != nil {
 		return nil, err
 	}
-	return &Supervisor{factory: factory, health: health, options: normalized, entries: make(map[string]*entry)}, nil
+	return &Supervisor{
+		factory:          factory,
+		health:           health,
+		options:          normalized,
+		entries:          make(map[string]*entry),
+		portReservations: make(map[uint16]*entry),
+	}, nil
 }
 
 // Add registers one stopped connection. Registration alone never starts a
@@ -317,29 +341,47 @@ func (s *Supervisor) Replace(ctx context.Context, spec ConnectionSpec) error {
 	if err != nil {
 		return err
 	}
-	e.opMu.Lock()
+	if err := lockEntryContext(ctx, e); err != nil {
+		return err
+	}
 	defer e.opMu.Unlock()
-	s.mu.RLock()
+	s.mu.Lock()
 	if s.closed {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return ErrSupervisorClosed
 	}
 	if !s.isRegisteredLocked(e) {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return ErrConnectionMissing
 	}
-	portAvailable := s.portAvailableLocked(spec.LocalPort(), e)
-	s.mu.RUnlock()
-	if !portAvailable {
+	reservationHeld := spec.LocalPort() != e.spec.LocalPort()
+	if reservationHeld && !s.reservePortLocked(spec.LocalPort(), e) {
+		s.mu.Unlock()
 		return ErrInvalidSpec
 	}
+	s.mu.Unlock()
+	defer func() {
+		if reservationHeld {
+			s.mu.Lock()
+			s.releasePortReservationLocked(spec.LocalPort(), e)
+			s.mu.Unlock()
+		}
+	}()
 	if err := s.stopEntry(ctx, e, StateStopped, ErrorRevisionChange, true); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return ErrSupervisorClosed
+	}
+	if !s.isRegisteredLocked(e) {
+		s.mu.Unlock()
+		return ErrConnectionMissing
+	}
+	if reservationHeld && s.portReservations[spec.LocalPort()] != e {
+		s.mu.Unlock()
+		return ErrInvalidSpec
 	}
 	e.spec = spec.Clone()
 	e.attempt = 0
@@ -351,6 +393,11 @@ func (s *Supervisor) Replace(ctx context.Context, spec ConnectionSpec) error {
 	e.cleanupFailed = false
 	e.cleanupError = ErrorNone
 	s.signalLocked(e)
+	if reservationHeld {
+		s.releasePortReservationLocked(spec.LocalPort(), e)
+		reservationHeld = false
+	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -371,7 +418,9 @@ func (s *Supervisor) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	e.opMu.Lock()
+	if err := lockEntryContext(ctx, e); err != nil {
+		return err
+	}
 	defer e.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -381,17 +430,22 @@ func (s *Supervisor) Start(ctx context.Context, id string) error {
 	if !s.isRegisteredLocked(e) {
 		return ErrConnectionMissing
 	}
-	if e.state == StateCleanupFailed {
+	// Cleanup failure is the only stronger terminal condition: retaining an
+	// owned child must never be hidden by the authentication circuit or allow a
+	// replacement child to start. Once cleanup is known to be safe, the auth
+	// bit is checked before transitional states such as stopping so callers get
+	// one stable circuit-breaker result throughout the auth cleanup window.
+	if e.cleanupFailed {
 		return ErrCleanupFailed
+	}
+	if e.authFailed || e.state == StateAuthFailed {
+		return ErrCircuitOpen
 	}
 	if e.state == StateStopping {
 		return ErrStopping
 	}
 	if e.child != nil {
 		return ErrCleanupFailed
-	}
-	if e.state == StateAuthFailed {
-		return ErrCircuitOpen
 	}
 	if e.state == StateSleeping {
 		return ErrSleeping
@@ -414,7 +468,9 @@ func (s *Supervisor) Stop(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	e.opMu.Lock()
+	if err := lockEntryContext(ctx, e); err != nil {
+		return err
+	}
 	defer e.opMu.Unlock()
 	return s.stopEntry(ctx, e, StateStopped, ErrorStopped, false)
 }
@@ -428,7 +484,9 @@ func (s *Supervisor) Reconnect(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	e.opMu.Lock()
+	if err := lockEntryContext(ctx, e); err != nil {
+		return err
+	}
 	defer e.opMu.Unlock()
 	if err := s.stopEntry(ctx, e, StateStopped, ErrorStopped, true); err != nil {
 		return err
@@ -462,7 +520,9 @@ func (s *Supervisor) Sleep(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	e.opMu.Lock()
+	if err := lockEntryContext(ctx, e); err != nil {
+		return err
+	}
 	defer e.opMu.Unlock()
 	s.mu.RLock()
 	current := e.state
@@ -485,7 +545,9 @@ func (s *Supervisor) Wake(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	e.opMu.Lock()
+	if err := lockEntryContext(ctx, e); err != nil {
+		return err
+	}
 	defer e.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -516,7 +578,9 @@ func (s *Supervisor) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	e.opMu.Lock()
+	if err := lockEntryContext(ctx, e); err != nil {
+		return err
+	}
 	defer e.opMu.Unlock()
 	if err := s.stopEntry(ctx, e, StateStopped, ErrorStopped, true); err != nil {
 		return err
@@ -681,6 +745,30 @@ func (s *Supervisor) lookup(id string) (*entry, error) {
 	return e, nil
 }
 
+// lockEntryContext is the only caller-facing entry lock helper. Every
+// operation that can wait behind another operation must use it so a canceled
+// request cannot remain blocked on a per-connection lock indefinitely.
+func lockEntryContext(ctx context.Context, e *entry) error {
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if e == nil || !e.opMu.LockContext(ctx) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.Canceled
+	}
+	// LockContext may win the select at the same instant the caller is
+	// canceled. Cancellation takes priority for public operations; return the
+	// token immediately so it cannot be leaked or strand later callers.
+	if err := ctx.Err(); err != nil {
+		e.opMu.Unlock()
+		return err
+	}
+	return nil
+}
+
 // isRegisteredLocked prevents an operation that looked up an entry before a
 // concurrent Remove from starting or mutating an orphaned worker. Callers
 // must hold s.mu while invoking it.
@@ -744,7 +832,7 @@ func (s *Supervisor) stopEntry(ctx context.Context, e *entry, finalState State, 
 		e.lastError = ErrorNone
 		s.signalLocked(e)
 		s.mu.Unlock()
-		if err := s.cleanupChild(e, generation, child); err != nil {
+		if err := s.cleanupChild(ctx, e, generation, child); err != nil {
 			return ErrCleanupFailed
 		}
 		s.mu.Lock()
@@ -810,6 +898,66 @@ const (
 	checkAuth
 )
 
+// callRuntimeStart contains the panic boundary for an injected runtime
+// factory. A factory panic is a runtime failure; it must never bring down the
+// supervisor process or be exposed as an implementation message.
+func callRuntimeStart(factory RuntimeFactory, ctx context.Context, spec ConnectionSpec) (child Child, err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errRuntimePanic
+		}
+	}()
+	child, err = factory.Start(ctx, spec)
+	panicking = false
+	return child, err
+}
+
+// callLocalHealth and callRemoteHealth are separate wrappers so a panic in
+// either phase is classified as health failure and can never publish ready.
+func callLocalHealth(health HealthChecker, ctx context.Context, spec ConnectionSpec, child RuntimeView) (result HealthResult, err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errHealthPanic
+		}
+	}()
+	result, err = health.CheckLocal(ctx, spec, child)
+	panicking = false
+	return result, err
+}
+
+func callRemoteHealth(health HealthChecker, ctx context.Context, spec ConnectionSpec, child RuntimeView) (result HealthResult, err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errHealthPanic
+		}
+	}()
+	result, err = health.CheckRemote(ctx, spec, child)
+	panicking = false
+	return result, err
+}
+
+// callChildStop contains the cleanup panic boundary. A recovered panic leaves
+// ownedChild unstopped so the same ownership can be retried and is never
+// incorrectly reported as stopped.
+func callChildStop(child Child, ctx context.Context) (err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errCleanupPanic
+		}
+	}()
+	err = child.Stop(ctx)
+	panicking = false
+	return err
+}
+
 func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 	spec := e.spec.Clone()
 	var child *ownedChild
@@ -817,7 +965,7 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 	defer func() {
 		if child != nil && !cleanupAttempted {
 			cleanupAttempted = true
-			if err := s.cleanupChild(e, generation, child); err != nil {
+			if err := s.cleanupChild(context.Background(), e, generation, child); err != nil {
 				s.recordDetachedCleanupFailure(e, generation, child)
 			}
 		}
@@ -831,13 +979,13 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 		if !s.setState(e, generation, StateStarting, ErrorNone) {
 			return
 		}
-		started, startErr := s.factory.Start(ctx, spec)
+		started, startErr := callRuntimeStart(s.factory, ctx, spec)
 		if started != nil {
 			child = &ownedChild{child: started}
 			cleanupAttempted = false
 			if !s.setChild(e, generation, child) {
 				cleanupAttempted = true
-				if err := s.cleanupChild(e, generation, child); err != nil {
+				if err := s.cleanupChild(context.Background(), e, generation, child); err != nil {
 					s.recordDetachedCleanupFailure(e, generation, child)
 				}
 				child = nil
@@ -855,7 +1003,7 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 			}
 			if child != nil {
 				cleanupAttempted = true
-				if err := s.cleanupChild(e, generation, child); err != nil {
+				if err := s.cleanupChild(context.Background(), e, generation, child); err != nil {
 					return
 				}
 				child = nil
@@ -875,15 +1023,16 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 			continue
 		}
 
+		runtimeView := RuntimeView(&opaqueRuntimeView{})
 		for {
 			if ctx.Err() != nil {
 				return
 			}
-			if outcome := s.checkLocal(ctx, spec, child); outcome != checkReady {
+			if outcome := s.checkLocal(ctx, spec, runtimeView); outcome != checkReady {
 				if outcome == checkAuth {
 					s.markAuthFailure(e, generation)
 					cleanupAttempted = true
-					if err := s.cleanupChild(e, generation, child); err != nil {
+					if err := s.cleanupChild(context.Background(), e, generation, child); err != nil {
 						return
 					}
 					child = nil
@@ -897,11 +1046,11 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 			if !s.setState(e, generation, StatePolling, ErrorNone) {
 				return
 			}
-			if outcome := s.checkRemote(ctx, spec, child); outcome != checkReady {
+			if outcome := s.checkRemote(ctx, spec, runtimeView); outcome != checkReady {
 				if outcome == checkAuth {
 					s.markAuthFailure(e, generation)
 					cleanupAttempted = true
-					if err := s.cleanupChild(e, generation, child); err != nil {
+					if err := s.cleanupChild(context.Background(), e, generation, child); err != nil {
 						return
 					}
 					child = nil
@@ -924,7 +1073,7 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 		}
 
 		cleanupAttempted = true
-		if err := s.cleanupChild(e, generation, child); err != nil {
+		if err := s.cleanupChild(context.Background(), e, generation, child); err != nil {
 			return
 		}
 		child = nil
@@ -934,9 +1083,9 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 	}
 }
 
-func (s *Supervisor) checkLocal(ctx context.Context, spec ConnectionSpec, child *ownedChild) checkOutcome {
+func (s *Supervisor) checkLocal(ctx context.Context, spec ConnectionSpec, view RuntimeView) checkOutcome {
 	checkCtx, cancel := healthContext(ctx, spec.health.Timeout)
-	result, err := s.health.CheckLocal(checkCtx, spec, child)
+	result, err := callLocalHealth(s.health, checkCtx, spec, view)
 	contextErr := checkCtx.Err()
 	cancel()
 	if contextErr != nil {
@@ -945,9 +1094,9 @@ func (s *Supervisor) checkLocal(ctx context.Context, spec ConnectionSpec, child 
 	return classifyHealth(result, err)
 }
 
-func (s *Supervisor) checkRemote(ctx context.Context, spec ConnectionSpec, child *ownedChild) checkOutcome {
+func (s *Supervisor) checkRemote(ctx context.Context, spec ConnectionSpec, view RuntimeView) checkOutcome {
 	checkCtx, cancel := healthContext(ctx, spec.health.Timeout)
-	result, err := s.health.CheckRemote(checkCtx, spec, child)
+	result, err := callRemoteHealth(s.health, checkCtx, spec, view)
 	contextErr := checkCtx.Err()
 	cancel()
 	if contextErr != nil {
@@ -992,17 +1141,37 @@ func (s *Supervisor) enterBackoff(ctx context.Context, e *entry, generation uint
 	e.attempt++
 	attempt := e.attempt
 	s.mu.Unlock()
-	delay := s.backoff(attempt)
-	if !s.setState(e, generation, StateBackoff, code) {
+	delay, err := s.backoffWithError(attempt)
+	if err != nil {
+		s.setTerminal(e, generation, StateDegraded, ErrorRuntime)
 		return false
 	}
+	now, err := callClockNow(s.options.clock)
+	if err != nil {
+		s.setTerminal(e, generation, StateDegraded, ErrorRuntime)
+		return false
+	}
+	// Publish the backoff state and its deadline atomically. Observers must
+	// never see StateBackoff with a zero/stale NextRetryAt merely because the
+	// worker has not yet entered waitTimer.
+	s.mu.Lock()
+	if e.generation != generation || !e.running || e.stopRequested {
+		s.mu.Unlock()
+		return false
+	}
+	e.state = StateBackoff
+	e.lastError = code
+	e.nextRetryAt = now.Add(delay)
+	s.signalLocked(e)
+	s.mu.Unlock()
 	return s.waitTimer(ctx, e, generation, delay, true)
 }
 
-func (s *Supervisor) cleanupChild(e *entry, generation uint64, child *ownedChild) error {
+func (s *Supervisor) cleanupChild(parent context.Context, e *entry, generation uint64, child *ownedChild) error {
 	if child == nil {
 		return nil
 	}
+	parent = nonNilContext(parent)
 	s.mu.Lock()
 	if e.generation == generation && s.isRegisteredLocked(e) && e.child == child {
 		e.state = StateStopping
@@ -1011,12 +1180,16 @@ func (s *Supervisor) cleanupChild(e *entry, generation uint64, child *ownedChild
 	}
 	s.mu.Unlock()
 
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), s.options.cleanupTimeout)
+	// Deriving from the caller context enforces the caller's deadline while the
+	// timeout still imposes the supervisor's finite maximum when the caller has
+	// no (or a longer) deadline. A canceled cleanup is retained as failure so
+	// ownership cannot be reported as stopped until a later retry succeeds.
+	cleanupCtx, cancel := context.WithTimeout(parent, s.options.cleanupTimeout)
 	err := child.Stop(cleanupCtx)
-	timedOut := errors.Is(cleanupCtx.Err(), context.DeadlineExceeded)
+	cleanupContextErr := cleanupCtx.Err()
 	cancel()
-	if err == nil && timedOut {
-		err = context.DeadlineExceeded
+	if err == nil && cleanupContextErr != nil {
+		err = cleanupContextErr
 	}
 
 	s.mu.Lock()
@@ -1037,28 +1210,30 @@ func (s *Supervisor) cleanupChild(e *entry, generation uint64, child *ownedChild
 	return err
 }
 
-func (s *Supervisor) waitTimer(ctx context.Context, e *entry, generation uint64, delay time.Duration, retry bool) bool {
+func (s *Supervisor) waitTimer(ctx context.Context, e *entry, generation uint64, delay time.Duration, retry bool) (ok bool) {
 	if delay < 0 {
 		return false
 	}
-	if retry {
-		s.mu.Lock()
-		if e.generation == generation && e.running && !e.stopRequested {
-			e.nextRetryAt = s.options.clock.Now().Add(delay)
-			s.signalLocked(e)
-		}
-		s.mu.Unlock()
-	}
-	timer := s.options.timers.NewTimer(delay)
-	if timer == nil {
+	timer, err := callNewTimer(s.options.timers, delay)
+	if err != nil || timer == nil {
 		s.setTerminal(e, generation, StateDegraded, ErrorRuntime)
 		return false
 	}
-	defer timer.Stop()
+	timerC, err := callTimerC(timer)
+	if err != nil {
+		s.setTerminal(e, generation, StateDegraded, ErrorRuntime)
+		return false
+	}
+	defer func() {
+		if err := callTimerStop(timer); err != nil {
+			s.setTerminal(e, generation, StateDegraded, ErrorRuntime)
+			ok = false
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		return false
-	case <-timer.C():
+	case <-timerC:
 		if retry {
 			s.mu.Lock()
 			if e.generation == generation {
@@ -1069,6 +1244,58 @@ func (s *Supervisor) waitTimer(ctx context.Context, e *entry, generation uint64,
 		}
 		return true
 	}
+}
+
+func callClockNow(clock Clock) (now time.Time, err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errRuntimePanic
+		}
+	}()
+	now = clock.Now()
+	panicking = false
+	return now, nil
+}
+
+func callNewTimer(factory TimerFactory, delay time.Duration) (timer Timer, err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errRuntimePanic
+		}
+	}()
+	timer = factory.NewTimer(delay)
+	panicking = false
+	return timer, nil
+}
+
+func callTimerC(timer Timer) (ch <-chan time.Time, err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errRuntimePanic
+		}
+	}()
+	ch = timer.C()
+	panicking = false
+	return ch, nil
+}
+
+func callTimerStop(timer Timer) (err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errRuntimePanic
+		}
+	}()
+	timer.Stop()
+	panicking = false
+	return nil
 }
 
 func (s *Supervisor) setTerminal(e *entry, generation uint64, state State, code ErrorCode) {
@@ -1102,10 +1329,32 @@ func (s *Supervisor) portAvailableLocked(port uint16, except *entry) bool {
 			return false
 		}
 	}
+	if owner, reserved := s.portReservations[port]; reserved && owner != except {
+		return false
+	}
 	return true
 }
 
+func (s *Supervisor) reservePortLocked(port uint16, owner *entry) bool {
+	if owner == nil || !s.portAvailableLocked(port, owner) {
+		return false
+	}
+	s.portReservations[port] = owner
+	return true
+}
+
+func (s *Supervisor) releasePortReservationLocked(port uint16, owner *entry) {
+	if current, ok := s.portReservations[port]; ok && current == owner {
+		delete(s.portReservations, port)
+	}
+}
+
 func (s *Supervisor) backoff(attempt int) time.Duration {
+	delay, _ := s.backoffWithError(attempt)
+	return delay
+}
+
+func (s *Supervisor) backoffWithError(attempt int) (time.Duration, error) {
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -1117,17 +1366,34 @@ func (s *Supervisor) backoff(attempt int) time.Duration {
 		}
 		delay *= 2
 	}
-	delay = s.options.jitter(attempt, delay)
+	var err error
+	delay, err = callJitter(s.options.jitter, attempt, delay)
+	if err != nil {
+		return 0, err
+	}
 	if delay < 0 {
-		return 0
+		return 0, nil
 	}
 	if delay > maxBackoffLimit {
-		return maxBackoffLimit
+		return maxBackoffLimit, nil
 	}
 	if delay > s.options.maxBackoff {
-		return s.options.maxBackoff
+		return s.options.maxBackoff, nil
 	}
-	return delay
+	return delay, nil
+}
+
+func callJitter(jitter JitterFunc, attempt int, delay time.Duration) (value time.Duration, err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errRuntimePanic
+		}
+	}()
+	value = jitter(attempt, delay)
+	panicking = false
+	return value, nil
 }
 
 func (s *Supervisor) setState(e *entry, generation uint64, state State, code ErrorCode) bool {

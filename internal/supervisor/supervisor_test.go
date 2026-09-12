@@ -1139,3 +1139,418 @@ func TestCloseDoesNotBlockBehindEntryOperationMutex(t *testing.T) {
 		t.Fatal("Stop did not finish after health release")
 	}
 }
+
+// panicFactory/ panicHealth/ panicChild intentionally model a broken injected
+// implementation. The supervisor boundary must turn each panic into its
+// stable diagnostic category instead of allowing it to escape a worker.
+type panicFactory struct{}
+
+func (panicFactory) Start(context.Context, ConnectionSpec) (Child, error) {
+	panic("factory panic must not escape")
+}
+
+type panicHealth struct{}
+
+func (panicHealth) CheckLocal(context.Context, ConnectionSpec, RuntimeView) (HealthResult, error) {
+	panic("health panic must not escape")
+}
+
+func (panicHealth) CheckRemote(context.Context, ConnectionSpec, RuntimeView) (HealthResult, error) {
+	panic("health panic must not escape")
+}
+
+type panicChild struct{}
+
+func (panicChild) Stop(context.Context) error {
+	panic("child panic must not escape")
+}
+
+type panicChildFactory struct {
+	child Child
+}
+
+func (f panicChildFactory) Start(context.Context, ConnectionSpec) (Child, error) {
+	return f.child, nil
+}
+
+type panicClock struct{}
+
+func (panicClock) Now() time.Time { panic("clock panic must not escape") }
+
+type panicTimerFactory struct {
+	timer Timer
+}
+
+func (f panicTimerFactory) NewTimer(time.Duration) Timer { return f.timer }
+
+type panicNewTimerFactory struct{}
+
+func (panicNewTimerFactory) NewTimer(time.Duration) Timer {
+	panic("timer factory panic must not escape")
+}
+
+type panicTimer struct {
+	channel   <-chan time.Time
+	panicC    bool
+	panicStop bool
+}
+
+func (t panicTimer) C() <-chan time.Time {
+	if t.panicC {
+		panic("timer C panic must not escape")
+	}
+	return t.channel
+}
+
+func (t panicTimer) Stop() bool {
+	if t.panicStop {
+		panic("timer Stop panic must not escape")
+	}
+	return true
+}
+
+func TestSupervisorPublicOperationsHonorContextWhileEntryLockIsHeld(t *testing.T) {
+	operations := []struct {
+		name string
+		call func(*Supervisor, context.Context, ConnectionSpec) error
+	}{
+		{name: "start", call: func(s *Supervisor, ctx context.Context, _ ConnectionSpec) error {
+			return s.Start(ctx, "conn-a")
+		}},
+		{name: "stop", call: func(s *Supervisor, ctx context.Context, _ ConnectionSpec) error {
+			return s.Stop(ctx, "conn-a")
+		}},
+		{name: "reconnect", call: func(s *Supervisor, ctx context.Context, _ ConnectionSpec) error {
+			return s.Reconnect(ctx, "conn-a")
+		}},
+		{name: "sleep", call: func(s *Supervisor, ctx context.Context, _ ConnectionSpec) error {
+			return s.Sleep(ctx, "conn-a")
+		}},
+		{name: "wake", call: func(s *Supervisor, ctx context.Context, _ ConnectionSpec) error {
+			return s.Wake(ctx, "conn-a")
+		}},
+		{name: "remove", call: func(s *Supervisor, ctx context.Context, _ ConnectionSpec) error {
+			return s.Remove(ctx, "conn-a")
+		}},
+		{name: "replace", call: func(s *Supervisor, ctx context.Context, spec ConnectionSpec) error {
+			return s.Replace(ctx, spec)
+		}},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			s := testSupervisor(t, &testFactory{results: map[string][]factoryResult{}, starts: map[string]int{}}, testHealth{}, Options{})
+			spec := testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")
+			if err := s.Add(spec); err != nil {
+				t.Fatal(err)
+			}
+			e, err := s.lookup("conn-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.opMu.Lock()
+			defer e.opMu.Unlock()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- operation.call(s, ctx, spec) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("operation error = %v, want context deadline", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("operation did not honor context while entry lock was held")
+			}
+		})
+	}
+}
+
+func TestSupervisorRecoversRuntimeFactoryPanicAsRuntimeError(t *testing.T) {
+	s := testSupervisor(t, panicFactory{}, testHealth{}, Options{InitialBackoff: time.Hour})
+	if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForState(t, s, "conn-a", StateBackoff)
+	if got.LastError != ErrorRuntime || got.State == StateReady || got.State == StateStopped {
+		t.Fatalf("factory panic snapshot = %+v", got)
+	}
+}
+
+func TestSupervisorRecoversHealthCheckerPanicAsHealthError(t *testing.T) {
+	s := testSupervisor(t, &testFactory{results: map[string][]factoryResult{}, starts: map[string]int{}}, panicHealth{}, Options{InitialBackoff: time.Hour})
+	if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForState(t, s, "conn-a", StateBackoff)
+	if got.LastError != ErrorHealth || got.State == StateReady || got.State == StateStopped {
+		t.Fatalf("health panic snapshot = %+v", got)
+	}
+}
+
+func TestSupervisorRecoversChildStopPanicAsCleanupFailure(t *testing.T) {
+	s := testSupervisor(t, panicChildFactory{child: panicChild{}}, testHealth{
+		local: func(context.Context, ConnectionSpec, RuntimeView) (HealthResult, error) {
+			return HealthResult{Status: HealthNotReady}, nil
+		},
+	}, Options{})
+	if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForState(t, s, "conn-a", StateCleanupFailed)
+	if got.LastError != ErrorCleanupFailed || got.State == StateReady || got.State == StateStopped {
+		t.Fatalf("child stop panic snapshot = %+v", got)
+	}
+}
+
+func TestSupervisorStartPrefersAuthCircuitDuringCleanupWindow(t *testing.T) {
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStop) }) }
+	child := &testChild{stopFn: func(ctx context.Context) error {
+		close(stopEntered)
+		select {
+		case <-releaseStop:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}}
+	factory := &testFactory{
+		results: map[string][]factoryResult{"conn-a": {{child: child}}},
+		starts:  map[string]int{},
+	}
+	health := testHealth{remote: func(_ context.Context, _ ConnectionSpec, _ RuntimeView) (HealthResult, error) {
+		return HealthResult{Status: HealthAuthFailed}, nil
+	}}
+	s := testSupervisor(t, factory, health, Options{CleanupTimeout: time.Second})
+	defer release()
+	if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopEntered:
+	case <-time.After(time.Second):
+		t.Fatal("auth cleanup did not enter child stop")
+	}
+	if got, err := s.Snapshot("conn-a"); err != nil || got.State != StateStopping {
+		t.Fatalf("auth cleanup window snapshot = %+v err=%v, want stopping", got, err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("start during auth cleanup = %v, want ErrCircuitOpen", err)
+	}
+	if got := factory.startCount("conn-a"); got != 1 {
+		t.Fatalf("factory starts during auth cleanup = %d, want 1", got)
+	}
+	release()
+	if got := waitForState(t, s, "conn-a", StateAuthFailed); got.LastError != ErrorAuthFailed {
+		t.Fatalf("auth cleanup completion snapshot = %+v", got)
+	}
+}
+
+func TestSupervisorStartDoesNotMaskAuthCleanupFailure(t *testing.T) {
+	child := &testChild{stopFn: func(context.Context) error {
+		return errors.New("cleanup failure")
+	}}
+	factory := &testFactory{
+		results: map[string][]factoryResult{"conn-a": {{child: child}}},
+		starts:  map[string]int{},
+	}
+	health := testHealth{remote: func(_ context.Context, _ ConnectionSpec, _ RuntimeView) (HealthResult, error) {
+		return HealthResult{Status: HealthAuthFailed}, nil
+	}}
+	s := testSupervisor(t, factory, health, Options{})
+	if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForState(t, s, "conn-a", StateCleanupFailed); got.LastError != ErrorCleanupFailed {
+		t.Fatalf("auth cleanup failure snapshot = %+v", got)
+	}
+	if err := s.Start(context.Background(), "conn-a"); !errors.Is(err, ErrCleanupFailed) {
+		t.Fatalf("start after auth cleanup failure = %v, want ErrCleanupFailed", err)
+	}
+	if got := factory.startCount("conn-a"); got != 1 {
+		t.Fatalf("factory starts after auth cleanup failure = %d, want 1", got)
+	}
+}
+
+func TestSupervisorReplaceReservesPortBeforeStoppingOldChild(t *testing.T) {
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStop) }) }
+	child := &testChild{stopFn: func(ctx context.Context) error {
+		close(stopEntered)
+		select {
+		case <-releaseStop:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}}
+	factory := &testFactory{
+		results: map[string][]factoryResult{"conn-a": {{child: child}}},
+		starts:  map[string]int{},
+	}
+	s := testSupervisor(t, factory, testHealth{}, Options{CleanupTimeout: time.Second})
+	defer release()
+	if err := s.Add(testSpecAtPort(t, "conn-a", "rev-1", 21001)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(testSpecAtPort(t, "conn-b", "rev-1", 21002)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "conn-a", StateReady)
+
+	updatedA := testSpecAtPort(t, "conn-a", "rev-2", 21003)
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- s.Replace(context.Background(), updatedA) }()
+	select {
+	case <-stopEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first replace did not enter old child cleanup")
+	}
+	if err := s.Replace(context.Background(), testSpecAtPort(t, "conn-b", "rev-2", 21003)); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("second replace reserved-port error = %v, want ErrInvalidSpec", err)
+	}
+	release()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first replace = %v", err)
+	}
+	if got, err := s.Snapshot("conn-a"); err != nil || got.LocalPort != 21003 || got.Revision != "rev-2" {
+		t.Fatalf("first replace snapshot = %+v err=%v", got, err)
+	}
+	if got, err := s.Snapshot("conn-b"); err != nil || got.LocalPort != 21002 || got.Revision != "rev-1" {
+		t.Fatalf("rejected second replace snapshot = %+v err=%v", got, err)
+	}
+}
+
+func TestRuntimeViewDoesNotExposeOwnedChildMethods(t *testing.T) {
+	var hasStop atomic.Bool
+	health := testHealth{
+		local: func(_ context.Context, _ ConnectionSpec, view RuntimeView) (HealthResult, error) {
+			if _, ok := view.(interface{ Stop(context.Context) error }); ok {
+				hasStop.Store(true)
+			}
+			return HealthResult{Status: HealthReady}, nil
+		},
+		remote: func(_ context.Context, _ ConnectionSpec, view RuntimeView) (HealthResult, error) {
+			if _, ok := view.(interface{ Stop(context.Context) error }); ok {
+				hasStop.Store(true)
+			}
+			return HealthResult{Status: HealthReady}, nil
+		},
+	}
+	s := testSupervisor(t, &testFactory{results: map[string][]factoryResult{}, starts: map[string]int{}}, health, Options{})
+	if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "conn-a", StateReady)
+	if hasStop.Load() {
+		t.Fatal("health checker received a RuntimeView exposing Child.Stop")
+	}
+}
+
+func TestSupervisorCleanupRetryHonorsCallerDeadline(t *testing.T) {
+	var stopCalls atomic.Int32
+	child := &testChild{stopFn: func(ctx context.Context) error {
+		switch stopCalls.Add(1) {
+		case 1:
+			return errors.New("first cleanup failure")
+		case 2:
+			<-ctx.Done()
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}}
+	factory := &testFactory{
+		results: map[string][]factoryResult{"conn-a": {{child: child}}},
+		starts:  map[string]int{},
+	}
+	s := testSupervisor(t, factory, testHealth{}, Options{CleanupTimeout: time.Second})
+	if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "conn-a", StateReady)
+	if err := s.Stop(context.Background(), "conn-a"); !errors.Is(err, ErrCleanupFailed) {
+		t.Fatalf("first stop = %v, want ErrCleanupFailed", err)
+	}
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := s.Stop(ctx, "conn-a")
+	cancel()
+	if !errors.Is(err, ErrCleanupFailed) {
+		t.Fatalf("cleanup retry = %v, want ErrCleanupFailed", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("cleanup retry ignored caller deadline: %s", elapsed)
+	}
+	if got := stopCalls.Load(); got != 2 {
+		t.Fatalf("cleanup calls after deadline = %d, want 2", got)
+	}
+}
+
+func TestSupervisorInjectedTimingPanicsBecomeRuntimeErrors(t *testing.T) {
+	closed := make(chan time.Time)
+	close(closed)
+	cases := []struct {
+		name    string
+		options Options
+	}{
+		{name: "clock", options: Options{Clock: panicClock{}}},
+		{name: "jitter", options: Options{Jitter: func(int, time.Duration) time.Duration {
+			panic("jitter panic must not escape")
+		}}},
+		{name: "timer factory", options: Options{Timers: panicNewTimerFactory{}}},
+		{name: "timer C", options: Options{Timers: panicTimerFactory{timer: panicTimer{panicC: true}}}},
+		{name: "timer Stop", options: Options{Timers: panicTimerFactory{timer: panicTimer{channel: closed, panicStop: true}}}},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			test.options.InitialBackoff = time.Second
+			test.options.MaxBackoff = time.Second
+			s := testSupervisor(t, &testFactory{
+				results: map[string][]factoryResult{"conn-a": {{err: errors.New("transient")}}},
+				starts:  map[string]int{},
+			}, testHealth{}, test.options)
+			if err := s.Add(testSpec(t, "conn-a", "rev-1", config.TransportLocal, "")); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Start(context.Background(), "conn-a"); err != nil {
+				t.Fatal(err)
+			}
+			got := waitForState(t, s, "conn-a", StateDegraded)
+			if got.LastError != ErrorRuntime || got.State == StateReady || got.State == StateStopped {
+				t.Fatalf("timing panic snapshot = %+v", got)
+			}
+		})
+	}
+}
