@@ -4,13 +4,13 @@
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend、一次性确认本地核心以及 fixed typed input 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界；prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv。`PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。R4 另已增加 commandpath 的本地 final-handle/identity binding，但 `Source.New` 根目录交换竞态、长路径和 launcher 原子硬门仍未闭合。R5 已增加固定 `git_status`/`git_diff` plan/parser，但 `Plan.PreviewExecutable=false`：repo-local filters 无法完整关闭，`RootID` 也不是 root binding，因此不接 MCP。R6 已增加 transport config、明确 `ProductionReady=false` 的非生产 FileStore、全局/每 connection admission gate 和注入式 fake supervisor automation core；这些只证明本地契约与状态机，不代表真实 Windows runtime、Tunnel 或生产接线。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`。本轮也未做新的 Windows 手工、网页、Tunnel 或真实网络测试；R6 的双连接/soak 与发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend、一次性确认本地核心以及 fixed typed input 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界；prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv。`PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。R4 另已增加 commandpath 的本地 final-handle/identity binding，但 `Source.New` 根目录交换竞态、长路径和 launcher 原子硬门仍未闭合。R5 已增加固定 `git_status`/`git_diff` plan/parser，但 `Plan.PreviewExecutable=false`：repo-local filters 无法完整关闭，`RootID` 也不是 root binding，因此不接 MCP。R6 已增加 transport config、明确 `ProductionReady=false` 的非生产 FileStore、全局/每 connection admission gate、注入式 fake supervisor automation core，以及 Windows `runtimeowner` 和 readiness 两个非生产本地契约；这些只证明本地契约与状态机，不代表真实 Windows runtime、Tunnel 或生产接线。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`。本轮也未做新的 Windows 手工、网页、Tunnel、Linux runtime 或真实网络测试；R6 的双连接/soak 与发布级审查仍未完成。
 
 ### 当前 R4–R6 交付快照
 
 - R4 `commandpath`：已实现本地不可序列化的 binding、final handle/identity commitment、`Revalidate` 和 `Close`；`PreviewToken` 只能用于本地预览。`Source.New` 根目录 Lstat→OpenRoot 竞态、祖先 reparse/长路径以及 launcher 在同一 handle 上的最终硬门仍待完成。
 - R5 `gitprobe`：已实现固定 plan、porcelain-v1 status parser、统一 diff parser 与有界 capture；`Executable=false`，因 repo-local filter/root binding 风险不接 launcher/MCP。
-- R6：已实现 transport 元数据解析、非生产 FileStore、bounded admission gate 和注入式 fake supervisor automation core。稳定状态包括 `stopped`、`starting`、`local_mcp_ready`、`polling`、`ready`、`degraded`、`backoff`、`auth_failed`、`sleeping`、`resuming`、`stopping`、`cleanup_failed`；这些值是本地管理诊断契约，不是运行时证明。
+- R6：已实现 transport 元数据解析、非生产 FileStore、bounded admission gate、注入式 fake supervisor automation core，以及两个保持 `ProductionReady=false` 的本地契约：`runtimeowner`（Windows DuplicateHandle→Job、PID+creation、ancestor/tree membership、Terminate dispatch/WaitExited、失败清理可重试）与 `readiness`（Issuer/Session/revoke、fresh attestations、one-use nonce、per-scope/总 replay budget、长期 evaluator）。稳定状态包括 `stopped`、`starting`、`local_mcp_ready`、`polling`、`ready`、`degraded`、`backoff`、`auth_failed`、`sleeping`、`resuming`、`stopping`、`cleanup_failed`；这些值是本地管理诊断契约，不是运行时证明。
 
 ## 一、能力分层与不变边界
 
@@ -396,12 +396,28 @@ connection bounded admission gate，以及注入式 fake supervisor automation c
 隔离；admission 支持 binding、disable/revoke/replace、audit health fail-closed、取消和幂等
 release。fake core 不创建真实 child/tunnel，健康检查由注入的 checker 提供。
 
+R6 还包含两个仅供本地受信适配器使用的非生产契约，均明确 `ProductionReady=false`：
+
+- `runtimeowner`：Windows 受信调用方交来已有 process handle 后，先 `DuplicateHandle`，再加入
+  包创建的 Job，并绑定 PID+creation time。可观察结果是 `ancestor/tree membership`，不是
+  direct/leaf membership；`Terminate` 只是 dispatch，必须由 `WaitExited` 确认退出。认领、关闭
+  或终止的失败清理保留句柄/状态以便重试。trusted launcher/broker、真实 child 创建、
+  direct-leaf membership 证明和 supervisor 生产接线仍未完成。
+- `readiness`：受信适配器持有 `Issuer`，按 connection/revision/generation 创建 `Session`，
+  可 `revoke` 旧 session；child、local MCP auth/ping/server_info 和 remote tunnel
+  auth/health/HA 使用本地采样的 fresh attestations。评估消费 one-use nonce，并按
+  issuer/session/connection scope 及总 replay budget 有界；对应生命周期必须复用长期
+  evaluator，不能按请求新建。attestation 是适配器声明，不是该包自行完成的进程、MCP 或
+  Tunnel 证明，且当前未接线到 runtimeowner、supervisor 或 MCP。
+
 依赖：P05、R1、R4。原计划产物为 per-user supervisor、per-connection state/port/log、health
 state machine、backoff/circuit breaker、sleep/wake/credential rotation/kill isolation。尚待验收：
-真实 Windows child 的 PID+creation time+Job ownership、真实 local MCP ping/server_info、
-Cloudflare `/ready`+HA/tunnel health、至少两条真实 connection 并发/故障隔离和一小时 soak；
-FileStore 还需跨进程 OS lock、ancestor reparse/TOCTOU、hardlink/ACL 和崩溃恢复证据。停止条件：
-跨 connection scope/cursor/cache 泄露、ready 仅凭进程存在或无法确认 cleanup 时不进入产品化。
+trusted launcher/broker 与真实 Windows child 的 PID+creation time+Job ownership、direct-leaf
+membership 证明、真实 local MCP ping/server_info、Cloudflare `/ready`+HA/tunnel health、
+至少两条真实 connection 并发/故障隔离和一小时 soak；FileStore 还需跨进程 OS lock、ancestor
+reparse/TOCTOU、hardlink/ACL 和崩溃恢复证据。`runtimeowner`/`readiness` 的本地测试不替代这些
+验收。停止条件：跨 connection scope/cursor/cache 泄露、ready 仅凭进程存在或无法确认 cleanup
+时不进入产品化。
 
 ### R7：以证据决定是否启用 index
 
@@ -424,8 +440,9 @@ R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据�
 现在做：继续保持远程能力关闭。R4 commandpath 仍需完成可信 root resolver、祖先
 reparse/长路径和 Windows UTF-16/escaping/handle-based launcher 硬门；R5 继续保持
 `Executable=false`，直到 repository-filter 与 root binding 有独立可证明的执行方案；R6 继续
-完善 FileStore 的 OS lock/崩溃语义、真实 Windows runtime、MCP ping、Cloudflare health、双连接
-隔离和 soak 证据。随后按 WFP adapter → 低权限 broker/service → suspended Job integration →
+完善 FileStore 的 OS lock/崩溃语义、runtimeowner 的 trusted launcher/broker/direct-leaf 与真实
+child 接线、readiness 的适配器接线和长期 evaluator 生命周期、真实 Windows runtime、MCP ping、
+Cloudflare health、双连接隔离和 soak 证据。随后按 WFP adapter → 低权限 broker/service → suspended Job integration →
 VM identity/network adversarial tests → CLI/supervisor 生产接线推进 R4/R6。自动化检查先行；本轮
 尚未做新的 Windows 手工、网页、Tunnel 或真实网络测试。硬门全部通过前保持 MCP `run_probe`、
 `git_status` 和 `git_diff` 不注册。

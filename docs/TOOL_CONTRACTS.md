@@ -84,7 +84,7 @@ metadata 是弱版本：相同 size/mtime 的内容修改可能无法检测，�
 
 ## 七、MCP 工具面（当前与未来）
 
-当前本地 MCP 服务已注册并按 connection/profile allowlist 暴露：`server_info`、`ping`、`read_file`、`batch_read`、`list_directory`、`find_files`、`search_text`、`tree_directory`、`get_environment`、`discover_tools`、`workspace_snapshot`。R4/R5/R6 新增的 commandpath、gitprobe、transport、FileStore、admission 和 supervisor 都是本地核心，不会自动扩大 MCP 工具面；`run_probe`、`git_status` 和 `git_diff` 仍未注册，不能从本地包的存在推断已实现远程能力。
+当前本地 MCP 服务已注册并按 connection/profile allowlist 暴露：`server_info`、`ping`、`read_file`、`batch_read`、`list_directory`、`find_files`、`search_text`、`tree_directory`、`get_environment`、`discover_tools`、`workspace_snapshot`。R4/R5/R6 新增的 commandpath、gitprobe、transport、FileStore、admission、supervisor、runtimeowner 和 readiness 都是本地核心，不会自动扩大 MCP 工具面；`run_probe`、`git_status` 和 `git_diff` 仍未注册，不能从本地包的存在推断已实现远程能力。
 
 发现/搜索/目录树/工作区轮廓工具已经返回 request_id、coverage、warnings、预算和 continuation；`read_file`/`batch_read` 的 byte/line/tail 结果按第四、五节约束。coverage 必须说明忽略、deny、编码、扫描上限和未支持类型，不能把部分扫描标成全量。原生 MCP 的 readOnlyHint 只描述工具性质，不替代本地权限控制。
 
@@ -501,8 +501,27 @@ rootfs binding/cwd。因此 plan 的 preview args/environment 不能交给 launc
   revision replace、sleep/wake/reconnect 和 cleanup failure 阻断。`ready` 只表示注入的
   local/remote checker 对当前 owned-child 与 revision 返回 ready，不证明真实 PID+creation
   time+Job、MCP ping、Cloudflare health 或外部可达性；fake core 不创建真实 child/tunnel。
+- `runtimeowner` 是 Windows 本地、非生产 ownership contract，且 `ProductionReady=false`。
+  受信调用方提供已有 child process handle 后，适配器执行 `DuplicateHandle`→Job assignment，
+  绑定 PID+creation time，并只报告 `ancestor/tree membership`；Windows `IsProcessInJob` 的
+  祖先关系不能当作 direct/leaf membership。`Terminate` 只是 termination dispatch，必须由
+  `WaitExited` 确认退出；认领、关闭和终止的失败清理保留未确认的 handle/state 以便重试。
+  它不创建真实 child、不接受 executable/argv/env/secret，也未接入 trusted launcher、broker、
+  supervisor 或 direct-leaf membership 证明。
+- `readiness` 是本地、非生产的聚合 contract，且 `ProductionReady=false`。受信适配器持有
+  `Issuer`，按 connection/revision/generation 创建 `Session` 和 context；`Session.Revoke`
+  会使派生证据失效。child、local MCP auth/ping/server_info、remote tunnel auth/health/HA
+  都必须以本地采样时间形成 fresh attestation；评估器消费 one-use nonce，并以
+  issuer/session/connection scope 的 replay 限制和 evaluator 总 budget 有界。每个可信 lifecycle
+  应复用长期 evaluator；按请求新建 evaluator 会丢失 replay 防护。attestation 只是适配器声明，
+  不是该包自行完成的 OS/MCP/Tunnel 证明；该包未接线到 runtimeowner、supervisor 或 MCP，
+  也不接收远程 JSON readiness token。
 
-以上 R4–R6 包通过本地 `go test -race -count=3` 与 `go vet` 目标包检查，但尚未完成真实
-Windows runtime、MCP ping/server_info、Cloudflare `/ready`/HA/tunnel health、双 connection
-并发与至少一小时 soak，也未完成 FileStore 跨进程 OS lock、R4 root/launcher 硬门、R5
-repository-filter/root binding 安全执行链、WFP/broker/capability、CLI 生产接线或独立安全审查。
+以上 R4–R6 包通过本地目标包自动检查：既有包使用 `go test -race -count=3` 与 `go vet`，
+`readiness` 与 `runtimeowner` 另运行 `go test -race -count=20` 和 `go vet`；这些是本机
+单元/竞争/静态检查证据。runtimeowner 测试使用 Windows kernel seam，不是真实 child/broker
+生命周期证据；readiness 测试使用本地构造的适配器声明，不是真实 MCP/Tunnel 健康证据。尚未
+完成真实 Windows runtime、MCP ping/server_info、Cloudflare `/ready`/HA/tunnel health、双
+connection 并发与至少一小时 soak，也未完成 FileStore 跨进程 OS lock、R4 root/launcher 硬门、
+R5 repository-filter/root binding 安全执行链、WFP/broker/capability、CLI 生产接线或独立安全
+审查。本轮未新增人工 Windows、网页、Tunnel、Linux runtime 或真实网络测试。

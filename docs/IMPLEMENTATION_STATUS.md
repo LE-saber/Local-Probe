@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-12。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate 和 fake supervisor automation core 已实现。** R4/R5/R6 的新增能力仍未接入远程 MCP；R4 的 OS network enforcement、生产 launcher/broker、R6 的真实 Windows runtime 与 Cloudflare health 证据仍未完成。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
+日期：2026-09-12。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate、fake supervisor automation core、Windows runtimeowner 和 readiness 本地非生产契约已实现。** R4/R5/R6 的新增能力仍未接入远程 MCP；R4 的 OS network enforcement、生产 launcher/broker、R6 的可信 runtime 接线与 Cloudflare health 证据仍未完成。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -26,10 +26,10 @@
 | P08 | Windows 本地核心第二增量与 commandpath identity binding 已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；`version_probe` 仍兼容 `slots:[]`，`fixed_command` 的 exact argv、enum/bounded_integer/root_relative_path typed slots、配置解析、root ID 交叉校验与纯 `ResolveVariant` 已实现；`ResolvedInput` 为最终 exact argv 提供 canonical、长度前缀的 SHA256 digest，version-probe 的一次性 confirmation v2 绑定该 digest 与 config revision，旧 v1 token fail closed；执行期从同一最终映像 guard handle 计算小写 SHA256；`ProcessOutcome` 记录真实自然退出码或明确的 timeout/cancel/output-limit 状态及有界时长/字节计数；local commandexec 已将该 outcome 映射为 `command.result`；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8 个 ALE family 的 opaque plan 与跨平台 DisabledBackend 已实现；`internal/commandpath` 与 rootfs adapter 已实现本地 final handle/identity commitment、revalidate 和不可序列化 binding，但 `Source.New` 的根目录 Lstat→OpenRoot 竞态、长路径与最终 launcher 原子硬门仍未闭合；typed runtime values 已进入 commandexec 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界，fixed execution 仍在 confirmation/admission/start/runner 前由 commandexec 以 `unsupported_profile` fail closed，因而没有新增 fixed 执行能力；真实 WFP/broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线、MCP `run_probe` 与任意命令仍关闭 |
 | R5 | 本地固定 Git plan/parser 已实现，保持不可执行且未接入 MCP | `git_status`/`git_diff` 的固定参数、受限 root-relative path、bounded output/entries/hunks/lines、porcelain-v1/统一 diff 结构化解析和 capture completeness 已实现；`Plan.PreviewExecutable()` 固定为 `false`，原因是 repo-local clean/smudge/process filters 无法由当前固定 flags 完整关闭，且 `RootID` 仍不是 rootfs binding/cwd。Git 不启动、不解析 raw command、不接入 launcher 或 MCP |
 | R1/R2/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、`get_environment`/`discover_tools`、R2 范围读取和 `workspace_snapshot` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed、强快照和真实 Business 复测仍未完成 |
-| P09/P10 | 第一增量（本地核心）已实现，生产 runtime/真实验证未完成 | R6 transport-aware connection config、非生产 FileStore、全局/每 connection admission gate、disable/revoke/revision binding、健康状态机、backoff/circuit breaker、sleep/wake/reconnect、cleanup failure 状态和 connection isolation 的 fake automation core；不创建真实 child/tunnel，不等于 PID/creation time/Job/MCP ping/Cloudflare health 或双连接 soak 证据 |
+| P09/P10 | 第一增量（本地核心）已实现，生产 runtime/真实验证未完成 | R6 transport-aware connection config、非生产 FileStore、全局/每 connection admission gate、disable/revoke/revision binding、健康状态机、backoff/circuit breaker、sleep/wake/reconnect、cleanup failure 状态和 connection isolation 的 fake automation core；另有 `runtimeowner` Windows DuplicateHandle→Job、PID+creation identity、ancestor/tree membership、Terminate dispatch/WaitExited 与可重试失败清理契约，以及 `readiness` Issuer/Session/revoke、fresh attestations、one-use nonce、per-scope/总 replay budget、长期 evaluator 契约；两者均 `ProductionReady=false`，不创建真实 child/tunnel，不等于 trusted launcher/broker、direct-leaf membership、MCP ping/Cloudflare health 或双连接 soak 证据 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
-代码位置：`internal/config/`、`internal/environment/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
+代码位置：`internal/config/`、`internal/environment/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`internal/runtimeowner/`、`internal/readiness/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
 ### P04 增量事实（2026-09-09）
 
 - `config`/`policy` 已修复配置上限、重复 key、显式 `enabled` 语义，并由 `policy.BoundScope` 绑定 connection/profile revision 和 root/path deny。
@@ -397,19 +397,51 @@ Git、不接受 raw command，不连接 launcher，也没有注册 `git_status`/
 ownership、Cloudflare `/ready`/HA、Tunnel health 或外部可达性的证明；`cleanup_failed` 表示
 child cleanup 未被确认完成，不能转写为 `stopped`，并会阻止继续启动直到显式恢复/清理。
 
+### R6 `runtimeowner`：Windows 本地 ownership contract（非生产）
+
+`internal/runtimeowner` 是给未来受信 launcher/broker 使用的本地 ownership primitive，
+不是进程创建器，也不接受 executable、argv、环境变量或 secret。Windows 路径要求受信调用方
+提供已有的 child process handle；实现先 `DuplicateHandle`，再把 duplicate 加入包创建的
+Job Object，并绑定 PID 与 process creation time。复核结果明确表示 `ancestor/tree membership`
+（Windows `IsProcessInJob` 的祖先/Job-tree 语义），不能误写成 direct/leaf Job membership。
+`Terminate` 只表示向 owned Job 发出终止 dispatch；只有 `WaitExited` 成功才表示已观察到退出。
+关闭、认领失败或终止清理失败会保留可重试状态，而不是丢弃仍未确认释放的 handle。
+
+该包的 `ProductionReady=false`。trusted launcher/broker、真实 child 创建与挂起/恢复生命周期、
+direct-leaf membership 证明、网络隔离和 supervisor 生产接线均未完成；本地 identity/snapshot
+也不可 JSON 序列化，不能把 PID 或 creation time 作为远程授权凭证。
+
+### R6 `readiness`：本地 readiness aggregation contract（非生产）
+
+`internal/readiness` 由受信本地适配器持有 `Issuer`，按 connection/revision/generation
+创建 `Session` 和一次性 `Context`。`Session.Revoke` 会使其派生 context/attestation 立即失效。
+适配器声明的 child、local MCP（auth/ping/server_info）和 remote tunnel（auth/health/HA）
+证据必须在本地采样时间窗口内保持 fresh；评估器消费 one-use nonce，并按 immutable
+issuer/session/connection scope 限制 replay，同时以 scope 数量与总 replay budget 设上限。
+评估器应作为对应 trusted lifecycle 的长期实例复用，不能为每个请求重新创建以绕过 replay
+保护；revision/generation 变化时应撤销旧 session 并创建新 session。
+
+这些值是适配器声明的 typed observations，不是该包自行完成的 OS、MCP 或 Tunnel 证明；它们
+不接线到 supervisor、runtimeowner、MCP 或 Cloudflare。`ProductionReady=false`，不能把 readiness
+decision 当作启动授权或远程请求字段。
+
 ### 自动化验证证据
 
 在 Windows amd64 / Go 1.26.0 环境，新增核心已运行并通过：
 
 - `go test -race -count=3 ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor`
-- `go vet ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor`
+- `go test -race -count=20 ./internal/readiness ./internal/runtimeowner`
+- `go vet ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor ./internal/readiness ./internal/runtimeowner`
 - `git diff --check`
 
-这些是本机单元/竞争/静态检查证据，不是生产运行证据。尚待人工与后续实现的关键项包括：真实
-Windows child 的 PID+creation time+Job ownership、真实 local MCP ping/server_info、Cloudflare
-Tunnel `/ready` 与 HA/health、两个真实 connection 的并发/故障隔离和至少一小时 soak；FileStore
-跨进程 OS lock、R4 根目录/长路径/launcher 硬门、R5 Git root binding/filter 安全执行链、WFP/
-broker/capability、CLI 生产接线和独立安全审查也仍未完成。
+这些是本机单元/竞争/静态检查证据，不是生产运行证据；`runtimeowner` 的测试使用 Windows
+kernel seam，不是实际 child/broker 生命周期证明，`readiness` 的测试使用本地构造的适配器声明，
+也不是 MCP/Tunnel 健康证明。尚待人工与后续实现的关键项包括：真实 Windows child 的
+PID+creation time+Job ownership、trusted launcher/broker 与 direct-leaf membership、真实
+local MCP ping/server_info、Cloudflare Tunnel `/ready` 与 HA/health、两个真实 connection 的
+并发/故障隔离和至少一小时 soak；FileStore 跨进程 OS lock、R4 根目录/长路径/launcher 硬门、
+R5 Git root binding/filter 安全执行链、WFP/broker/capability、CLI 生产接线和独立安全审查也
+仍未完成。本轮没有新增人工 Windows、网页、Tunnel、Linux runtime 或真实网络测试。
 
 ## 五、已知未完成边界
 
@@ -429,11 +461,12 @@ broker/capability、CLI 生产接线和独立安全审查也仍未完成。
   trusted final resolver、签名校验和 MCP `run_probe` 均未完成，远程命令必须保持关闭；typed
   runtime values 目前只进入本地 Prepare/Confirm/BuildRequest 边界，不能据此声称 fixed 可执行。
   已有 pre-open writable/mapped handle 残余风险；`LockFileEx` 不覆盖 mapped view，不能作为完整修复。
-- R4 的 commandpath binding、R5 的 Git plan/parser 和 R6 的 transport/admission/supervisor 均仍是
-  本地核心。R4 尚缺 `Source.New` 根目录交换竞态、长路径和 launcher 原子硬门；R5 的 `Plan` 明确
-  `Executable=false`，repo-local filters 与 root binding 未解决，故不接 MCP；R6 的 FileStore 明确
-  `ProductionReady=false`，跨进程 OS lock、真实 Windows child/tunnel runtime、MCP/Cloudflare health、
-  双 connection/soak 和 CLI/GUI 生产接线均未完成。
+- R4 的 commandpath binding、R5 的 Git plan/parser 和 R6 的 transport/admission/supervisor、
+  `runtimeowner`、`readiness` 均仍是本地核心。R4 尚缺 `Source.New` 根目录交换竞态、长路径和
+  launcher 原子硬门；R5 的 `Plan` 明确 `Executable=false`，repo-local filters 与 root binding 未
+  解决，故不接 MCP；R6 的 FileStore、`runtimeowner`、`readiness` 均明确 `ProductionReady=false`。
+  跨进程 OS lock、trusted launcher/broker、direct-leaf ownership、真实 Windows child/tunnel
+  runtime、MCP/Cloudflare health、双 connection/soak 和 CLI/GUI 生产接线均未完成。
 
 ## 六、下一执行者的明确入口
 
