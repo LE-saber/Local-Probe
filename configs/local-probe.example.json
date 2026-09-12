@@ -36,6 +36,7 @@
       "label": "local read-only MCP",
       "profile_id": "read_only",
       "credential_ref": "local_token",
+      "transport": "local",
       "enabled": true
     }
   ],

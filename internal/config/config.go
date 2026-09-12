@@ -106,6 +106,9 @@ type Connection struct {
 	profileID     string
 	credentialRef string
 	enabled       bool
+	transport     ConnectionTransport
+	tunnelID      string
+	tunnelAlias   string
 }
 
 func (c Connection) ID() string { return c.id }
@@ -117,6 +120,20 @@ func (c Connection) ProfileID() string { return c.profileID }
 func (c Connection) CredentialRef() string { return c.credentialRef }
 
 func (c Connection) Enabled() bool { return c.enabled }
+
+// Transport identifies the configured non-secret ingress metadata. A legacy
+// connection created before transport metadata existed reports local.
+func (c Connection) Transport() ConnectionTransport { return normalizedTransport(c.transport) }
+
+// TunnelID is an opaque, constrained identifier for a named remote ingress;
+// it is never a URL or credential.
+func (c Connection) TunnelID() string { return c.tunnelID }
+
+// TunnelAlias is an optional local label for a named remote ingress. It is not
+// used for authentication or endpoint resolution.
+func (c Connection) TunnelAlias() string { return c.tunnelAlias }
+
+func (c Connection) clone() Connection { return c }
 
 // CredentialRef identifies protected credential material held elsewhere.
 type CredentialRef struct {
@@ -177,7 +194,32 @@ func NewProfileWithIgnore(id string, rootIDs, tools, denyPatterns, ignorePattern
 }
 
 func NewConnection(id, label, profileID, credentialRef string, enabled bool) Connection {
-	return Connection{id: id, label: label, profileID: profileID, credentialRef: credentialRef, enabled: enabled}
+	return Connection{id: id, label: label, profileID: profileID, credentialRef: credentialRef, enabled: enabled, transport: TransportLocal}
+}
+
+// NewConnectionWithTransport creates a connection with explicit, non-secret
+// ingress metadata. It does not resolve credentials, contact a tunnel, or
+// enable a remote transport; those responsibilities belong to later runtime
+// layers. Local connections must not carry tunnel metadata, while remote
+// transports require a constrained tunnel ID.
+func NewConnectionWithTransport(id, label, profileID, credentialRef string, enabled bool, transport ConnectionTransport, tunnelID, tunnelAlias string) (Connection, error) {
+	if transport == "" {
+		return Connection{}, invalid("connection.transport", "transport is required")
+	}
+	connection := Connection{
+		id:            id,
+		label:         label,
+		profileID:     profileID,
+		credentialRef: credentialRef,
+		enabled:       enabled,
+		transport:     normalizedTransport(transport),
+		tunnelID:      tunnelID,
+		tunnelAlias:   tunnelAlias,
+	}
+	if err := validateConnectionTransport(connection.transport, connection.tunnelID, connection.tunnelAlias, "connection"); err != nil {
+		return Connection{}, err
+	}
+	return connection, nil
 }
 
 func NewCredentialRef(id, kind string) CredentialRef {
@@ -196,7 +238,7 @@ func NewWithCommandProfiles(schemaVersion string, roots []Root, profiles []Profi
 		schemaVersion:    schemaVersion,
 		roots:            cloneRoots(roots),
 		profiles:         cloneProfiles(profiles),
-		connections:      append([]Connection(nil), connections...),
+		connections:      cloneConnections(connections),
 		credentials:      append([]CredentialRef(nil), credentials...),
 		environmentTools: cloneEnvironmentTools(environmentTools),
 		developerMode:    developerMode.Clone(),
@@ -219,7 +261,7 @@ func (c Config) Profiles() []Profile {
 }
 
 func (c Config) Connections() []Connection {
-	return append([]Connection(nil), c.connections...)
+	return cloneConnections(c.connections)
 }
 
 func (c Config) Credentials() []CredentialRef {
@@ -284,7 +326,7 @@ func (c Config) Clone() Config {
 		schemaVersion:    c.schemaVersion,
 		roots:            cloneRoots(c.roots),
 		profiles:         cloneProfiles(c.profiles),
-		connections:      append([]Connection(nil), c.connections...),
+		connections:      cloneConnections(c.connections),
 		credentials:      append([]CredentialRef(nil), c.credentials...),
 		environmentTools: cloneEnvironmentTools(c.environmentTools),
 		developerMode:    c.developerMode.Clone(),
@@ -368,12 +410,16 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	}
 	for i, connection := range c.connections {
 		enabled := connection.enabled
+		transport := string(connection.Transport())
 		raw.Connections[i] = rawConnection{
 			ID:            connection.id,
 			Label:         connection.label,
 			ProfileID:     connection.profileID,
 			CredentialRef: connection.credentialRef,
 			Enabled:       &enabled,
+			Transport:     &transport,
+			TunnelID:      connection.tunnelID,
+			TunnelAlias:   connection.tunnelAlias,
 		}
 	}
 	for i, credential := range c.credentials {
@@ -504,11 +550,14 @@ type rawProfile struct {
 }
 
 type rawConnection struct {
-	ID            string `json:"id"`
-	Label         string `json:"label"`
-	ProfileID     string `json:"profile_id"`
-	CredentialRef string `json:"credential_ref"`
-	Enabled       *bool  `json:"enabled"`
+	ID            string  `json:"id"`
+	Label         string  `json:"label"`
+	ProfileID     string  `json:"profile_id"`
+	CredentialRef string  `json:"credential_ref"`
+	Enabled       *bool   `json:"enabled"`
+	Transport     *string `json:"transport,omitempty"`
+	TunnelID      string  `json:"tunnel_id,omitempty"`
+	TunnelAlias   string  `json:"tunnel_alias,omitempty"`
 }
 
 type rawCredential struct {
@@ -551,12 +600,22 @@ func fromRaw(raw rawConfig) (Config, error) {
 			return Config{}, invalid(fmt.Sprintf("connections[%d].enabled", i), "field is required")
 		}
 		enabled := *connection.Enabled
+		transport := TransportLocal
+		if connection.Transport != nil {
+			if *connection.Transport == "" {
+				return Config{}, invalid(fmt.Sprintf("connections[%d].transport", i), "must not be empty")
+			}
+			transport = ConnectionTransport(*connection.Transport)
+		}
 		c.connections[i] = Connection{
 			id:            connection.ID,
 			label:         connection.Label,
 			profileID:     connection.ProfileID,
 			credentialRef: connection.CredentialRef,
 			enabled:       enabled,
+			transport:     transport,
+			tunnelID:      connection.TunnelID,
+			tunnelAlias:   connection.TunnelAlias,
 		}
 	}
 	c.credentials = make([]CredentialRef, len(raw.Credentials))
@@ -645,6 +704,9 @@ func (c Config) validate() error {
 		}
 		if _, ok := credentialIDs[connection.credentialRef]; !ok {
 			return invalid(field+".credential_ref", "unknown credential reference")
+		}
+		if err := validateConnectionTransport(connection.Transport(), connection.tunnelID, connection.tunnelAlias, field); err != nil {
+			return err
 		}
 	}
 	if err := validateEnvironmentTools(c.environmentTools); err != nil {
@@ -770,6 +832,17 @@ func cloneProfiles(values []Profile) []Profile {
 		return nil
 	}
 	out := make([]Profile, len(values))
+	for i, value := range values {
+		out[i] = value.clone()
+	}
+	return out
+}
+
+func cloneConnections(values []Connection) []Connection {
+	if values == nil {
+		return nil
+	}
+	out := make([]Connection, len(values))
 	for i, value := range values {
 		out[i] = value.clone()
 	}
