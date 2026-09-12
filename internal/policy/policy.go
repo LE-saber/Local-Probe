@@ -166,7 +166,7 @@ func (b BoundScope) AllowsRoot(rootID string) bool {
 // every path component, making "*.key" deny nested keys. A trailing "/**"
 // denies the named subtree recursively.
 func (b BoundScope) AllowsPath(rootID, relativePath string) bool {
-	return relativePath != "" && readcore.ValidPath(relativePath) && !b.IsDeniedPath(rootID, relativePath)
+	return b.Validate() == nil && relativePath != "" && readcore.ValidPath(relativePath) && !b.IsDeniedPath(rootID, relativePath)
 }
 
 // AllowsDirectory is the directory analogue of AllowsPath. The empty path

@@ -4,7 +4,7 @@
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend 和一次性确认本地核心；`fixed_command` 的 typed runtime values 尚未进入 Request/执行/confirmation 链，当前仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行。本轮也未做 Windows 手工、网页、Tunnel 或真实网络测试；P09/P10 及发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend、一次性确认本地核心以及 fixed typed input 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界；prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv。`PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行。本轮也未做 Windows 手工、网页、Tunnel 或真实网络测试；P09/P10 及发布级审查仍未完成。
 
 ## 一、能力分层与不变边界
 
@@ -16,6 +16,10 @@
 - `list_directory`、`find_files`、`search_text`、`tree_directory` 做有界发现和 literal 文本检索。
 - 后续的 `discover_tools`、`get_environment` 优先做成 Go 内部无进程查询：只返回固定的 OS、架构、已批准工具类别和能力，不执行外部程序，不读取整份环境变量，不泄露用户名、home 或秘密路径。
 - `BoundScope → rootfs.Source → os.Root` 仍是文件访问唯一安全边界；任何 scanner、catalog、index、缓存或加速器都不能绕过它。
+
+`policy.BoundScope.AllowsPath` 已由主代理补上撤权前置校验：scope 失效时路径授权立即返回
+false，不会因为旧 scope 仍持有路径/deny 数据而继续通过。该策略修复不等于 typed
+`PathResolver` 的 final identity 证明，二者保持独立验收。
 
 默认层不改变进程 cwd，不执行 Shell，不接受绝对路径、任意命令、任意环境或任意网络请求。
 
@@ -142,12 +146,15 @@ Object 和 resume 前实际映像复核；profile 配置和执行期只接受固
 最终映像 guard handle 计算并比较，config revision lease 覆盖到执行结束，local commandexec
 bridge 在 network capability 缺失时 fail closed。不能再把它描述成单纯
 audit-by-path→execute-by-path。
-但 R4 仍未完成：OS network deny 执行器、capability 铸造、CLI/supervisor 生产接线、fixed_command
-typed runtime values 的执行/确认链、可信最终 resolver、签名校验和 MCP 暴露均缺失。当前 local
-commandexec 已将 version-probe 的结构化 `ProcessOutcome` 接入 `command.result`；这不等于 CLI/
-supervisor 的生产接线。已有 pre-open writable/mapped handle 残余风险；
-`LockFileEx` 的字节范围锁不覆盖 mapped view，不能作为完整修复。Unix 当前按路径启动，不能
-仅靠事后检查保证执行的是被审计文件；本轮不做 Linux 测试。
+但 R4 仍未完成：OS network deny 执行器、capability 铸造、CLI/supervisor 生产接线、可信最终
+resolver、签名校验和 MCP 暴露均缺失。fixed_command 的 typed runtime values 已进入仅供本地
+调用方使用的 `Prepare`/`Confirm`/`BuildRequest` 边界，prepared input 绑定 profile revision、
+variant 和 resolved-input digest；不过当前 `PathResolver` 仍是字符串回调，不能证明 root 授权、
+deny/reparse 或 final identity，因此 fixed execution 仍 fail closed。当前 local commandexec 已将
+version-probe 的结构化 `ProcessOutcome` 接入 `command.result`；这不等于 CLI/supervisor 的生产
+接线。已有 pre-open writable/mapped handle 残余风险；`LockFileEx` 的字节范围锁不覆盖 mapped
+view，不能作为完整修复。Unix 当前按路径启动，不能仅靠事后检查保证执行的是被审计文件；本轮不做
+Linux 测试。
 
 ### Windows 硬门
 
@@ -325,13 +332,16 @@ revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcom
    字节/Windows 保留名与非法字符检查，并由纯 `ResolveVariant` 在 32767 字节保守预算内构造
    argv。可信 resolver 的最终授权仍未被该纯函数取代；该增量不注册 MCP `run_probe`，而且
    commandexec 在 confirmation/admission/start/runner 前对 `fixed_command` fail closed。
-4. **下一步：fixed typed input 的本地 prepare/confirm 与执行边界闭合**：为
-   `fixed_command` 增加仅供本地调用方使用的 typed runtime input prepare/confirm 流程，将
-   最终 resolved-input digest、config revision 与一次性 local confirmation 绑定，并让
-   commandexec 只接收该绑定结果；version-probe 已有的 digest/outcome/`command.result` 接线
-   不能被误认为 fixed_command 已开放。最终 resolver 仍须做 root 授权、deny/reparse/final
-   identity，launcher 仍须检查 Windows UTF-16/escaping；在这些硬门完成前保持
-   `fixed_command` fail closed，不执行、不注册 MCP。
+4. **已实现：fixed typed input 的本地 prepare/confirm 边界**：`commandexec` 为本地调用方
+   提供 `Prepare`、`Confirm` 和 `BuildRequest`；typed runtime values 经
+   `commandprofile.ResolveInput` 逐项解析，生成绑定 profile revision、variant 和
+   resolved-input digest 的不可变 prepared input，Request 不承载可变 argv，Prepare/Confirm
+   各自在关键窗口持有 revision lease。当前 `PathResolver` 仍是字符串回调，只能作为临时
+   本地接口，不能证明 root 授权、deny/ignore、reparse/symlink 或 final identity；它不是
+   trusted final path binding。fixed execution 仍在 confirmation/admission/start/runner 前
+   fail closed，不执行、不注册 MCP。下一步完成可信最终 resolver、Windows UTF-16/escaping
+   检查及其硬门；version-probe 已有的 digest/outcome/`command.result` 接线不能被误认为
+   fixed_command 已开放。
 5. **后续：真实 WFP adapter**：基于受审查的 `fwpuclnt.dll` user-mode ABI 实现动态会话级
    WFP 过滤器，覆盖上述八个固定 family 以及 loopback/适用的 identity 绑定；不创建持久
    Windows Firewall 规则，未能证明的状态 fail closed。该 adapter 尚不能直接接入当前
@@ -378,8 +388,9 @@ closed。停止条件：network deny 无法证明、profile/bridge 未安全接�
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；R5 与 R6 可在 R4 通过后分别推进；R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据。
 
-现在做：先保持远程能力关闭，推进 `fixed_command` typed input 的本地 prepare/confirm，完成
-可信 path resolver、root 授权、deny/reparse/final identity 和 Windows UTF-16/escaping 边界；
+现在做：继续保持远程能力关闭；fixed typed input 的本地 `Prepare`/`Confirm`/`BuildRequest`
+边界已完成，但其字符串 `PathResolver` 不是可信 final path binding。下一步完成可信 path
+resolver、root 授权、deny/reparse/final identity 和 Windows UTF-16/escaping 边界；
 version-probe 已完成的 resolved-input digest、revision、confirmation v2、结构化 outcome 和
 `command.result` 本地接线作为可复用基础，但不能据此开放 fixed 执行。继续禁止 cmd、PowerShell
 及其它 shell/interpreter 间接路径；fixed MCP execution 仍不注册。随后按 WFP adapter → 低权限

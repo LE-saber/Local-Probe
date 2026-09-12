@@ -96,6 +96,10 @@ reparse 边界。每个结果都包含 `coverage.complete`、计数和 `warnings
 配置 revision、root、起始路径、查询/模式、大小写和预算；篡改、过期、撤权或目录/文件
 generation 变化都会要求重新开始。
 
+`policy.BoundScope.AllowsPath` 在路径匹配前会先验证 scope 当前有效；主代理已补上该撤权
+防御，并以配置替换/连接禁用后的旧 scope 测试覆盖。它只约束文件策略层，不能把 commandexec
+的字符串 `PathResolver` 误认为 rootfs final identity 或 TOCTOU 证明。
+
 四个工具的 `budget.max_open_files` 和 `budget.max_open_directories` 是**单次调用**的
 成功打开句柄预算，不是账号、连接、进程或机器级全局配额。`coverage.opened_files`、
 `coverage.opened_directories` 记录本次调用成功打开的句柄数；`coverage.replayed_entries`
@@ -350,9 +354,17 @@ wrapper 直接配置为 executable，以及模型修改 profile 均被拒绝；�
 profile 构造 probe descriptor/policy。`ProcessOutcome` 是 path-free 的结构化结果：自然结束时保留
 真实 exit code，timeout/cancel/output-limit 不合成 exit code，并只报告有界 duration 与 captured-byte
 计数；原始输出、path、argv、env 不进入 outcome。local commandexec 在每次执行尝试后映射该
-outcome 并记录 `command.result`。对 `fixed_command`，typed runtime values 尚未进入 Request 或
-执行/confirmation 链；当前 `Executor` 仍在 confirmation、admission、start 和 runner 之前直接
-返回 `unsupported_profile`，因此该配置/解析增量没有新增 fixed 执行能力。
+outcome 并记录 `command.result`。
+
+对 `fixed_command`，本地 commandexec 现在提供 `Prepare`、`Confirm` 和
+`BuildRequest`：Prepare 接受 typed `SlotValue` 与字符串 `PathResolver` 回调，在 revision lease
+内生成不可变 prepared input；Confirm 重新取得 revision lease，并将 profile revision、variant
+和 resolved-input digest 绑定到一次性 confirmation v2；Request 只能携带 prepared input，不能
+携带可变 argv。prepared input 为 local-only，不可通过 JSON 伪造或跨 Executor 重放。这里的
+`PathResolver` 仍只是字符串返回接口，不提供 rootfs handle、deny/ignore、reparse/symlink、
+final identity 或 TOCTOU 证明，不能称为 trusted final path binding。当前 `Executor` 对 fixed
+仍在 confirmation、admission、start 和 runner 之前直接返回 `unsupported_profile`，因此没有
+新增 fixed 执行能力，也没有 fixed MCP execution。
 
 `Executor` 要求调用方提供 `AuditRecorder`：拒绝路径同步记录 `command.reject`；成功准入和确认消费
 后分别将 `command.admission`、`command.start` 送入有界异步队列。`command.start` 表示确认后的
@@ -364,11 +376,12 @@ reject。后续磁盘写失败只标记 `degraded`，尚待 supervisor 阻断新
 writable handle 或 mapped view 仍是残余风险；`LockFileEx` 的 byte-range lock 不约束 mapped view，
 不能作为完整修复。
 
-下一增量针对 `fixed_command` 增加仅供本地调用方使用的 typed input prepare/confirm 流程：typed
-runtime values 先经可信 resolver 完成 root 授权、deny/reparse/final identity，再构造最终 argv 和
-digest，绑定 config revision 与一次性 local confirmation。launcher 仍须做 Windows UTF-16/escaping
-检查；`cmd`、PowerShell 及其它 shell/interpreter 方案继续在执行边界外，不能由模板间接引入。完成
-这些硬门前不执行 `fixed_command`，不注册 fixed MCP execution。
+下一增量针对 `fixed_command` 完成真正的 trusted final path binding：typed runtime values 必须
+经 rootfs-aware resolver 完成 root 授权、deny/ignore、reparse/symlink 和 final identity 校验，
+并由 launcher 再做 Windows UTF-16/escaping 检查。字符串 `PathResolver` 只能作为当前本地
+prepare 边界的临时适配接口，不能替代上述证明；`cmd`、PowerShell 及其它 shell/interpreter
+方案继续在执行边界外，不能由模板间接引入。完成这些硬门，以及 WFP/broker/capability/生产
+接线前，不执行 `fixed_command`，不注册 fixed MCP execution。
 
 `internal/networkguard` 已完成 NET-01 platform-independent contract/fake：每次操作使用不可
 序列化的独立 lease/capability/run handle，要求完整 IPv4/IPv6 outbound/inbound、bind/listen、

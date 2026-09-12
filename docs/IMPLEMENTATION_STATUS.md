@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-12。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4/P08 Windows 固定探针、严格 version profile、fixed_command exact argv/typed slots 本地解析、执行期 SHA256、revision lease、local commandexec fail-closed bridge、一次性确认、canonical resolved-input digest、confirmation v2、结构化 ProcessOutcome、command.result 本地审计接线、R4-AUDIT-01 commandexec 审计边界、audit.v2 command producers 和 R4-NET-02 固定 WFP deny plan/跨平台 DisabledBackend 已实现；这些进程能力尚未接入 MCP，网络仍未在操作系统层执行。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
+日期：2026-09-12。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4/P08 Windows 固定探针、严格 version profile、fixed_command exact argv/typed slots 本地解析、typed input 本地 prepare/confirm 边界、执行期 SHA256、revision lease、local commandexec fail-closed bridge、一次性确认、canonical resolved-input digest、confirmation v2、结构化 ProcessOutcome、command.result 本地审计接线、R4-AUDIT-01 commandexec 审计边界、audit.v2 command producers 和 R4-NET-02 固定 WFP deny plan/跨平台 DisabledBackend 已实现；这些进程能力尚未接入 MCP，网络仍未在操作系统层执行。** 下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -23,7 +23,7 @@
 | P05 | 最小 MCP 与真实 Cloudflare ingress 已验证 | 官方 MCP Go SDK v1.7.0、现代无状态/旧版有状态 Streamable HTTP 协商、本地 bearer 与 Cloudflare Access JWT/JWKS、Host 校验；ChatGPT“极高”实际调用 server_info/ping/read_file/batch_read 通过，Tunnel 重连后无需重新登录 |
 | P06 | 第一增量已实现并通过本机与真实链路验证；手工靶场已加入 | list_directory、find_files、search_text、tree_directory；有界迭代、扁平深度优先树、literal UTF-8 搜索、deny/ignore、签名短期 cursor、revision/generation 失效和覆盖率说明；四个发现工具已由 ChatGPT Business“极高”验证，`manual-test-targets/` 提供分页、嵌套、Unicode、空文件和拒绝负例；R1 已补充单次调用打开文件/目录预算与不可推进游标防护 |
 | P07 | 第一增量完成 | MCP `bytes`/`lines`/`tail` 范围读取、受策略绑定的 `workspace_snapshot`、Windows 手工靶场；模型任务效果评测和强一致快照仍未完成 |
-| P08 | Windows 本地核心第二增量已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；`version_probe` 仍兼容 `slots:[]`，`fixed_command` 的 exact argv、enum/bounded_integer/root_relative_path typed slots、配置解析、root ID 交叉校验与纯 `ResolveVariant` 已实现；`ResolvedInput` 为最终 exact argv 提供 canonical、长度前缀的 SHA256 digest，version-probe 的一次性 confirmation v2 绑定该 digest 与 config revision，旧 v1 token fail closed；执行期从同一最终映像 guard handle 计算小写 SHA256；`ProcessOutcome` 记录真实自然退出码或明确的 timeout/cancel/output-limit 状态及有界时长/字节计数；local commandexec 已将该 outcome 映射为 `command.result`；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8 个 ALE family 的 opaque plan 与跨平台 DisabledBackend 已实现；`fixed_command` 的 typed runtime values 尚未进入 Request/执行/confirmation 链，仍在 confirmation/admission/start/runner 前由 commandexec 以 `unsupported_profile` fail closed，因而没有新增 fixed 执行能力；后续落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行；真实 WFP/broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线、MCP `run_probe` 与任意命令仍关闭 |
+| P08 | Windows 本地核心第二增量已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；`version_probe` 仍兼容 `slots:[]`，`fixed_command` 的 exact argv、enum/bounded_integer/root_relative_path typed slots、配置解析、root ID 交叉校验与纯 `ResolveVariant` 已实现；`ResolvedInput` 为最终 exact argv 提供 canonical、长度前缀的 SHA256 digest，version-probe 的一次性 confirmation v2 绑定该 digest 与 config revision，旧 v1 token fail closed；执行期从同一最终映像 guard handle 计算小写 SHA256；`ProcessOutcome` 记录真实自然退出码或明确的 timeout/cancel/output-limit 状态及有界时长/字节计数；local commandexec 已将该 outcome 映射为 `command.result`；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8 个 ALE family 的 opaque plan 与跨平台 DisabledBackend 已实现；`fixed_command` typed runtime values 已进入 commandexec 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界：prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv，Prepare/Confirm 各自覆盖关键 revision lease；但现有 `PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前由 commandexec 以 `unsupported_profile` fail closed，因而没有新增 fixed 执行能力；后续落盘失败只标记 `degraded`，尚待 supervisor 阻断新执行；真实 WFP/broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线、MCP `run_probe` 与任意命令仍关闭 |
 | R1/R2/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、`get_environment`/`discover_tools`、R2 范围读取和 `workspace_snapshot` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed、强快照和真实 Business 复测仍未完成 |
 | P09/P10 | 未实现 | 多 connection 配置、真实隔离、官方 runtime supervisor、故障恢复 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
@@ -34,6 +34,7 @@
 - `config`/`policy` 已修复配置上限、重复 key、显式 `enabled` 语义，并由 `policy.BoundScope` 绑定 connection/profile revision 和 root/path deny。
 - `rootfs.Source` 从配置快照持有 Go 1.25+ `os.Root`，只读打开普通文件；`BoundScope` adapter 接入 `readcore.Engine`，Open、Metadata、ReadAt 均重新验证授权和撤权。
 - deny 匹配已覆盖 Windows 大小写不敏感语义与 `**`；Source revision 校验阻止“旧 Source + 新 scope”在 root ID 复用后访问旧 root。
+- 主代理补上 `policy.BoundScope.AllowsPath` 的撤权前置校验：scope 失效时路径授权与 root/tool 授权一样立即返回 false；测试覆盖配置替换/禁用后的旧 scope 不再通过路径检查。
 - Windows handle metadata 已纳入 volume/file identity、link count 和 reparse attributes；hardlink、junction/reparse、Unicode/组合字符、长路径、ADS/保留名/非法路径和 symlink+junction swap 测试通过。临时通过 `New-PSDrive -Name Z -PSProvider FileSystem -Root '\\localhost\C$' -Persist` 将 `Z:` 映射到 loopback SMB 共享时，`GetDriveTypeW` 返回 4，remote-root 测试通过；finally 执行 `Remove-PSDrive -Name Z -Force`，并复核 PowerShell PSDrive、LogicalDisk 和 `net use` 均无 `Z:`。
 - 历史 WSL2 Ubuntu-22.04（Linux 6.6.87.2-microsoft-standard-WSL2、Go 1.26.2）轮次曾临时复制当前工作树并通过 FIFO、Unix socket、hardlink、symlink swap 的目标测试及 race/vet；这不是裸机 Linux 证据。本轮 WSL Ubuntu-22.04 未安装 Go，未运行 Linux runtime 测试，不能把本轮记为 WSL 通过。机器可读记录见 `docs/evidence/P04-platform-verification.json`。
 - 上述是实现者在明确环境和次数下的有界验证，不是数学证明，也不代表 P04 全部放行；本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台、独立安全审查仍是残余风险。P05 的本地 MCP 生命周期和 P01 的一次真实账号/Tunnel/App 调用已有记录，但不代表多账号、长期运行或后端兼容性保证。
@@ -193,9 +194,11 @@ runtime 测试，也不把 workspace snapshot 宣称为强一致快照。
   probe；结果审计失败发生在进程尝试之后，会返回稳定的 audit failure，且不会伪造新的 reject。
   后续磁盘写失败只将 sink 标记为 `degraded`，尚待 supervisor 阻断新的执行。这不是“每条事件
   持久化后才启动”的保证。审计上下文不包含 path、argv、env、output 或 token。
-  该 bridge 也尚未接入 CLI/supervisor 或 MCP。对 `fixed_command`，typed runtime values 尚未
-  进入 Request、执行或 confirmation 链；commandexec 当前在 confirmation、admission、start 和
-  runner 之前直接以 `unsupported_profile` fail closed，因此本增量没有新增 fixed 执行能力。
+  该 bridge 也尚未接入 CLI/supervisor 或 MCP。对 `fixed_command`，typed runtime values 已进入
+  commandexec 的本地 Prepare/Confirm/BuildRequest 链：prepared input 绑定 revision、variant
+  和 resolved-input digest，Request 不承载可变 argv；但字符串 PathResolver 不是可信 final
+  path binding。commandexec 仍在 confirmation、admission、start 和 runner 之前以
+  `unsupported_profile` fail closed，因此本增量没有新增 fixed 执行能力。
   `commandprofile.EnforcementCapability` 没有可信铸造器时，执行会在消费确认前拒绝。
 - `internal/networkguard` 的 NET-01 platform-independent contract/fake 已实现：每次操作使用
   不可序列化的独立 lease/capability/run handle，要求完整 IPv4/IPv6 outbound/inbound、bind/listen、
@@ -205,6 +208,32 @@ runtime 测试，也不把 workspace snapshot 宣称为强一致快照。
   network deny。
 - Windows 执行期 SHA256 从已经持有的最终映像 guard handle 读取，并在创建/恢复进程前复核
   deadline；不会对一个路径单独 hash 后再按路径启动。该摘要计算有界，且使用常量时间比较。
+
+### R4/P08 fixed typed input 本地 prepare/confirm 增量（2026-09-12）
+
+本增量已把 `fixed_command` 的 typed runtime values 接入**仅供本地调用方**使用的
+`internal/commandexec` 边界，但没有开放执行。`Prepare` 只接收本地构造的
+`commandprofile.SlotValue` 映射和 `commandprofile.PathResolver`，由 profile 逐项解析
+`enum`、`bounded_integer`、`root_relative_path`，生成带 profile/revision/variant 绑定的
+不可变 `PreparedInput`。`Request` 只能携带该 prepared value，不能携带可变 argv；其 argv
+只可通过防御性副本预览，prepared value 不能经 JSON 伪造或跨 Executor 重放。
+
+`Prepare` 在解析期间持有 profile revision lease；`Confirm` 重新取得同一 revision lease，
+并由本地 confirmation manager 生成绑定 connection/profile/revision/command/variant/nonce/
+resolved-input digest 的一次性 v2 capability。Prepare、Confirm、BuildRequest 不启动进程、
+不调用 shell、不触碰网络策略，也不把 argv/path/token 写入审计。Execute 在 fixed profile
+仍于 confirmation 消费、admission、start 和 runner 之前返回 `unsupported_profile`；因此
+该增量只证明 typed input 的本地数据流和 fail-closed 顺序，不证明 fixed command 可执行。
+
+当前 `PathResolver` 是一个字符串返回回调，只是可信调用方与 profile 之间的临时接口。它
+没有提供 OS handle、root deny/ignore、reparse/symlink、final identity 或 Windows
+TOCTOU 证明，不能称为可信 final path binding；后续必须替换/封装为真正的 rootfs-aware
+resolver，并在 launcher 端按 Windows UTF-16 长度和 escaping 规则再次校验。真实 WFP、低权
+限 broker/service、capability 铸造、CLI/supervisor 接线和 MCP `run_probe` 仍未完成。
+
+同一轮主代理修复了 `policy.BoundScope.AllowsPath` 的撤权防御：路径授权现在先验证
+BoundScope 当前有效，再应用路径和 deny 规则，旧 scope 在配置替换或连接禁用后不能继续
+通过 `AllowsPath`。这属于文件访问策略修复，与 typed command prepare/confirm 边界分开。
 
 ### R4-NET-02 固定 WFP deny plan 与 disabled backend（2026-09-11）
 
@@ -242,10 +271,12 @@ listen 语义省略后再声称覆盖完整入站生命周期。计划不暴露 
   构造它、管理 capability 生命周期或把结果接入正式执行/恢复路径；MCP 仍不能调用它。当前
   `internal/probe` 自己创建并恢复进程，尚未把“由 broker 创建、持有并在网络策略生效后恢复”的
   挂起进程所有权交给 network backend，因此 R4-NET-02 不能提前接入现有 probe。
-- `fixed_command` 的 `ResolveVariant`/`ResolveInput` 目前仍只是本地配置解析与 argv/digest 构造器，
-  不是授权或 launcher。虽然 canonical resolved-input digest 已用于 version-probe 的本地
-  confirmation v2，`fixed_command` 的 typed runtime values 尚未进入 commandexec Request，也未
-  绑定到其执行/确认链；因此它仍必须在 confirmation、admission、start 和 runner 前阻断。后续
+- `fixed_command` 的 `ResolveVariant`/`ResolveInput` 仍只是本地配置解析与 argv/digest 构造器，
+  不是授权或 launcher。新的 commandexec `Prepare`/`Confirm`/`BuildRequest` 已把 typed runtime
+  values 接入本地边界，并让 Request 只携带不可变 prepared input；但其 `PathResolver` 仍是
+  字符串回调，不能证明 root 授权、deny/ignore、reparse/symlink 或 final identity，不能称为
+  trusted final path binding。虽然 canonical resolved-input digest 已绑定 fixed 的本地
+  confirmation v2，fixed 执行仍必须在 confirmation、admission、start 和 runner 前阻断。后续
   最终 resolver 仍须重新完成 root 授权、deny/ignore、reparse 和 final identity 检查；launcher
   还须按 Windows UTF-16 长度与 escaping 规则重新检查。`cmd`、PowerShell 及其它 shell/interpreter
   方案也必须在该边界前明确闭合，不能由模板间接引入。
@@ -322,13 +353,14 @@ admission 调度和管理变更审计均未实现。
   digest、confirmation v2（绑定 digest+revision，旧 v1 fail closed）、revision lease、
   local commandexec fail-closed bridge、结构化 `ProcessOutcome`、本地 `command.result` 接线、
   一次性确认、R4-AUDIT-01 commandexec 审计边界和 audit.v2 command producers，但 WFP/broker/service
-  network deny、capability 铸造、CLI/supervisor 生产接线、fixed_command typed runtime values
-  的执行/确认链、可信最终 resolver、签名校验和 MCP `run_probe` 均未完成，远程命令必须保持关闭。
+  network deny、capability 铸造、CLI/supervisor 生产接线、fixed_command 的可信最终执行链、
+  trusted final resolver、签名校验和 MCP `run_probe` 均未完成，远程命令必须保持关闭；typed
+  runtime values 目前只进入本地 Prepare/Confirm/BuildRequest 边界，不能据此声称 fixed 可执行。
   已有 pre-open writable/mapped handle 残余风险；`LockFileEx` 不覆盖 mapped view，不能作为完整修复。
 
 ## 五、下一执行者的明确入口
 
-P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R4 已补齐严格 version args、`version_probe` 的 `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical resolved-input digest、confirmation v2（绑定 digest+revision，旧 v1 fail closed）、revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与本地 `command.result` 接线、R4-AUDIT-01（AuditRecorder、`command.reject`、`command.admission`/`command.start` 和审计失败 fail closed）、NET-01 contract/fake 以及 R4-NET-02 固定 plan/DisabledBackend；`fixed_command` typed runtime values 尚未进入执行/confirmation 链，仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝。下一增量实现 fixed typed input 的本地 prepare/confirm、可信 path resolver/final identity、Windows UTF-16/escaping 边界，并继续保持 shell/interpreter 与 fixed MCP execution 关闭；真实 WFP ABI adapter、低权限 broker/service、由 broker 持有的 suspended Job integration 和 VM identity/network adversarial tests 仍按后续路线推进。硬门全部通过前不注册 MCP `run_probe`，也不开放 arbitrary shell 或模型自定义命令行。
+P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R4 已补齐严格 version args、`version_probe` 的 `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical resolved-input digest、confirmation v2（绑定 digest+revision，旧 v1 fail closed）、revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与本地 `command.result` 接线、R4-AUDIT-01（AuditRecorder、`command.reject`、`command.admission`/`command.start` 和审计失败 fail closed）、NET-01 contract/fake 以及 R4-NET-02 固定 plan/DisabledBackend；`fixed_command` typed runtime values 已进入本地 Prepare/Confirm/BuildRequest 边界，但字符串 `PathResolver` 尚不是可信 final path binding，执行仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝。下一增量实现可信 path resolver/final identity 和 Windows UTF-16/escaping 边界，并继续保持 shell/interpreter 与 fixed MCP execution 关闭；真实 WFP ABI adapter、低权限 broker/service、由 broker 持有的 suspended Job integration 和 VM identity/network adversarial tests 仍按后续路线推进。硬门全部通过前不注册 MCP `run_probe`，也不开放 arbitrary shell 或模型自定义命令行。
 
 
 R5 受控 Git read actions、R6 P09/P10 多 connection/supervisor/recovery、R7 证据驱动的 index、R8 GUI/tray、R9 发布与独立审查依次推进；P14 写入始终独立。P04 的本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台仍按路线的停止条件跟踪，不把本地有界验证写成生产安全结论。

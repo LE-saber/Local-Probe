@@ -128,7 +128,7 @@ func TestDisabledAndReplacedConnectionsRevokeOldScopes(t *testing.T) {
 	if !errors.Is(old.Validate(), ErrRevoked) {
 		t.Fatal("old scope remained valid after revision/disable")
 	}
-	if old.AllowsRoot("project") || old.AllowsTool("read_file") {
+	if old.AllowsRoot("project") || old.AllowsTool("read_file") || old.AllowsPath("project", "src/main.go") {
 		t.Fatal("revoked scope still authorized operations")
 	}
 	if _, err := manager.BindAuthenticated("account-a"); !errors.Is(err, ErrDenied) {

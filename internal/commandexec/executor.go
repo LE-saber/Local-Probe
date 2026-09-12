@@ -64,6 +64,11 @@ type Request struct {
 	VariantID    string
 	RequestNonce string
 	Confirmation confirmation.Capability
+	// Prepared is produced only by the local Prepare boundary. It contains
+	// no caller-owned argv slice; its private state binds the resolved input
+	// to this Executor's profile revision and variant. A zero value is kept
+	// valid for the existing version-probe request path.
+	Prepared PreparedInput
 }
 
 type Result struct {
@@ -87,6 +92,7 @@ type AuditRecorder interface {
 // It is not safe to construct one from model-provided values.
 type Executor struct {
 	binding     Binding
+	preparedKey *preparedKey
 	mode        commandprofile.DeveloperMode
 	confirm     *confirmation.Manager
 	enforcement commandprofile.EnforcementCapability
@@ -104,6 +110,7 @@ func New(binding Binding, mode commandprofile.DeveloperMode, confirmations *conf
 	}
 	return &Executor{
 		binding:     Binding{ConnectionID: binding.ConnectionID, ProfileRevision: binding.ProfileRevision, Profile: binding.Profile.Clone(), AcquireRevision: binding.AcquireRevision},
+		preparedKey: &preparedKey{},
 		mode:        mode.Clone(),
 		confirm:     confirmations,
 		enforcement: enforcement,
@@ -147,6 +154,19 @@ func (e *Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	// runner. This keeps the future execution boundary explicit and fail
 	// closed.
 	if profile.Kind() != commandprofile.KindVersionProbe {
+		// A prepared fixed input must still be locally authentic before the
+		// fail-closed profile gate. A zero prepared value preserves the old
+		// stable unsupported_profile response for callers that have not yet
+		// adopted the local prepare boundary. Neither branch consumes a
+		// confirmation or reaches the runner.
+		if !req.Prepared.empty() {
+			if err := e.validatePrepared(req.Prepared); err != nil {
+				return e.reject(e.auditContext(req, profile, e.networkState()), ErrInvalidRequest, "invalid_request")
+			}
+			if req.CommandID != req.Prepared.commandID || req.VariantID != req.Prepared.variantID {
+				return e.reject(e.auditContext(req, profile, e.networkState()), ErrInvalidRequest, "invalid_request")
+			}
+		}
 		return e.reject(e.auditContext(req, profile, e.networkState()), fmt.Errorf("%w: unsupported_profile", ErrNotAdmitted), "unsupported_profile")
 	}
 	// Resolve while the revision lease is held. The resulting digest is bound
