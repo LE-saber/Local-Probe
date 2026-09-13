@@ -304,3 +304,150 @@ func TestLifecycleConcurrentBeginReadyAcquire(t *testing.T) {
 	}
 	group.Wait()
 }
+
+func TestInvalidateCapabilityOnlyClosesCurrentEpoch(t *testing.T) {
+	gate, first := lifecycleTestGate(t, "connection-a")
+	if err := gate.MarkReady(first); err != nil {
+		t.Fatal(err)
+	}
+	firstBinding, err := NewLifecycleBinding(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPermit, err := gate.TryAcquire(firstBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstPermit.Release()
+
+	second, err := gate.ReplaceLifecycle("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.MarkReady(second); err != nil {
+		t.Fatal(err)
+	}
+	secondBinding, err := NewLifecycleBinding(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPermit, err := gate.TryAcquire(secondBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondPermit.Release()
+
+	if err := gate.InvalidateCapability(first); !errors.Is(err, ErrLifecycleMismatch) {
+		t.Fatalf("stale capability error = %v", err)
+	}
+	select {
+	case <-secondPermit.Done():
+		t.Fatal("stale capability invalidated the current permit")
+	default:
+	}
+	secondPermit.Release()
+	secondPermit = nil
+	current, err := gate.TryAcquire(secondBinding)
+	if err != nil {
+		t.Fatalf("current capability was changed by stale cleanup: %v", err)
+	}
+	current.Release()
+
+	active, err := gate.TryAcquire(secondBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer active.Release()
+	copyCapability := *second
+	if err := gate.InvalidateCapability(&copyCapability); !errors.Is(err, ErrLifecycleMismatch) {
+		t.Fatalf("copied capability invalidation error = %v", err)
+	}
+	otherGate, otherCapability := lifecycleTestGate(t, "connection-b")
+	if err := otherGate.MarkReady(otherCapability); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.InvalidateCapability(otherCapability); !errors.Is(err, ErrLifecycleMismatch) {
+		t.Fatalf("cross-gate capability invalidation error = %v", err)
+	}
+	select {
+	case <-active.Done():
+		t.Fatal("invalid capability invalidated the current permit")
+	default:
+	}
+	if err := gate.InvalidateCapability(second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gate.TryAcquire(secondBinding); !errors.Is(err, ErrLifecycleMismatch) {
+		t.Fatalf("invalidated current binding error = %v", err)
+	}
+	select {
+	case <-active.Done():
+	default:
+		t.Fatal("current capability invalidation did not cancel permit")
+	}
+	if err := gate.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.InvalidateCapability(second); !errors.Is(err, ErrGateClosed) {
+		t.Fatalf("closed gate capability invalidation error = %v", err)
+	}
+}
+
+func TestInvalidateCapabilityConcurrentWithNewLifecycle(t *testing.T) {
+	gate, first := lifecycleTestGate(t, "connection-a")
+	if err := gate.MarkReady(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := gate.BeginLifecycle("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.MarkReady(second); err != nil {
+		t.Fatal(err)
+	}
+
+	var group sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for i := 0; i < 100; i++ {
+				_ = gate.InvalidateCapability(first)
+			}
+		}()
+	}
+	for i := 0; i < 100; i++ {
+		current, err := gate.BeginLifecycle("connection-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := gate.MarkReady(current); err != nil {
+			t.Fatal(err)
+		}
+		binding, err := NewLifecycleBinding(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		permit, err := gate.TryAcquire(binding)
+		if err == nil {
+			permit.Release()
+		}
+	}
+	group.Wait()
+	final, err := gate.BeginLifecycle("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.MarkReady(final); err != nil {
+		t.Fatal(err)
+	}
+	finalBinding, err := NewLifecycleBinding(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit, err := gate.TryAcquire(finalBinding)
+	if err != nil {
+		t.Fatalf("stale cleanup corrupted final lifecycle: %v", err)
+	}
+	permit.Release()
+}

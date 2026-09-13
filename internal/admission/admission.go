@@ -672,6 +672,30 @@ func (g *Gate) InvalidateLifecycle(id string) error {
 	return nil
 }
 
+// InvalidateCapability closes a lifecycle only when capability is the exact
+// currently-issued local capability for its connection. It is intended for a
+// runtime owner cleaning up its own generation; stale, copied, and
+// cross-gate capabilities fail closed without touching the current lifecycle.
+func (g *Gate) InvalidateCapability(capability *LifecycleCapability) error {
+	if g == nil {
+		return ErrGateClosed
+	}
+	if !g.initialized() {
+		return ErrInvalidConfig
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return ErrGateClosed
+	}
+	if err := g.validateLifecycleCapabilityLocked(capability); err != nil {
+		return err
+	}
+	invalidateLifecycleLocked(capability.state)
+	g.signalLocked()
+	return nil
+}
+
 func (g *Gate) validateLifecycleCapabilityLocked(capability *LifecycleCapability) error {
 	if capability == nil || capability.gate == nil || capability.gate != g || capability.state == nil {
 		return ErrLifecycleMismatch
