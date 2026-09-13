@@ -119,6 +119,20 @@ func (c *testChild) Stop(ctx context.Context) error {
 	return nil
 }
 
+type readyTestChild struct {
+	testChild
+	readyCount atomic.Int32
+	readyFn    func(context.Context) error
+}
+
+func (c *readyTestChild) MarkReady(ctx context.Context) error {
+	c.readyCount.Add(1)
+	if c.readyFn != nil {
+		return c.readyFn(ctx)
+	}
+	return nil
+}
+
 type factoryResult struct {
 	child Child
 	err   error
@@ -1550,6 +1564,213 @@ func TestSupervisorInjectedTimingPanicsBecomeRuntimeErrors(t *testing.T) {
 			got := waitForState(t, s, "conn-a", StateDegraded)
 			if got.LastError != ErrorRuntime || got.State == StateReady || got.State == StateStopped {
 				t.Fatalf("timing panic snapshot = %+v", got)
+			}
+		})
+	}
+}
+
+func TestSupervisorReadyChildHookRunsOnceAndAllowsReentrantQuery(t *testing.T) {
+	clock := testClock{now: time.Unix(0, 0)}
+	timers := &testTimers{clock: clock, createdSignal: make(chan struct{}, 8)}
+	child := &readyTestChild{}
+	factory := &testFactory{
+		results: map[string][]factoryResult{"conn-a": {{child: child}}},
+		starts:  map[string]int{},
+	}
+	s := testSupervisor(t, factory, testHealth{}, Options{Clock: clock, Timers: timers})
+	child.readyFn = func(context.Context) error {
+		if _, err := s.Snapshot("conn-a"); err != nil {
+			return err
+		}
+		return nil
+	}
+	health, err := NewHealthMetadata("health", 0, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := NewConnectionSpec("conn-a", "rev-1", config.TransportLocal, "", "", 18788, health)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "conn-a"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "conn-a", StateReady)
+	timers.waitForCount(t, 1)
+	if !timers.fireNext() {
+		t.Fatal("ready health poll timer did not fire")
+	}
+	timers.waitForCount(t, 2)
+	if got := child.readyCount.Load(); got != 1 {
+		t.Fatalf("ready hook calls = %d, want 1", got)
+	}
+}
+
+func TestSupervisorReadyChildHookFailureFailsClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   func(context.Context) error
+	}{
+		{name: "error", fn: func(context.Context) error { return errors.New("secret hook detail") }},
+		{name: "panic", fn: func(context.Context) error { panic("secret hook panic") }},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			child := &readyTestChild{readyFn: test.fn}
+			factory := &testFactory{
+				results: map[string][]factoryResult{"conn-a": {{child: child}}},
+				starts:  map[string]int{},
+			}
+			s := testSupervisor(t, factory, testHealth{}, Options{InitialBackoff: time.Hour})
+			if err := s.Add(testSpecAtPort(t, "conn-a", "rev-1", 18788)); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Start(context.Background(), "conn-a"); err != nil {
+				t.Fatal(err)
+			}
+			got := waitForState(t, s, "conn-a", StateBackoff)
+			if got.State == StateReady || got.LastError != ErrorHealth {
+				t.Fatalf("hook failure snapshot = %+v", got)
+			}
+			if child.readyCount.Load() != 1 || child.stopCount.Load() != 1 {
+				t.Fatalf("hook/stop calls = %d/%d, want 1/1", child.readyCount.Load(), child.stopCount.Load())
+			}
+		})
+	}
+}
+
+func TestSupervisorReadyChildHookTimeoutIsBoundedAndNotRetried(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   func(context.Context) error
+	}{
+		{name: "cooperative error", fn: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}},
+		{name: "deadline returns nil", fn: func(ctx context.Context) error {
+			<-ctx.Done()
+			return nil
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			child := &readyTestChild{readyFn: test.fn}
+			factory := &testFactory{
+				results: map[string][]factoryResult{"conn-a": {{child: child}}},
+				starts:  map[string]int{},
+			}
+			s := testSupervisor(t, factory, testHealth{}, Options{InitialBackoff: time.Hour})
+			health, err := NewHealthMetadata("health", 10*time.Millisecond, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, err := NewConnectionSpec("conn-a", "rev-1", config.TransportLocal, "", "", 18788, health)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Add(spec); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Start(context.Background(), "conn-a"); err != nil {
+				t.Fatal(err)
+			}
+			got := waitForState(t, s, "conn-a", StateBackoff)
+			if got.State == StateReady || got.LastError != ErrorHealth {
+				t.Fatalf("hook timeout snapshot = %+v", got)
+			}
+			if child.readyCount.Load() != 1 || factory.startCount("conn-a") != 1 {
+				t.Fatalf("hook/start calls = %d/%d, want 1/1", child.readyCount.Load(), factory.startCount("conn-a"))
+			}
+		})
+	}
+}
+
+func TestSupervisorReadyChildHookDoesNotPublishStaleReadyOnStopOrReplace(t *testing.T) {
+	tests := []struct {
+		name   string
+		action func(*testing.T, *Supervisor) error
+		check  func(*testing.T, *Supervisor)
+	}{
+		{
+			name:   "stop",
+			action: func(_ *testing.T, s *Supervisor) error { return s.Stop(context.Background(), "conn-a") },
+			check: func(t *testing.T, s *Supervisor) {
+				got, err := s.Snapshot("conn-a")
+				if err != nil || got.State != StateStopped {
+					t.Fatalf("stopped snapshot = %+v err=%v", got, err)
+				}
+			},
+		},
+		{
+			name: "replace",
+			action: func(t *testing.T, s *Supervisor) error {
+				return s.Replace(context.Background(), testSpecAtPort(t, "conn-a", "rev-2", 18788))
+			},
+			check: func(t *testing.T, s *Supervisor) {
+				got, err := s.Snapshot("conn-a")
+				if err != nil || got.State != StateStopped || got.Revision != "rev-2" {
+					t.Fatalf("replaced snapshot = %+v err=%v", got, err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			child := &readyTestChild{readyFn: func(ctx context.Context) error {
+				close(entered)
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}}
+			factory := &testFactory{
+				results: map[string][]factoryResult{"conn-a": {{child: child}}},
+				starts:  map[string]int{},
+			}
+			s := testSupervisor(t, factory, testHealth{}, Options{})
+			if err := s.Add(testSpecAtPort(t, "conn-a", "rev-1", 18788)); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Start(context.Background(), "conn-a"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("ready hook was not entered")
+			}
+			if got, err := s.Snapshot("conn-a"); err != nil {
+				t.Fatal(err)
+			} else if got.State == StateReady {
+				t.Fatalf("blocking ready hook exposed StateReady: %+v", got)
+			}
+			done := make(chan error, 1)
+			go func() { done <- test.action(t, s) }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("stop/replace blocked behind a canceled ready hook")
+			}
+			close(release)
+			if got, err := s.Snapshot("conn-a"); err != nil {
+				t.Fatal(err)
+			} else if got.State == StateReady {
+				t.Fatalf("stale ready state published: %+v", got)
+			}
+			test.check(t, s)
+			if child.stopCount.Load() != 1 || child.readyCount.Load() != 1 {
+				t.Fatalf("hook/stop calls = %d/%d, want 1/1", child.readyCount.Load(), child.stopCount.Load())
 			}
 		})
 	}

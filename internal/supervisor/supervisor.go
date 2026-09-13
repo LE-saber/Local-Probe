@@ -35,6 +35,22 @@ type Child interface {
 	Stop(context.Context) error
 }
 
+// ReadyChild is an optional lifecycle hook implemented by a trusted child
+// adapter. MarkReady must return only a stable local error category; the
+// supervisor never forwards its error text. A plain Child remains fully
+// compatible and simply has no readiness hook.
+//
+// The hook is called outside the supervisor mutex, after both health checks
+// have succeeded while the lifecycle is still in StatePolling. StateReady is
+// published only after the hook succeeds. Implementations must not retain or
+// export the RuntimeView supplied to health checks. Like HealthChecker,
+// implementations must synchronously honor ctx cancellation and must not
+// re-enter blocking Stop, Replace, or Close operations on this supervisor.
+type ReadyChild interface {
+	Child
+	MarkReady(context.Context) error
+}
+
 // RuntimeView is the read-only identity passed to health checkers. The
 // unexported marker prevents a checker from manufacturing or taking ownership
 // of a runtime, and deliberately does not expose Child.Stop.
@@ -60,7 +76,20 @@ type ownedChild struct {
 	inFlight bool
 	done     chan struct{}
 	err      error
+	// readyHookAttempted is guarded by Supervisor.mu. It prevents a ready
+	// health poll from invoking the same child's hook more than once.
+	readyHookAttempted bool
+	readyHookState     readyHookState
 }
+
+type readyHookState uint8
+
+const (
+	readyHookUncalled readyHookState = iota
+	readyHookNoHook
+	readyHookSucceeded
+	readyHookFailed
+)
 
 var (
 	// These sentinels are intentionally private. They only let the lifecycle
@@ -69,6 +98,7 @@ var (
 	errRuntimePanic = errors.New("runtime implementation panic")
 	errHealthPanic  = errors.New("health implementation panic")
 	errCleanupPanic = errors.New("cleanup implementation panic")
+	errReadyPanic   = errors.New("ready implementation panic")
 )
 
 func (c *ownedChild) Stop(ctx context.Context) error {
@@ -942,6 +972,78 @@ func callRemoteHealth(health HealthChecker, ctx context.Context, spec Connection
 	return result, err
 }
 
+type readyChildOutcome uint8
+
+const (
+	readyChildOK readyChildOutcome = iota
+	readyChildStale
+	readyChildFailed
+)
+
+// readyChild invokes the optional adapter hook only after claiming the
+// current child/generation under the supervisor lock. The claim is released
+// before calling external code so a hook may safely perform supervisor
+// queries. The hook is synchronous under the same cancellation contract as a
+// health check; a child can never start a second hook call. The context result
+// is checked before the current-generation result so a broken hook cannot
+// return nil after a deadline and accidentally publish ready. The post-call
+// check makes a successful hook stale when Stop or Replace won the lifecycle
+// race; the worker's deferred cleanup then owns the child teardown.
+func (s *Supervisor) readyChild(ctx context.Context, spec ConnectionSpec, e *entry, generation uint64, child *ownedChild) readyChildOutcome {
+	var hook ReadyChild
+	s.mu.Lock()
+	if e.generation != generation || !e.running || e.stopRequested || e.state != StatePolling ||
+		!s.isRegisteredLocked(e) || e.child != child {
+		s.mu.Unlock()
+		return readyChildStale
+	}
+	if child.readyHookAttempted {
+		state := child.readyHookState
+		s.mu.Unlock()
+		if state == readyHookSucceeded || state == readyHookNoHook {
+			return readyChildOK
+		}
+		return readyChildStale
+	}
+	child.readyHookAttempted = true
+	hook, _ = child.child.(ReadyChild)
+	if hook == nil {
+		child.readyHookState = readyHookNoHook
+	}
+	s.mu.Unlock()
+	if hook == nil {
+		return readyChildOK
+	}
+	hookCtx, cancel := healthContext(ctx, spec.health.Timeout)
+	err := callChildReady(hook, hookCtx)
+	hookContextErr := hookCtx.Err()
+	cancel()
+	if hookContextErr != nil {
+		if errors.Is(hookContextErr, context.DeadlineExceeded) {
+			return readyChildFailed
+		}
+		if ctx.Err() != nil {
+			return readyChildStale
+		}
+		return readyChildFailed
+	}
+	s.mu.Lock()
+	current := e.generation == generation && e.running && !e.stopRequested && e.state == StatePolling &&
+		s.isRegisteredLocked(e) && e.child == child
+	if !current {
+		s.mu.Unlock()
+		return readyChildStale
+	}
+	if err != nil {
+		child.readyHookState = readyHookFailed
+		s.mu.Unlock()
+		return readyChildFailed
+	}
+	child.readyHookState = readyHookSucceeded
+	s.mu.Unlock()
+	return readyChildOK
+}
+
 // callChildStop contains the cleanup panic boundary. A recovered panic leaves
 // ownedChild unstopped so the same ownership can be retried and is never
 // incorrectly reported as stopped.
@@ -954,6 +1056,21 @@ func callChildStop(child Child, ctx context.Context) (err error) {
 		}
 	}()
 	err = child.Stop(ctx)
+	panicking = false
+	return err
+}
+
+// callChildReady contains the readiness panic boundary. Hook errors are
+// classified by the worker and never returned verbatim to callers.
+func callChildReady(child ReadyChild, ctx context.Context) (err error) {
+	panicking := true
+	defer func() {
+		if panicking {
+			recover()
+			err = errReadyPanic
+		}
+	}()
+	err = child.MarkReady(ctx)
 	panicking = false
 	return err
 }
@@ -1058,8 +1175,23 @@ func (s *Supervisor) run(ctx context.Context, e *entry, generation uint64) {
 				}
 				break
 			}
-			// Ready means both injected checkers verified this owned child and
-			// current revision; it is not production PID/HA/tunnel evidence.
+			switch s.readyChild(ctx, spec, e, generation, child) {
+			case readyChildStale:
+				return
+			case readyChildFailed:
+				cleanupAttempted = true
+				if err := s.cleanupChild(context.Background(), e, generation, child); err != nil {
+					return
+				}
+				child = nil
+				if !s.enterBackoff(ctx, e, generation, ErrorHealth) {
+					return
+				}
+				continue
+			}
+			// Ready means both injected checkers and the optional child hook
+			// verified this owned child and current revision; it is not
+			// production PID/HA/tunnel evidence.
 			if !s.setState(e, generation, StateReady, ErrorNone) {
 				return
 			}
