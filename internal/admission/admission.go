@@ -26,19 +26,22 @@ const (
 type ErrorCode string
 
 const (
-	CodeInvalidConfig      ErrorCode = "invalid_config"
-	CodeInvalidBinding     ErrorCode = "invalid_binding"
-	CodeConnectionExists   ErrorCode = "connection_exists"
-	CodeConnectionMissing  ErrorCode = "connection_missing"
-	CodeConnectionDisabled ErrorCode = "connection_disabled"
-	CodeConnectionRevoked  ErrorCode = "connection_revoked"
-	CodeBindingMismatch    ErrorCode = "binding_mismatch"
-	CodeAuditUnavailable   ErrorCode = "audit_unavailable"
-	CodeGateClosed         ErrorCode = "admission_closed"
-	CodeGlobalCapacity     ErrorCode = "global_capacity"
-	CodeConnectionCapacity ErrorCode = "connection_capacity"
-	CodeCancelled          ErrorCode = "cancelled"
-	CodeLocalOnly          ErrorCode = "local_only"
+	CodeInvalidConfig        ErrorCode = "invalid_config"
+	CodeInvalidBinding       ErrorCode = "invalid_binding"
+	CodeConnectionExists     ErrorCode = "connection_exists"
+	CodeConnectionMissing    ErrorCode = "connection_missing"
+	CodeConnectionDisabled   ErrorCode = "connection_disabled"
+	CodeConnectionRevoked    ErrorCode = "connection_revoked"
+	CodeBindingMismatch      ErrorCode = "binding_mismatch"
+	CodeAuditUnavailable     ErrorCode = "audit_unavailable"
+	CodeGateClosed           ErrorCode = "admission_closed"
+	CodeGlobalCapacity       ErrorCode = "global_capacity"
+	CodeConnectionCapacity   ErrorCode = "connection_capacity"
+	CodeCancelled            ErrorCode = "cancelled"
+	CodeLocalOnly            ErrorCode = "local_only"
+	CodeLifecycleRequired    ErrorCode = "lifecycle_required"
+	CodeLifecycleUnavailable ErrorCode = "lifecycle_unavailable"
+	CodeLifecycleMismatch    ErrorCode = "lifecycle_mismatch"
 )
 
 // Error is an opaque, stable admission error. It intentionally does not carry
@@ -70,19 +73,23 @@ func (e *Error) Is(target error) bool {
 }
 
 var (
-	ErrInvalidConfig      = &Error{code: CodeInvalidConfig}
-	ErrInvalidBinding     = &Error{code: CodeInvalidBinding}
-	ErrConnectionExists   = &Error{code: CodeConnectionExists}
-	ErrConnectionMissing  = &Error{code: CodeConnectionMissing}
-	ErrConnectionDisabled = &Error{code: CodeConnectionDisabled}
-	ErrConnectionRevoked  = &Error{code: CodeConnectionRevoked}
-	ErrBindingMismatch    = &Error{code: CodeBindingMismatch}
-	ErrAuditUnavailable   = &Error{code: CodeAuditUnavailable}
-	ErrGateClosed         = &Error{code: CodeGateClosed}
-	ErrGlobalCapacity     = &Error{code: CodeGlobalCapacity}
-	ErrConnectionCapacity = &Error{code: CodeConnectionCapacity}
-	ErrCancelled          = &Error{code: CodeCancelled}
-	ErrLocalOnly          = &Error{code: CodeLocalOnly}
+	ErrInvalidConfig        = &Error{code: CodeInvalidConfig}
+	ErrInvalidBinding       = &Error{code: CodeInvalidBinding}
+	ErrConnectionExists     = &Error{code: CodeConnectionExists}
+	ErrConnectionMissing    = &Error{code: CodeConnectionMissing}
+	ErrConnectionDisabled   = &Error{code: CodeConnectionDisabled}
+	ErrConnectionRevoked    = &Error{code: CodeConnectionRevoked}
+	ErrBindingMismatch      = &Error{code: CodeBindingMismatch}
+	ErrAuditUnavailable     = &Error{code: CodeAuditUnavailable}
+	ErrGateClosed           = &Error{code: CodeGateClosed}
+	ErrGlobalCapacity       = &Error{code: CodeGlobalCapacity}
+	ErrConnectionCapacity   = &Error{code: CodeConnectionCapacity}
+	ErrCancelled            = &Error{code: CodeCancelled}
+	ErrLocalOnly            = &Error{code: CodeLocalOnly}
+	ErrLifecycleRequired    = &Error{code: CodeLifecycleRequired}
+	ErrLifecycleUnavailable = &Error{code: CodeLifecycleUnavailable}
+	ErrLifecycleNotReady    = ErrLifecycleUnavailable
+	ErrLifecycleMismatch    = &Error{code: CodeLifecycleMismatch}
 )
 
 // Limits bounds active permits. A zero Limits value means DefaultLimits when
@@ -161,10 +168,11 @@ func (s *AuditHealthState) SetHealthy(healthy bool) {
 // credential, endpoint, path or command fields. Use NewConnection rather than
 // constructing a zero value.
 type Connection struct {
-	id        string
-	profileID string
-	revision  string
-	enabled   bool
+	id                string
+	profileID         string
+	revision          string
+	enabled           bool
+	lifecycleRequired bool
 }
 
 // NewConnection constructs a validated connection record. Disabled records
@@ -177,6 +185,18 @@ func NewConnection(id, profileID, revision string, enabled bool) (Connection, er
 	return connection, nil
 }
 
+// NewLifecycleConnection constructs a connection that requires a fresh local
+// lifecycle capability before it can admit work. This opt-in constructor keeps
+// the original NewConnection/NewBinding path compatible for existing callers.
+func NewLifecycleConnection(id, profileID, revision string, enabled bool) (Connection, error) {
+	connection, err := NewConnection(id, profileID, revision, enabled)
+	if err != nil {
+		return Connection{}, err
+	}
+	connection.lifecycleRequired = true
+	return connection, nil
+}
+
 func (c Connection) Validate() error {
 	if !validIdentifier(c.id) || !validIdentifier(c.profileID) || !validIdentifier(c.revision) {
 		return ErrInvalidConfig
@@ -184,18 +204,27 @@ func (c Connection) Validate() error {
 	return nil
 }
 
-func (c Connection) ID() string        { return c.id }
-func (c Connection) ProfileID() string { return c.profileID }
-func (c Connection) Revision() string  { return c.revision }
-func (c Connection) Enabled() bool     { return c.enabled }
+func (c Connection) ID() string              { return c.id }
+func (c Connection) ProfileID() string       { return c.profileID }
+func (c Connection) Revision() string        { return c.revision }
+func (c Connection) Enabled() bool           { return c.enabled }
+func (c Connection) RequiresLifecycle() bool { return c.lifecycleRequired }
 
 // Binding is the local typed identity required for admission. The fields are
 // private and JSON serialization is explicitly refused so a model cannot
-// manufacture or alter a binding through a wire request.
+// manufacture or alter a binding through a wire request. NewBinding creates a
+// legacy binding; it is intentionally rejected for lifecycle-required
+// connections. Use NewLifecycleBinding with a capability from BeginLifecycle.
 type Binding struct {
 	connectionID string
 	profileID    string
 	revision     string
+	lifecycle    *bindingLifecycle
+}
+
+type bindingLifecycle struct {
+	capability *LifecycleCapability
+	epoch      uint64
 }
 
 // NewBinding constructs a binding for a trusted local caller.
@@ -205,6 +234,57 @@ func NewBinding(connectionID, profileID, revision string) (Binding, error) {
 		return Binding{}, err
 	}
 	return binding, nil
+}
+
+// LifecycleCapability is a non-serializable local capability issued by a Gate
+// for one connection lifecycle epoch. Its private fields and gate-side pointer
+// identity prevent a caller from manufacturing a valid capability by copying
+// JSON or identifier values. A value-copy of the struct is not accepted; an
+// alias to the returned pointer remains the same local capability.
+type LifecycleCapability struct {
+	gate         *Gate
+	state        *connectionState
+	connectionID string
+	profileID    string
+	revision     string
+	epoch        uint64
+}
+
+// NewLifecycleBinding binds the current connection identity and lifecycle
+// epoch to a typed local binding. It may be called before MarkReady when a
+// caller wants to prepare the binding early; admission remains unavailable
+// until the same capability is marked ready.
+func NewLifecycleBinding(capability *LifecycleCapability) (Binding, error) {
+	if capability == nil || capability.gate == nil {
+		return Binding{}, ErrInvalidBinding
+	}
+	g := capability.gate
+	if !g.initialized() {
+		return Binding{}, ErrInvalidConfig
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.validateLifecycleCapabilityLocked(capability); err != nil {
+		return Binding{}, err
+	}
+	state := capability.state
+	if !state.lifecycleRequired {
+		return Binding{}, ErrLifecycleRequired
+	}
+	return Binding{
+		connectionID: capability.connectionID,
+		profileID:    capability.profileID,
+		revision:     capability.revision,
+		lifecycle:    &bindingLifecycle{capability: capability, epoch: capability.epoch},
+	}, nil
+}
+
+func (LifecycleCapability) MarshalJSON() ([]byte, error) {
+	return nil, ErrLocalOnly
+}
+
+func (*LifecycleCapability) UnmarshalJSON([]byte) error {
+	return ErrLocalOnly
 }
 
 func (b Binding) Validate() error {
@@ -228,13 +308,16 @@ func (*Binding) UnmarshalJSON([]byte) error {
 
 // Snapshot is a non-sensitive point-in-time view of one gate connection.
 type Snapshot struct {
-	ID        string
-	ProfileID string
-	Revision  string
-	Enabled   bool
-	Revoked   bool
-	Active    int
-	Limit     int
+	ID                string
+	ProfileID         string
+	Revision          string
+	Enabled           bool
+	Revoked           bool
+	LifecycleRequired bool
+	LifecycleEpoch    uint64
+	LifecycleReady    bool
+	Active            int
+	Limit             int
 }
 
 // Gate bounds all active local requests and tracks connection lifecycle. It
@@ -377,11 +460,15 @@ type permitLifecycle struct {
 }
 
 type connectionState struct {
-	spec    Connection
-	enabled bool
-	revoked bool
-	active  int
-	permits map[uint64]*Permit
+	spec              Connection
+	enabled           bool
+	revoked           bool
+	lifecycleRequired bool
+	lifecycleEpoch    uint64
+	lifecycleReady    bool
+	lifecycleCap      *LifecycleCapability
+	active            int
+	permits           map[uint64]*Permit
 }
 
 // New creates a gate. A nil audit health source is accepted for construction
@@ -428,10 +515,192 @@ func (g *Gate) AddConnection(connection Connection) error {
 		return ErrConnectionExists
 	}
 	g.connections[connection.id] = &connectionState{
-		spec: connection, enabled: connection.enabled, permits: make(map[uint64]*Permit),
+		spec: connection, enabled: connection.enabled,
+		lifecycleRequired: connection.lifecycleRequired,
+		permits:           make(map[uint64]*Permit),
 	}
 	g.signalLocked()
 	return nil
+}
+
+// RequireLifecycle opts an existing connection into the lifecycle capability
+// mode. The transition invalidates legacy bindings and cancels current
+// permits. The requirement is sticky for the lifetime of the registered
+// connection record; replacing it cannot silently turn the mode off.
+func (g *Gate) RequireLifecycle(id string) error {
+	if g == nil {
+		return ErrGateClosed
+	}
+	if !g.initialized() {
+		return ErrInvalidConfig
+	}
+	if !validIdentifier(id) {
+		return ErrConnectionMissing
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return ErrGateClosed
+	}
+	state, ok := g.connections[id]
+	if !ok {
+		return ErrConnectionMissing
+	}
+	if state.revoked {
+		return ErrConnectionRevoked
+	}
+	if state.lifecycleRequired {
+		return nil
+	}
+	state.lifecycleRequired = true
+	state.spec.lifecycleRequired = true
+	invalidateLifecycleLocked(state)
+	g.signalLocked()
+	return nil
+}
+
+// BeginLifecycle starts a new lifecycle epoch for an enabled connection and
+// returns the only capability that can mark that epoch ready. Beginning a new
+// epoch always cancels old permits and invalidates all older bindings.
+func (g *Gate) BeginLifecycle(id string) (*LifecycleCapability, error) {
+	return g.beginLifecycle(id)
+}
+
+// ReplaceLifecycle is an explicit restart boundary for callers that replace
+// the local runtime while keeping the same connection/profile/revision. It
+// has the same capability and invalidation semantics as BeginLifecycle.
+func (g *Gate) ReplaceLifecycle(id string) (*LifecycleCapability, error) {
+	return g.beginLifecycle(id)
+}
+
+func (g *Gate) beginLifecycle(id string) (*LifecycleCapability, error) {
+	if g == nil {
+		return nil, ErrGateClosed
+	}
+	if !g.initialized() {
+		return nil, ErrInvalidConfig
+	}
+	if !validIdentifier(id) {
+		return nil, ErrConnectionMissing
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return nil, ErrGateClosed
+	}
+	state, ok := g.connections[id]
+	if !ok {
+		return nil, ErrConnectionMissing
+	}
+	if state.revoked {
+		return nil, ErrConnectionRevoked
+	}
+	if !state.lifecycleRequired {
+		return nil, ErrLifecycleRequired
+	}
+	if !state.enabled {
+		return nil, ErrConnectionDisabled
+	}
+	invalidateLifecycleLocked(state)
+	capability := &LifecycleCapability{
+		gate: g, state: state,
+		connectionID: state.spec.id, profileID: state.spec.profileID,
+		revision: state.spec.revision, epoch: state.lifecycleEpoch,
+	}
+	state.lifecycleCap = capability
+	g.signalLocked()
+	return capability, nil
+}
+
+// MarkReady publishes readiness for the exact capability returned by
+// BeginLifecycle/ReplaceLifecycle. A copied capability, a capability from a
+// different gate, or a stale capability cannot reopen the connection.
+func (g *Gate) MarkReady(capability *LifecycleCapability) error {
+	if g == nil {
+		return ErrGateClosed
+	}
+	if !g.initialized() {
+		return ErrInvalidConfig
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return ErrGateClosed
+	}
+	if err := g.validateLifecycleCapabilityLocked(capability); err != nil {
+		return err
+	}
+	state := capability.state
+	if !state.lifecycleRequired {
+		return ErrLifecycleRequired
+	}
+	if state.revoked {
+		return ErrConnectionRevoked
+	}
+	if !state.enabled {
+		return ErrConnectionDisabled
+	}
+	state.lifecycleReady = true
+	g.signalLocked()
+	return nil
+}
+
+// InvalidateLifecycle closes the current lifecycle epoch. It is idempotent
+// for callers but still advances the epoch, so retained bindings and
+// capabilities cannot be reused.
+func (g *Gate) InvalidateLifecycle(id string) error {
+	if g == nil {
+		return ErrGateClosed
+	}
+	if !g.initialized() {
+		return ErrInvalidConfig
+	}
+	if !validIdentifier(id) {
+		return ErrConnectionMissing
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return ErrGateClosed
+	}
+	state, ok := g.connections[id]
+	if !ok {
+		return ErrConnectionMissing
+	}
+	invalidateLifecycleLocked(state)
+	g.signalLocked()
+	return nil
+}
+
+func (g *Gate) validateLifecycleCapabilityLocked(capability *LifecycleCapability) error {
+	if capability == nil || capability.gate == nil || capability.gate != g || capability.state == nil {
+		return ErrLifecycleMismatch
+	}
+	state := capability.state
+	if g.connections[capability.connectionID] != state {
+		return ErrLifecycleMismatch
+	}
+	if state.lifecycleCap != capability || capability.epoch == 0 || state.lifecycleEpoch != capability.epoch ||
+		state.spec.id != capability.connectionID || state.spec.profileID != capability.profileID ||
+		state.spec.revision != capability.revision {
+		return ErrLifecycleMismatch
+	}
+	return nil
+}
+
+func invalidateLifecycleLocked(state *connectionState) {
+	if state == nil {
+		return
+	}
+	cancelPermitsLocked(state)
+	state.lifecycleReady = false
+	state.lifecycleCap = nil
+	state.lifecycleEpoch++
+	if state.lifecycleEpoch == 0 {
+		// Epoch zero is reserved for the never-started state. A wraparound is
+		// practically unreachable, but must not resurrect old zero bindings.
+		state.lifecycleEpoch++
+	}
 }
 
 // ReplaceConnection atomically swaps a registered connection's profile,
@@ -456,10 +725,15 @@ func (g *Gate) ReplaceConnection(connection Connection) error {
 	if !ok {
 		return ErrConnectionMissing
 	}
-	cancelPermitsLocked(state)
 	state.spec = connection
 	state.enabled = connection.enabled
 	state.revoked = false
+	// Lifecycle requirement is sticky. A trusted replacement may opt in, but
+	// cannot silently downgrade an already protected connection to legacy
+	// identifier-only admission.
+	state.lifecycleRequired = state.lifecycleRequired || connection.lifecycleRequired
+	state.spec.lifecycleRequired = state.lifecycleRequired
+	invalidateLifecycleLocked(state)
 	g.signalLocked()
 	return nil
 }
@@ -530,11 +804,18 @@ func (g *Gate) setConnectionEnabled(id string, enabled bool) error {
 		return ErrConnectionRevoked
 	}
 	if state.enabled == enabled {
+		if !enabled {
+			// Repeated disable is still an invalidation boundary. This makes a
+			// capability retained by a local caller unusable after every disable
+			// request, even if the state was already disabled.
+			invalidateLifecycleLocked(state)
+			g.signalLocked()
+		}
 		return nil
 	}
 	state.enabled = enabled
 	if !enabled {
-		cancelPermitsLocked(state)
+		invalidateLifecycleLocked(state)
 	}
 	g.signalLocked()
 	return nil
@@ -564,7 +845,7 @@ func (g *Gate) RevokeConnection(id string) error {
 	}
 	state.enabled = false
 	state.revoked = true
-	cancelPermitsLocked(state)
+	invalidateLifecycleLocked(state)
 	g.signalLocked()
 	return nil
 }
@@ -751,6 +1032,23 @@ func (g *Gate) checkAdmissionLocked(binding Binding) error {
 	}
 	if state.spec.profileID != binding.profileID || state.spec.revision != binding.revision {
 		return ErrBindingMismatch
+	}
+	if state.lifecycleRequired {
+		if binding.lifecycle == nil {
+			return ErrLifecycleRequired
+		}
+		lifecycle := binding.lifecycle
+		if lifecycle.capability == nil || state.lifecycleCap != lifecycle.capability ||
+			state.lifecycleEpoch != lifecycle.epoch || lifecycle.epoch == 0 ||
+			lifecycle.capability.epoch != lifecycle.epoch ||
+			lifecycle.capability.connectionID != binding.connectionID ||
+			lifecycle.capability.profileID != binding.profileID ||
+			lifecycle.capability.revision != binding.revision {
+			return ErrLifecycleMismatch
+		}
+		if !state.lifecycleReady {
+			return ErrLifecycleUnavailable
+		}
 	}
 	return nil
 }
@@ -969,7 +1267,9 @@ func (g *Gate) Snapshot(id string) (Snapshot, error) {
 	}
 	return Snapshot{
 		ID: state.spec.id, ProfileID: state.spec.profileID, Revision: state.spec.revision,
-		Enabled: state.enabled, Revoked: state.revoked, Active: state.active,
+		Enabled: state.enabled, Revoked: state.revoked,
+		LifecycleRequired: state.lifecycleRequired, LifecycleEpoch: state.lifecycleEpoch,
+		LifecycleReady: state.lifecycleReady, Active: state.active,
 		Limit: g.limits.MaxPerConnection,
 	}, nil
 }
@@ -985,7 +1285,9 @@ func (g *Gate) Snapshots() []Snapshot {
 	for _, state := range g.connections {
 		result = append(result, Snapshot{
 			ID: state.spec.id, ProfileID: state.spec.profileID, Revision: state.spec.revision,
-			Enabled: state.enabled, Revoked: state.revoked, Active: state.active,
+			Enabled: state.enabled, Revoked: state.revoked,
+			LifecycleRequired: state.lifecycleRequired, LifecycleEpoch: state.lifecycleEpoch,
+			LifecycleReady: state.lifecycleReady, Active: state.active,
 			Limit: g.limits.MaxPerConnection,
 		})
 	}
@@ -1026,6 +1328,8 @@ var canceledContext = func() context.Context {
 // Keep the explicit JSON methods from being lost during future refactors.
 var _ json.Marshaler = Binding{}
 var _ json.Unmarshaler = (*Binding)(nil)
+var _ json.Marshaler = LifecycleCapability{}
+var _ json.Unmarshaler = (*LifecycleCapability)(nil)
 var _ json.Marshaler = (*Permit)(nil)
 var _ json.Unmarshaler = (*Permit)(nil)
 var _ error = (*Error)(nil)
