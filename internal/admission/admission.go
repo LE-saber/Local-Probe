@@ -645,6 +645,55 @@ func (g *Gate) MarkReady(capability *LifecycleCapability) error {
 	return nil
 }
 
+// CurrentLifecycleBinding returns a local-only binding for the currently
+// ready lifecycle epoch of id. The lookup and the capability snapshot are
+// linearized under g.mu with BeginLifecycle, ReplaceLifecycle,
+// InvalidateLifecycle, and the other lifecycle boundaries. Acquire performs
+// its own final locked validation, so a binding returned here cannot remain
+// usable after its lifecycle is replaced or invalidated.
+func (g *Gate) CurrentLifecycleBinding(id string) (Binding, error) {
+	if g == nil {
+		return Binding{}, ErrGateClosed
+	}
+	if !g.initialized() {
+		return Binding{}, ErrInvalidConfig
+	}
+	if !validIdentifier(id) {
+		return Binding{}, ErrConnectionMissing
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return Binding{}, ErrGateClosed
+	}
+	state, ok := g.connections[id]
+	if !ok {
+		return Binding{}, ErrConnectionMissing
+	}
+	if state.revoked {
+		return Binding{}, ErrConnectionRevoked
+	}
+	if !state.enabled {
+		return Binding{}, ErrConnectionDisabled
+	}
+	if !state.lifecycleRequired {
+		return Binding{}, ErrLifecycleRequired
+	}
+	capability := state.lifecycleCap
+	if capability == nil || !state.lifecycleReady || capability.gate != g || capability.state != state ||
+		capability.epoch == 0 || capability.epoch != state.lifecycleEpoch ||
+		capability.connectionID != state.spec.id || capability.profileID != state.spec.profileID ||
+		capability.revision != state.spec.revision {
+		return Binding{}, ErrLifecycleUnavailable
+	}
+	return Binding{
+		connectionID: state.spec.id,
+		profileID:    state.spec.profileID,
+		revision:     state.spec.revision,
+		lifecycle:    &bindingLifecycle{capability: capability, epoch: capability.epoch},
+	}, nil
+}
+
 // InvalidateLifecycle closes the current lifecycle epoch. It is idempotent
 // for callers but still advances the epoch, so retained bindings and
 // capabilities cannot be reused.

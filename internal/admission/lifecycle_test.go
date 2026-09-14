@@ -305,6 +305,145 @@ func TestLifecycleConcurrentBeginReadyAcquire(t *testing.T) {
 	group.Wait()
 }
 
+func TestCurrentLifecycleBindingRequiresReadyAndAdmits(t *testing.T) {
+	gate, capability := lifecycleTestGate(t, "connection-a")
+	if _, err := gate.CurrentLifecycleBinding("connection-a"); !errors.Is(err, ErrLifecycleUnavailable) {
+		t.Fatalf("pre-ready current binding error = %v", err)
+	}
+	if err := gate.MarkReady(capability); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := gate.CurrentLifecycleBinding("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.lifecycle == nil || binding.lifecycle.capability != capability || binding.lifecycle.epoch != capability.epoch {
+		t.Fatalf("current binding does not retain current capability: %#v", binding)
+	}
+	permit, err := gate.TryAcquire(binding)
+	if err != nil {
+		t.Fatalf("current binding acquire: %v", err)
+	}
+	permit.Release()
+}
+
+func TestCurrentLifecycleBindingInvalidationRequiresNewEpoch(t *testing.T) {
+	gate, capability := lifecycleTestGate(t, "connection-a")
+	if err := gate.MarkReady(capability); err != nil {
+		t.Fatal(err)
+	}
+	oldBinding, err := gate.CurrentLifecycleBinding("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldEpoch := oldBinding.lifecycle.epoch
+	if err := gate.InvalidateLifecycle("connection-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gate.TryAcquire(oldBinding); !errors.Is(err, ErrLifecycleMismatch) {
+		t.Fatalf("invalidated current binding error = %v", err)
+	}
+	if _, err := gate.CurrentLifecycleBinding("connection-a"); !errors.Is(err, ErrLifecycleUnavailable) {
+		t.Fatalf("invalidated current binding lookup error = %v", err)
+	}
+
+	next, err := gate.BeginLifecycle("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.MarkReady(next); err != nil {
+		t.Fatal(err)
+	}
+	newBinding, err := gate.CurrentLifecycleBinding("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newBinding.lifecycle == nil || newBinding.lifecycle.epoch == oldEpoch {
+		t.Fatalf("new binding reused old epoch: old=%d new=%d", oldEpoch, newBinding.lifecycle.epoch)
+	}
+	permit, err := gate.TryAcquire(newBinding)
+	if err != nil {
+		t.Fatalf("new current binding acquire: %v", err)
+	}
+	permit.Release()
+}
+
+func TestCurrentLifecycleBindingRejectsClosedRevokedAndKeepsConnectionsIsolated(t *testing.T) {
+	disabledGate, disabledCapability := lifecycleTestGate(t, "connection-disabled")
+	if err := disabledGate.MarkReady(disabledCapability); err != nil {
+		t.Fatal(err)
+	}
+	if err := disabledGate.DisableConnection("connection-disabled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disabledGate.CurrentLifecycleBinding("connection-disabled"); !errors.Is(err, ErrConnectionDisabled) {
+		t.Fatalf("disabled current binding error = %v", err)
+	}
+
+	closedGate, closedCapability := lifecycleTestGate(t, "connection-closed")
+	if err := closedGate.MarkReady(closedCapability); err != nil {
+		t.Fatal(err)
+	}
+	if err := closedGate.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := closedGate.CurrentLifecycleBinding("connection-closed"); !errors.Is(err, ErrGateClosed) {
+		t.Fatalf("closed current binding error = %v", err)
+	}
+
+	revokedGate, revokedCapability := lifecycleTestGate(t, "connection-revoked")
+	if err := revokedGate.MarkReady(revokedCapability); err != nil {
+		t.Fatal(err)
+	}
+	if err := revokedGate.RevokeConnection("connection-revoked"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := revokedGate.CurrentLifecycleBinding("connection-revoked"); !errors.Is(err, ErrConnectionRevoked) {
+		t.Fatalf("revoked current binding error = %v", err)
+	}
+
+	health := NewAuditHealthState(true)
+	gate, err := New(Limits{MaxGlobal: 4, MaxPerConnection: 1}, health)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"connection-a", "connection-b"} {
+		connection, err := NewLifecycleConnection(id, "profile-"+id, "revision-"+id, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := gate.AddConnection(connection); err != nil {
+			t.Fatal(err)
+		}
+		capability, err := gate.BeginLifecycle(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := gate.MarkReady(capability); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bindingA, err := gate.CurrentLifecycleBinding("connection-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingB, err := gate.CurrentLifecycleBinding("connection-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.InvalidateLifecycle("connection-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gate.TryAcquire(bindingA); !errors.Is(err, ErrLifecycleMismatch) {
+		t.Fatalf("A invalidated binding error = %v", err)
+	}
+	permitB, err := gate.TryAcquire(bindingB)
+	if err != nil {
+		t.Fatalf("B current binding after A invalidation: %v", err)
+	}
+	permitB.Release()
+}
+
 func TestInvalidateCapabilityOnlyClosesCurrentEpoch(t *testing.T) {
 	gate, first := lifecycleTestGate(t, "connection-a")
 	if err := gate.MarkReady(first); err != nil {
