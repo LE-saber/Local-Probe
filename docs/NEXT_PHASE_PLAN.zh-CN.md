@@ -1,10 +1,10 @@
 # Local-Probe 下一阶段执行路线（R0–R9）
 
-日期：2026-09-14
+日期：2026-09-15
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
-当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend、一次性确认本地核心以及 fixed typed input 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界；prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv。`PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。R4 另已增加 commandpath 的本地 final-handle/identity binding，但 `Source.New` 根目录交换竞态、长路径和 launcher 原子硬门仍未闭合。R5 已增加固定 `git_status`/`git_diff` plan/parser，但 `Plan.PreviewExecutable=false`：repo-local filters 无法完整关闭，`RootID` 也不是 root binding，因此不接 MCP。R6 已增加 transport config、明确 `ProductionReady=false` 的非生产 FileStore、全局/每 connection admission gate、注入式 fake supervisor automation core，以及 Windows `runtimeowner` 和 readiness 两个非生产本地契约；这些只证明本地契约与状态机，不代表真实 Windows runtime、Tunnel 或生产接线。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`。本轮也未做新的 Windows 手工、网页、Tunnel、Linux runtime 或真实网络测试；R6 的双连接/soak 与发布级审查仍未完成。
+当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend、一次性确认本地核心以及 fixed typed input 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界；prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv。`PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。R4 另已增加 commandpath 的本地 final-handle/identity binding，但 `Source.New` 根目录交换竞态、长路径和 launcher 原子硬门仍未闭合。R5 已增加固定 `git_status`/`git_diff` plan/parser，但 `Plan.PreviewExecutable=false`：repo-local filters 无法完整关闭，`RootID` 也不是 root binding，因此不接 MCP。R6 已增加 transport config、明确 `ProductionReady=false` 的非生产 FileStore、全局/每 connection admission gate、注入式 fake supervisor automation core，以及 Windows `runtimeowner` 和 readiness 两个非生产本地契约；这些只证明本地契约与状态机，不代表真实 Windows runtime、Tunnel 或生产接线。R7 已增加 `ProductionReady=false` 的 bounded local-only metadata candidate catalog 与 direct/catalog 证据 harness；catalog 只给候选，必须经过当前 `BoundScope`/rootfs live verify，默认关闭且未接 MCP。10k/100k 的局部 candidate query 记录比 direct prefix 快，但 live verify 后端到端明显更慢；1m 尚未运行，SQLite/FTS 未实现。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`。本轮也未做新的 Windows 手工、网页、Tunnel、Linux runtime 或真实网络测试；R6 的双连接/soak、R7 的完整证据与发布级审查仍未完成。
 
 ### 当前 R4–R6 交付快照
 
@@ -226,7 +226,21 @@ Linux 测试。
 
 ### 4.4 索引后置
 
-P11 先做 10k/100k/1m 条目的 cold/warm 基准，比较 direct、内存 catalog、SQLite metadata、FTS 的延迟、内存、漏项和变化目录行为。索引只产生候选，最终必须 live verify；没有收益则默认关闭。symbol index 和统一 `workspace_query` 只有模型评测证明能减少遗漏和往返时才增加，避免工具爆炸。
+R7 已完成第一版 bounded local-only in-memory metadata candidate catalog 和 direct/catalog
+comparison harness，但仅作为本地实验代码：catalog 只产生候选，最终必须经当前
+`BoundScope`/`rootfs.Source` live verify；完整性仍依赖 direct scan 或完整 reconcile。catalog
+带有 scope/revision、dirty/reconcile、generation、页数、路径和近似内存边界，且
+`ProductionReady=false`、未接 MCP、默认关闭。
+
+10k/100k 的对照显示 candidate query 局部较快，但逐候选 live verify 把端到端耗时推高到显著
+慢于 direct prefix scan，因此目前没有启用收益。1m 尚未运行；SQLite metadata/FTS 未实现，
+因为尚无必要证据引入持久依赖。不得用 partial page、弱 metadata token 或 catalog 空结果证明
+不存在。symbol index 和统一 `workspace_query` 只有模型评测证明能减少遗漏和往返时才增加，
+避免工具爆炸。
+
+生产前的强门至少包括 physical root identity/ignore fingerprint、watcher overflow 后禁用并
+direct fallback、并发 reconcile 的 generation final check、严格 cancellation、变化目录/新
+文件遗漏与损坏回退，以及不同磁盘类型上的真实 1m 证据。
 
 ## 五、audit.v1 基础设施与 audit.v2 command 扩展
 
@@ -460,7 +474,34 @@ reparse/TOCTOU、hardlink/ACL 和崩溃恢复证据。`runtimeowner`/`readiness`
 
 ### R7：以证据决定是否启用 index
 
-依赖：R1、R2。产物：10k/100k/1m cold/warm direct/catalog/SQLite/FTS 对照，变化目录 reconcile 和内存/延迟报告。验收：index 只给候选，live verify 无遗漏优势且确有收益；否则默认关闭。停止条件：index 漏项、stale 结果无法标识或没有收益时保留 direct。
+状态（2026-09-15）：代码增量已完成，整体验收未完成。已实现 `internal/catalog` 的 bounded
+local-only in-memory metadata candidate catalog，以及 `internal/search` 的 opt-in synthetic
+direct/catalog comparison harness。catalog 不保存正文、绝对路径或句柄，初始/dirty 状态在
+完整 reconcile 前 fail closed，query 只给候选；调用方必须通过当前 `BoundScope` 和 rootfs
+live verify，不能将候选或空结果视为存在性/完整性证明。代码明确 `ProductionReady=false`，
+没有 MCP 接线，默认关闭。
+
+已经有 small/10k/100k 的集合正确性、重复/遗漏检查和候选 live verify。10k/100k 的旧版单次
+warm-query 记录显示 candidate query 约为 direct prefix 的 0.1704/0.25017，但 live verify
+分别耗时约 7.22/38.44 秒；故目前没有端到端启用收益。该 timing 产生于改为 8-repeat warm
+query 之前，修改后的 8-repeat 结果尚未重跑，不能把旧值当成当前最终性能报告。direct 10k
+harness 已完成全 continuation 证据；1m 尚未运行，SQLite/FTS 未实现。
+
+下一步必须补齐：
+
+- 在 Windows 上真实运行并保存 1m direct/catalog 证据，分清 service-cold、warm 和未知的 OS
+  文件缓存状态，并按磁盘类型记录延迟、内存和失败原因；不得只跑第一页。
+- 用 physical root identity、ignore fingerprint、scope/revision 和 generation final check
+  绑定 catalog；watcher overflow、reconcile 取消/并发、变化目录、新文件遗漏、损坏或无法
+  live verify 时必须禁用 catalog 并回退 direct/reconcile。
+- 对候选逐项做当前 rootfs/BoundScope live verify，验证撤权、deny、reparse/重命名和新旧
+  generation；任何 stale/漏项/重复都保持默认关闭。
+- 只有在端到端（含 live verify）收益、内存上限和完整性证据同时成立后，才重新评估受控接线；
+  否则继续 direct，不引入 SQLite/FTS 或统一 `workspace_query`。
+
+停止条件：index 漏项、stale 结果无法标识、并发 reconcile 无法做最终 generation 校验、
+严格取消或 direct fallback 无法证明，或者没有端到端收益时，catalog 永久保持 local-only
+实验实现并默认关闭。
 
 ### R8：GUI/tray
 
@@ -474,7 +515,8 @@ reparse/TOCTOU、hardlink/ACL 和崩溃恢复证据。`runtimeowner`/`readiness`
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；
 R5/R6 的本地契约核心可分别推进，但其 launcher、MCP 和生产 runtime 接线必须等待对应硬门；
-R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据。
+R7 的 direct 基准依赖 R1/R2，当前已完成第一版本地证据 harness，但 1m、变化目录与生产硬门
+仍未完成；R8 必须等待 R6；R9 汇总全部发布证据。
 
 现在做：继续保持远程能力关闭。R4 commandpath 仍需完成可信 root resolver、祖先
 reparse/长路径和 Windows UTF-16/escaping/handle-based launcher 硬门；R5 继续保持
@@ -482,7 +524,8 @@ reparse/长路径和 Windows UTF-16/escaping/handle-based launcher 硬门；R5 �
 完善 FileStore 的 OS lock/崩溃语义、runtimeowner 的 trusted launcher/broker/direct-leaf 与真实
 child 接线、readiness 的适配器接线和长期 evaluator 生命周期、lifecycleadapter 与
 connectionmanager 的生产生命周期接线、真实 Windows runtime、MCP ping、Cloudflare health、
-双连接隔离和 soak 证据。随后按 WFP adapter → 低权限 broker/service → suspended Job integration →
+双连接隔离和 soak 证据。R7 继续只做本地、opt-in 的 direct/catalog 证据与完整性硬门，未满足
+端到端收益前不接 MCP、不引入 SQLite/FTS。随后按 WFP adapter → 低权限 broker/service → suspended Job integration →
 VM identity/network adversarial tests → CLI/supervisor 生产接线推进 R4/R6。自动化检查先行；本轮
 尚未做新的 Windows 手工、网页、Tunnel 或真实网络测试。硬门全部通过前保持 MCP `run_probe`、
 `git_status` 和 `git_diff` 不注册。

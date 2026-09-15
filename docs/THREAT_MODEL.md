@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-验证记录更新：2026-09-09。
+验证记录更新：2026-09-15。
 
-当前代码为无网络的 K0 读取内核、显式本地文件 demo，以及 P04 的部分安全边界实现。已有 `config`/`policy.BoundScope`、基于 Go 1.25+ `os.Root` 的只读 rootfs 和 `readcore` bound adapter；**P04 的 Windows/WSL2 平台有界验证已完成，但没有真实 MCP 鉴权、Tunnel 或多账号产品链路，P01/P05 仍未实测，P04 仍未作为发布闸门放行。** 以下仍是必须兑现的安全设计及验收条件，不是已通过的安全认证。
+当前代码为无网络的 K0 读取内核、显式本地文件 demo，以及 P04 的部分安全边界实现。已有 `config`/`policy.BoundScope`、基于 Go 1.25+ `os.Root` 的只读 rootfs、`readcore` bound adapter，以及 R7 的 `ProductionReady=false` local-only metadata candidate catalog；**P04 的 Windows/WSL2 平台有界验证和一次真实 MCP/Cloudflare/ChatGPT 链路已有记录，但这不是发布放行，也不代表多账号、长期运行或 R7 索引产品验收已完成。** 以下仍是必须兑现的安全设计及验收条件，不是已通过的安全认证。
 
 ## 信任边界
 
@@ -26,8 +26,26 @@
 | Git external diff、PATH 劫持、解释器环境注入 | 固定 action/executable/args、净化 env、禁止任意 shell、进程树终止 | 没有命令工具，待 P08 |
 | localhost 管理页面被恶意网站访问 | loopback、认证、Host/Origin、CSRF；不通过 tunnel 暴露管理 API | 没有管理 HTTP 页面 |
 | runtime key 在参数/日志/支持包泄漏 | secret reference、受保护存储、脱敏、admin/runtime 分离 | 没有存储或使用真实凭据 |
-| index 漏掉新文件后声称搜索完整 | freshness/coverage/reconcile，必要时 live scan | 没有 index；计划 P11 证据后才决定 |
+| index 漏掉新文件后声称搜索完整 | freshness/coverage/reconcile，必要时 live scan | R7 local-only catalog 只产生候选；已验证 small/10k/100k 的集合相等和候选 live verify，但 1m、变化目录、新文件遗漏/损坏回退、physical root identity/ignore fingerprint、overflow fallback 和生产接线仍未完成；默认关闭 |
 | 弱 metadata token 被当作强快照 | 标明 strength，强审查使用不可变来源，不承诺仓库事务 | rootfs 已生成 size/mtime/mode 弱 token 并标记 metadata；真实 snapshot 未实现 |
+
+## R7 索引候选的安全边界
+
+R7 的 `internal/catalog` 是本地实验性的 bounded metadata cache，不是授权系统、快照系统或
+存在性证明。它只保留 root-relative path 和有限 metadata；不保留正文、绝对路径、句柄或可
+跨线传输的 cursor。catalog 必须绑定可信的 connection/profile/revision，并在 dirty、未完成
+reconcile、scope 失效或 generation 不一致时 fail closed。查询结果即使页满或为空，也只能
+解释为“当前缓存给出的候选”，不能解释为目录不存在或扫描完整。
+
+每个候选必须重新经过当前 `policy.BoundScope` 和 `rootfs.Source` 的 live verify；需要完整性
+时仍使用 direct scan 或完整 reconcile。catalog 不得绕过 deny/ignore、reparse/symlink、root
+identity、打开与 metadata 校验。watcher 只可提供 dirty hint；overflow、取消、并发 reconcile、
+变化目录、新文件遗漏、损坏记录或 live verify 失败时必须禁用候选路径并回退 direct/reconcile。
+
+在任何产品接线前，还必须证明并绑定 physical root identity 和 ignore fingerprint，进行并发
+reconcile 的 generation final check，并保留严格 cancellation 语义。真实 1m 与不同磁盘类型
+证据尚未完成；SQLite/FTS 未实现。10k/100k 的 candidate query 局部较快，但 live verify 后
+端到端慢于 direct，因此当前保持 `ProductionReady=false`、不接 MCP、默认关闭。
 
 ## 当前已验证的 P04 部分实现
 
