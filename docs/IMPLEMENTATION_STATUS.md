@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-12。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate、fake supervisor automation core、Windows runtimeowner 和 readiness 本地非生产契约已实现。** R4/R5/R6 的新增能力仍未接入远程 MCP；R4 的 OS network enforcement、生产 launcher/broker、R6 的可信 runtime 接线与 Cloudflare health 证据仍未完成。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
+日期：2026-09-14。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate、fake supervisor automation core、Windows runtimeowner/readiness、lifecycle epochs/capabilities、ReadyChild、lifecycleadapter 和本地 connectionmanager 协调契约已实现。** R4/R5/R6 的新增能力仍未接入远程 MCP；R4 的 OS network enforcement、生产 launcher/broker、R6 的可信 runtime 接线与 Cloudflare health 证据仍未完成。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -26,10 +26,10 @@
 | P08 | Windows 本地核心第二增量与 commandpath identity binding 已实现，OS enforcement、生产接线与 MCP 未完成 | 固定 tool_exists/tool_version、PE/固定路径/句柄 identity 守卫、挂起进程复核、单进程 Job、私有环境/cwd、输出/超时限制与进程树终止；`version_probe` 仍兼容 `slots:[]`，`fixed_command` 的 exact argv、enum/bounded_integer/root_relative_path typed slots、配置解析、root ID 交叉校验与纯 `ResolveVariant` 已实现；`ResolvedInput` 为最终 exact argv 提供 canonical、长度前缀的 SHA256 digest，version-probe 的一次性 confirmation v2 绑定该 digest 与 config revision，旧 v1 token fail closed；执行期从同一最终映像 guard handle 计算小写 SHA256；`ProcessOutcome` 记录真实自然退出码或明确的 timeout/cancel/output-limit 状态及有界时长/字节计数；local commandexec 已将该 outcome 映射为 `command.result`；config revision lease、local commandexec fail-closed bridge、developer mode 配置和一次性确认核心、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8 个 ALE family 的 opaque plan 与跨平台 DisabledBackend 已实现；`internal/commandpath` 与 rootfs adapter 已实现本地 final handle/identity commitment、revalidate 和不可序列化 binding，但 `Source.New` 的根目录 Lstat→OpenRoot 竞态、长路径与最终 launcher 原子硬门仍未闭合；typed runtime values 已进入 commandexec 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界，fixed execution 仍在 confirmation/admission/start/runner 前由 commandexec 以 `unsupported_profile` fail closed，因而没有新增 fixed 执行能力；真实 WFP/broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线、MCP `run_probe` 与任意命令仍关闭 |
 | R5 | 本地固定 Git plan/parser 已实现，保持不可执行且未接入 MCP | `git_status`/`git_diff` 的固定参数、受限 root-relative path、bounded output/entries/hunks/lines、porcelain-v1/统一 diff 结构化解析和 capture completeness 已实现；`Plan.PreviewExecutable()` 固定为 `false`，原因是 repo-local clean/smudge/process filters 无法由当前固定 flags 完整关闭，且 `RootID` 仍不是 rootfs binding/cwd。Git 不启动、不解析 raw command、不接入 launcher 或 MCP |
 | R1/R2/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、`get_environment`/`discover_tools`、R2 范围读取和 `workspace_snapshot` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed、强快照和真实 Business 复测仍未完成 |
-| P09/P10 | 第一增量（本地核心）已实现，生产 runtime/真实验证未完成 | R6 transport-aware connection config、非生产 FileStore、全局/每 connection admission gate、disable/revoke/revision binding、健康状态机、backoff/circuit breaker、sleep/wake/reconnect、cleanup failure 状态和 connection isolation 的 fake automation core；另有 `runtimeowner` Windows DuplicateHandle→Job、PID+creation identity、ancestor/tree membership、Terminate dispatch/WaitExited 与可重试失败清理契约，以及 `readiness` Issuer/Session/revoke、fresh attestations、one-use nonce、per-scope/总 replay budget、长期 evaluator 契约；两者均 `ProductionReady=false`，不创建真实 child/tunnel，不等于 trusted launcher/broker、direct-leaf membership、MCP ping/Cloudflare health 或双连接 soak 证据 |
+| P09/P10 | 第一增量（本地核心）已实现，生产 runtime/真实验证未完成 | R6 transport-aware connection config、非生产 FileStore、全局/每 connection admission gate、disable/revoke/revision binding、健康状态机、backoff/circuit breaker、sleep/wake/reconnect、cleanup failure 状态和 connection isolation 的 fake automation core；另有 `runtimeowner` Windows DuplicateHandle→Job、PID+creation identity、ancestor/tree membership、Terminate dispatch/WaitExited 与可重试失败清理契约，以及 `readiness` Issuer/Session/revoke、fresh attestations、one-use nonce、per-scope/总 replay budget、长期 evaluator 契约；本轮还增加 admission lifecycle epoch/capability/CurrentLifecycleBinding、exact capability invalidation、supervisor ReadyChild hook、lifecycleadapter、connectionmanager 和 Gate+Supervisor+Adapter 的 fake base runtime/health 组合测试。这些 lifecycle additions、`runtimeowner`、`readiness` 与 `connectionmanager` 均保持本地非生产边界：显式标记的 `ProductionReady` 均为 `false`，admission/supervisor primitives 不作生产就绪声明；不创建真实 child/tunnel，不等于 trusted launcher/broker、direct-leaf membership、MCP ping/Cloudflare health 或双连接 soak 证据 |
 | P11–P14 | 未实现 | 索引、产品化、独立审查、可选写入 |
 
-代码位置：`internal/config/`、`internal/environment/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`internal/runtimeowner/`、`internal/readiness/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
+代码位置：`internal/config/`、`internal/environment/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`internal/runtimeowner/`、`internal/readiness/`、`internal/admission/`、`internal/supervisor/`、`internal/lifecycleadapter/`、`internal/connectionmanager/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
 ### P04 增量事实（2026-09-09）
 
 - `config`/`policy` 已修复配置上限、重复 key、显式 `enabled` 语义，并由 `policy.BoundScope` 绑定 connection/profile revision 和 root/path deny。
@@ -341,10 +341,14 @@ command producers 不记录 path、argv、env、output 或 token。local command
 R6 的 admission gate 与 fake supervisor automation core 已实现，但 CLI/supervisor 生产接线、
 network-tunnel、policy、fs-search 事件生产者和管理变更审计仍未实现。
 
-## 四、R4–R6 本轮新增本地核心（2026-09-12）
+## 四、R4–R6 本轮新增本地核心（2026-09-14）
 
 本节只记录已经落在代码中的**本地、可测试核心**。它们不是生产 runtime，也没有因此扩大
 当前 MCP 工具面。
+
+本轮 R6 lifecycle components（admission lifecycle、supervisor `ReadyChild`、`lifecycleadapter`、
+`connectionmanager`、`runtimeowner`、`readiness`）全部按 `ProductionReady=false` 的本地非生产
+边界记录；它们不创建真实 runtime/MCP/Tunnel，不构成 R6 产品验收完成。
 
 ### R4 commandpath：本地 identity binding
 
@@ -397,6 +401,74 @@ Git、不接受 raw command，不连接 launcher，也没有注册 `git_status`/
 ownership、Cloudflare `/ready`/HA、Tunnel health 或外部可达性的证明；`cleanup_failed` 表示
 child cleanup 未被确认完成，不能转写为 `stopped`，并会阻止继续启动直到显式恢复/清理。
 
+### R6 生命周期协调增量：epoch、capability、ReadyChild 与 adapter
+
+`internal/admission` 现在为显式 lifecycle-required connection 维护单调的 lifecycle epoch。`BeginLifecycle`
+或 `ReplaceLifecycle` 为当前 connection/profile/revision 颁发不可序列化的
+`LifecycleCapability`；`MarkReady` 只接受同一个 Gate 当前仍持有的 capability。`CurrentLifecycleBinding`
+只能返回当前已 ready epoch 的本地 binding，`TryAcquire`/`Acquire` 会在最终加锁检查中再次验证
+connection、profile、revision、epoch、capability 和 ready 状态。开始新 epoch、替换/禁用/撤权/关闭
+以及 `InvalidateLifecycle` 都会取消旧 permit 并使旧 binding 失效；`InvalidateCapability` 只允许
+精确的当前 capability 使该 epoch 失效，过期、复制或跨 Gate capability 不得影响新 epoch。
+
+Gate 的 audit 健康是另一个并行门。`SetAuditAvailable(false)` 在锁内切换本地阻断并递增 audit
+epoch，因此会阻止之后的新 admission；它不会撤销已经发出的 permit。健康检查在 Gate 锁外运行，
+返回前会重新检查 admission 和 audit epoch。生产接线在观察到 sink 故障时必须调用
+`SetAuditAvailable(false)`；若只直接修改外部 `AuditHealthState`，仍存在 checker 返回与最终加锁
+检查之间的状态变化窗口。调用方也不能把 false 设置前已获发的 permit 当成已被回收，或把恢复
+override 当成 provider 本身健康。
+
+`internal/supervisor` 增加可选的 `ReadyChild` hook。两个注入的 local/remote health check 在
+当前 generation 通过、状态仍为 `StatePolling` 后，supervisor 才在锁外调用该 child 的
+`MarkReady`；hook 失败、panic、取消或 generation 已变化都会阻止 `StateReady`，并按失败路径
+清理/退避。每个 child generation 最多调用一次 hook；hook 只应返回稳定的本地错误类别、同步遵守
+context 取消，不得保留或导出 `RuntimeView`，也不得重入当前 supervisor 的阻塞 Stop/Replace/Close。
+`StateReady` 仍只是注入检查和 hook 的本地状态，不是 OS child、MCP 或 Tunnel 证明。
+
+`internal/lifecycleadapter` 将 Gate lifecycle capability 包装进 supervisor `RuntimeFactory`：
+每次 Start 先开启新 epoch并生成 binding，再调用 base factory；启动失败/取消会精确失效该 capability。
+包装 child 的 `MarkReady` 只激活对应 epoch，`Stop` 先精确失效 capability，再调用 base child 的
+Stop；跨 generation 的过期失效请求不应触碰新 capability，失败或 panic 的 Stop 保持可重试。
+该 adapter 不创建进程、不访问 MCP、不建立 Tunnel。
+
+组合测试用 fake base runtime 与 fake local/remote health checker 构造真实的 Gate→lifecycleadapter→
+Supervisor 链：health 未全部通过前没有 `CurrentLifecycleBinding`，两项均 ready 后才允许获取
+permit；Stop 会取消 permit 并使旧 binding 失效，Replace 的协调间隙保持 fail closed，auth failure
+不产生 binding，单个 connection 的失败不影响另一个 connection 的 ready binding。该测试证明的是
+本地协调顺序，不是真实 Windows child、MCP ping/server_info 或 Cloudflare health。
+
+本轮 lifecycle 增量全部保持本地非生产边界：`lifecycleadapter.ProductionReady=false`；
+admission/supervisor 的 lifecycle primitives 也不作生产就绪声明，不创建真实 runtime/MCP/Tunnel。
+它们没有扩大 MCP 工具面，`run_probe`、`git_status` 和 `git_diff` 仍未注册。
+
+### R6 connectionmanager（当前本地协调契约）
+
+`internal/connectionmanager` 只负责协调 Gate 与 Supervisor 的调用
+顺序，不拥有 runtime，也不做 process、MCP、Tunnel、credential 或 network I/O；其
+`ProductionReady=false`。每个 connection 有独立操作锁，避免同一 connection 的管理操作交错，
+不同 connection 仍可并行。
+
+顺序契约如下：
+
+- `Add` 先登记本地 reservation，再 `Gate.AddConnection`，后 `Supervisor.Add`；后一步失败或
+  panic 时回滚 Gate，若 supervisor 状态不确定则保留可清理的 removal-pending entry。
+- `Start` 仅调用 `Supervisor.Start`；新 lifecycle 由 lifecycleadapter 开启，必须等
+  `ReadyChild.MarkReady` 后才有 admission。失败会使 Gate lifecycle 失效并进入 degraded。
+- `Stop`、`Disable`、`Revoke`、`Sleep` 先让 Gate admission 失效，再等待 Supervisor 清理；清理失败保持
+  可重试且不得重新开放 admission。`Disable` 还先记录 Gate disabled；`Enable` 只恢复受信配置标志，
+  不直接打开 admission，必须后续新 Start/Ready。
+- `Reconnect` 先失效旧 epoch，再交给 Supervisor 做 stop/start recovery；`Wake` 再次失效旧 epoch 后调度新 child，
+  同样等待新的 Ready lifecycle。
+- `Replace` 先由 Gate 原子替换 connection/profile/revision 并取消旧 permits，再调用
+  `Supervisor.Replace`；第二步失败时保留新 revision 的 fail-closed/degraded 状态，重复 Replace
+  才是恢复路径。
+- `Remove` 先删除/撤权 Gate connection，再调用 Supervisor.Remove；Supervisor 清理失败时保留
+  manager entry 以便重试剩余清理。`Close` 先关闭 Gate、取消 admission，再取得所有 entry 锁，
+  最后调用 Supervisor.Close，且不会与活动 Replace 等 supervisor 调用竞态。concrete Supervisor
+  的 Close 清理失败是保留错误的终态；重复 Close 不会重做 child cleanup，需外部恢复/重启处理。
+
+这些顺序与测试基于 fake supervisor/health/runtime，仅记录本地协调意图，不可作为已发布能力。
+
 ### R6 `runtimeowner`：Windows 本地 ownership contract（非生产）
 
 `internal/runtimeowner` 是给未来受信 launcher/broker 使用的本地 ownership primitive，
@@ -430,8 +502,9 @@ decision 当作启动授权或远程请求字段。
 在 Windows amd64 / Go 1.26.0 环境，新增核心已运行并通过：
 
 - `go test -race -count=3 ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor`
+- `go test -race -count=20 ./internal/admission ./internal/supervisor ./internal/lifecycleadapter ./internal/connectionmanager`
 - `go test -race -count=20 ./internal/readiness ./internal/runtimeowner`
-- `go vet ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor ./internal/readiness ./internal/runtimeowner`
+- `go vet ./internal/commandpath ./internal/rootfs ./internal/gitprobe ./internal/config ./internal/admission ./internal/supervisor ./internal/lifecycleadapter ./internal/connectionmanager ./internal/readiness ./internal/runtimeowner`
 - `git diff --check`
 
 这些是本机单元/竞争/静态检查证据，不是生产运行证据；`runtimeowner` 的测试使用 Windows

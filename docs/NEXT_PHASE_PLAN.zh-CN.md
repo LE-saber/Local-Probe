@@ -1,6 +1,6 @@
 # Local-Probe 下一阶段执行路线（R0–R9）
 
-日期：2026-09-12
+日期：2026-09-14
 
 本文件把 `docs/MASTER_PLAN.zh-CN.md` 的 P00–P14 细化成可以交给执行者的近期执行包。它是规划和停止条件，不是已实现功能清单；实际事实以 `docs/IMPLEMENTATION_STATUS.md` 为准。任何“验收”在对应测试、证据和审查完成前都不能写成已完成。
 
@@ -8,9 +8,16 @@
 
 ### 当前 R4–R6 交付快照
 
+本轮 R6 生命周期增量仍全部属于本地、非生产契约（`ProductionReady=false`），不创建真实
+runtime/MCP/Tunnel，也不扩大 MCP 工具面。新增内容包括 admission lifecycle epochs/capabilities
+与 `CurrentLifecycleBinding`、exact capability invalidation、supervisor `ReadyChild` hook、
+`lifecycleadapter`、connectionmanager 协调契约，以及 Gate+Supervisor+Adapter 组合测试（fake base runtime/local+remote
+health）。真实 Windows child、MCP ping/server_info、Cloudflare health/HA、双 connection 并发和
+一小时 soak、FileStore hardening、生产 CLI/wiring 仍未完成。
+
 - R4 `commandpath`：已实现本地不可序列化的 binding、final handle/identity commitment、`Revalidate` 和 `Close`；`PreviewToken` 只能用于本地预览。`Source.New` 根目录 Lstat→OpenRoot 竞态、祖先 reparse/长路径以及 launcher 在同一 handle 上的最终硬门仍待完成。
 - R5 `gitprobe`：已实现固定 plan、porcelain-v1 status parser、统一 diff parser 与有界 capture；`Executable=false`，因 repo-local filter/root binding 风险不接 launcher/MCP。
-- R6：已实现 transport 元数据解析、非生产 FileStore、bounded admission gate、注入式 fake supervisor automation core，以及两个保持 `ProductionReady=false` 的本地契约：`runtimeowner`（Windows DuplicateHandle→Job、PID+creation、ancestor/tree membership、Terminate dispatch/WaitExited、失败清理可重试）与 `readiness`（Issuer/Session/revoke、fresh attestations、one-use nonce、per-scope/总 replay budget、长期 evaluator）。稳定状态包括 `stopped`、`starting`、`local_mcp_ready`、`polling`、`ready`、`degraded`、`backoff`、`auth_failed`、`sleeping`、`resuming`、`stopping`、`cleanup_failed`；这些值是本地管理诊断契约，不是运行时证明。
+- R6：已实现 transport 元数据解析、非生产 FileStore、bounded admission gate、注入式 fake supervisor automation core，以及两个保持 `ProductionReady=false` 的本地契约：`runtimeowner`（Windows DuplicateHandle→Job、PID+creation、ancestor/tree membership、Terminate dispatch/WaitExited、失败清理可重试）与 `readiness`（Issuer/Session/revoke、fresh attestations、one-use nonce、per-scope/总 replay budget、长期 evaluator）。本轮又增加 admission lifecycle epochs/capabilities/`CurrentLifecycleBinding`、exact capability invalidation、supervisor `ReadyChild` hook、`lifecycleadapter` 以及 `connectionmanager` 本地协调契约；这些全部保持本地非生产边界，不创建真实 runtime/MCP/Tunnel。稳定状态包括 `stopped`、`starting`、`local_mcp_ready`、`polling`、`ready`、`degraded`、`backoff`、`auth_failed`、`sleeping`、`resuming`、`stopping`、`cleanup_failed`；这些值是本地管理诊断契约，不是运行时证明。
 
 ## 一、能力分层与不变边界
 
@@ -410,6 +417,38 @@ R6 还包含两个仅供本地受信适配器使用的非生产契约，均明�
   evaluator，不能按请求新建。attestation 是适配器声明，不是该包自行完成的进程、MCP 或
   Tunnel 证明，且当前未接线到 runtimeowner、supervisor 或 MCP。
 
+本轮新增的 lifecycle 协调边界如下：
+
+- admission 的 lifecycle-required connection 使用单调 epoch；`BeginLifecycle`/`ReplaceLifecycle`
+  颁发不可序列化 capability，`MarkReady` 与 `CurrentLifecycleBinding` 只接受当前 Gate、当前
+  epoch 的精确 capability。开始新 epoch、revision replace、disable/revoke/close 或显式失效会
+  取消旧 permits；`InvalidateCapability` 对过期、复制或跨 Gate capability fail closed，不得
+  误伤新 runtime。
+- supervisor 的 `ReadyChild` hook 只在当前 generation 的 local/remote health 均通过、状态仍
+  为 `StatePolling` 时调用；hook 在锁外运行但必须同步响应 context、只返回稳定错误类别、最多
+  为每个 child generation 调用一次，且不得保留/导出 opaque `RuntimeView` 或重入阻塞的
+  Stop/Replace/Close。hook 失败、panic、取消或 generation 变化不得发布 `StateReady`。
+- `lifecycleadapter` 将 Gate capability 包装进 RuntimeFactory：Start 开启新 epoch 后再调用
+  base factory，MarkReady 激活精确 capability，Stop 先精确失效再停止 base child；失败/panic
+  清理保持可重试，并不进行 process/MCP/Tunnel I/O。
+- Gate 的 `SetAuditAvailable(false)` 会立即阻断新 admission，但不取消已经发出的 permit；生产
+  接线观察到 sink 故障时必须调用它。若只直接修改外部 health provider，checker 返回与最终加锁
+  检查之间仍有状态变化窗口；不能把已存在 permit 解释为“审计已回收”。
+
+组合测试使用 fake base runtime 与 fake local/remote health：health 未全部通过前无当前 binding，
+两项通过后 adapter hook 才能使 Gate ready 并获取 permit；Stop、Replace 间隙、auth failure 和
+双 connection 隔离都验证 fail-closed/不串扰。该测试仍是本地协调测试，不是产品验收。
+
+`connectionmanager` 的本地顺序契约为：`Add` reservation→Gate.AddConnection→
+Supervisor.Add（失败回滚）；`Start`→Supervisor.Start 并等待 adapter Ready；`Stop`/`Disable`/`Revoke`/
+`Sleep` 先 Gate invalidate/disable 再 Supervisor 清理；`Enable` 只恢复配置标志，不开放 admission；
+`Reconnect` 先失效旧 epoch 再交给 Supervisor recovery；`Wake` 再次失效后调度新 child 并等待新 Ready；
+`Replace` 先原子替换 Gate revision/取消旧 permits，再 Supervisor.Replace，失败保持新 revision
+fail closed；`Remove` 先删除 Gate 再 Supervisor.Remove，失败保留 entry 重试；`Close` 先 Gate.Close，
+再等待每个 entry 锁，最后 Supervisor.Close；concrete Supervisor 的 Close 清理失败是保留错误的
+终态，重复 Close 不会重做 child cleanup。manager 只协调本地 fake 生命周期，
+`ProductionReady=false`，不创建真实 runtime/MCP/Tunnel，也不扩大 MCP 工具面。
+
 依赖：P05、R1、R4。原计划产物为 per-user supervisor、per-connection state/port/log、health
 state machine、backoff/circuit breaker、sleep/wake/credential rotation/kill isolation。尚待验收：
 trusted launcher/broker 与真实 Windows child 的 PID+creation time+Job ownership、direct-leaf
@@ -441,8 +480,9 @@ R7 必须等待 R1/R2 基准；R8 必须等待 R6；R9 汇总全部发布证据�
 reparse/长路径和 Windows UTF-16/escaping/handle-based launcher 硬门；R5 继续保持
 `Executable=false`，直到 repository-filter 与 root binding 有独立可证明的执行方案；R6 继续
 完善 FileStore 的 OS lock/崩溃语义、runtimeowner 的 trusted launcher/broker/direct-leaf 与真实
-child 接线、readiness 的适配器接线和长期 evaluator 生命周期、真实 Windows runtime、MCP ping、
-Cloudflare health、双连接隔离和 soak 证据。随后按 WFP adapter → 低权限 broker/service → suspended Job integration →
+child 接线、readiness 的适配器接线和长期 evaluator 生命周期、lifecycleadapter 与
+connectionmanager 的生产生命周期接线、真实 Windows runtime、MCP ping、Cloudflare health、
+双连接隔离和 soak 证据。随后按 WFP adapter → 低权限 broker/service → suspended Job integration →
 VM identity/network adversarial tests → CLI/supervisor 生产接线推进 R4/R6。自动化检查先行；本轮
 尚未做新的 Windows 手工、网页、Tunnel 或真实网络测试。硬门全部通过前保持 MCP `run_probe`、
 `git_status` 和 `git_diff` 不注册。
