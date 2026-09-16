@@ -1,6 +1,6 @@
 # 实际实施状态与验证记录
 
-日期：2026-09-15。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate、fake supervisor automation core、Windows runtimeowner/readiness、lifecycle epochs/capabilities、ReadyChild、lifecycleadapter 和本地 connectionmanager 协调契约已实现 + R7 bounded local-only metadata candidate catalog 与 direct-search 证据 harness 已实现。** R4/R5/R6/R7 新增能力仍未接入远程 MCP；R4 的 OS network enforcement、生产 launcher/broker、R6 的可信 runtime 接线与 Cloudflare health 证据仍未完成，R7 也尚未通过产品验收或获得默认启用收益。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
+日期：2026-09-16。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate、fake supervisor automation core、Windows runtimeowner/readiness、lifecycle epochs/capabilities、ReadyChild、lifecycleadapter 和本地 connectionmanager 协调契约已实现 + R7 bounded local-only metadata candidate catalog 与 direct-search 证据 harness 已实现 + R8 desktopadmin 本地只读管理投影第一增量已实现。** R4/R5/R6/R7/R8 新增能力仍未接入远程 MCP；R4 的 OS network enforcement、生产 launcher/broker、R6 的可信 runtime 接线与 Cloudflare health 证据仍未完成，R7 尚未获得默认启用收益，R8 也未形成 GUI/tray 或实际控制面。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 ## 一、先计划，后实现
 
@@ -27,7 +27,8 @@
 | R5 | 本地固定 Git plan/parser 已实现，保持不可执行且未接入 MCP | `git_status`/`git_diff` 的固定参数、受限 root-relative path、bounded output/entries/hunks/lines、porcelain-v1/统一 diff 结构化解析和 capture completeness 已实现；`Plan.PreviewExecutable()` 固定为 `false`，原因是 repo-local clean/smudge/process filters 无法由当前固定 flags 完整关闭，且 `RootID` 仍不是 rootfs binding/cwd。Git 不启动、不解析 raw command、不接入 launcher 或 MCP |
 | R1/R2/R3 | 第一增量已实现，服务级边界仍未完成 | direct search 的 cursor replay/coverage/open budgets、typed audit.v1、`get_environment`/`discover_tools`、R2 范围读取和 `workspace_snapshot` 已接入本地 MCP；全局 admission/wire 配额、运行时 audit 故障 fail-closed、强快照和真实 Business 复测仍未完成 |
 | P09/P10 | 第一增量（本地核心）已实现，生产 runtime/真实验证未完成 | R6 transport-aware connection config、非生产 FileStore、全局/每 connection admission gate、disable/revoke/revision binding、健康状态机、backoff/circuit breaker、sleep/wake/reconnect、cleanup failure 状态和 connection isolation 的 fake automation core；另有 `runtimeowner` Windows DuplicateHandle→Job、PID+creation identity、ancestor/tree membership、Terminate dispatch/WaitExited 与可重试失败清理契约，以及 `readiness` Issuer/Session/revoke、fresh attestations、one-use nonce、per-scope/总 replay budget、长期 evaluator 契约；本轮还增加 admission lifecycle epoch/capability/CurrentLifecycleBinding、exact capability invalidation、supervisor ReadyChild hook、lifecycleadapter、connectionmanager 和 Gate+Supervisor+Adapter 的 fake base runtime/health 组合测试。这些 lifecycle additions、`runtimeowner`、`readiness` 与 `connectionmanager` 均保持本地非生产边界：显式标记的 `ProductionReady` 均为 `false`，admission/supervisor primitives 不作生产就绪声明；不创建真实 child/tunnel，不等于 trusted launcher/broker、direct-leaf membership、MCP ping/Cloudflare health 或双连接 soak 证据 |
-| P11 | 本地代码与证据 harness 第一增量完成；验收未完成 | bounded local-only in-memory metadata candidate catalog、direct/catalog 对照 harness 和 10k/100k 有界比较已加入；`ProductionReady=false`、不接 MCP、默认关闭；1m、变化目录/新文件完整性、真实磁盘类型和端到端收益仍未完成 |
+| P11 | 本地代码与证据 harness 第一增量完成；产品化验收未完成 | bounded local-only in-memory metadata candidate catalog、direct/catalog 对照 harness 和 10k/100k 有界比较已加入；`ProductionReady=false`、不接 MCP、默认关闭；百万文件测试按 2026-09-16 决策不运行，1m 显式能力保留；变化目录/新文件完整性、真实磁盘类型和端到端收益仍未完成 |
+| R8 | 第一增量（本地契约）已实现；桌面产品与控制链未完成 | `internal/desktopadmin` 提供 `ProductionReady=false` 的只读 overview、connection status、developer rule preview 和有界脱敏 diagnostics；`start`/`stop`/`reconnect` 只有 typed request，`DispatchAction` 固定返回 unavailable 且绝不调用 dispatcher；`Exit` 只关闭 projection，不停止 supervisor。revision 接受 `rN` 与 `FileStore` 的 `sha256:` 形式，状态不一致 fail closed。没有 HTTP、named pipe、GUI、tray、process、credential 或 MCP 接线 |
 | P12–P14 | 未实现 | 产品化、独立审查、可选写入 |
 
 代码位置：`internal/config/`、`internal/environment/`、`internal/policy/`、`internal/readcore/`、`internal/rootfs/`、`internal/mcpserver/`、`internal/cfaccess/`、`internal/runtimeowner/`、`internal/readiness/`、`internal/admission/`、`internal/supervisor/`、`internal/lifecycleadapter/`、`internal/connectionmanager/`、`cmd/readcore-demo/` 和 `cmd/local-probe-mcp/`。Cloudflare 本地增量由 Luna 5.6 Max 子代理起草，主代理在其两次未能按时收尾后接管审查、修正与验证。
@@ -158,7 +159,7 @@ rootfs 的目录适配器按有界批次保留原生 `ReadDir(n)` 目录流顺�
 负例。当前仍需在 Windows 手工调用并在真实 Business“极高”会话中复测；本轮不做 Linux
 runtime 测试，也不把 workspace snapshot 宣称为强一致快照。
 
-### R7 候选目录与 direct-search 证据增量（2026-09-15）
+### R7 候选目录与 direct-search 证据增量（2026-09-15；2026-09-16 决策更新）
 
 `internal/catalog` 现在提供 bounded、local-only 的内存 metadata candidate catalog：只保存
 规范化的 root-relative 路径和有限 metadata，不保存正文、绝对路径、句柄或授权能力。它按
@@ -185,10 +186,30 @@ rootfs live verify。下面的指标来自 8-repeat warm query 改动前的单�
   观测，不是 allocator 上限或发布内存承诺。
 
 结论是候选查询局部更快，但强制 live verify 后端到端明显慢于 direct scan，因此目前没有启用收益，
-默认继续使用 direct。1m 尚未运行；SQLite/FTS 也未实现，因为当前没有足够证据引入持久依赖。
-R7 代码增量已完成，但整体验收仍未完成。生产接线前还必须证明 physical root identity/ignore
+默认继续使用 direct。1m/百万文件测试按 2026-09-16 决策不运行，以避免无必要的磁盘写入和磨损；
+harness 仍保留显式 `1m` 档位，未来可在用户明确授权、隔离介质和独立窗口下运行，不作为进入 R8
+的阻塞项。SQLite/FTS 也未实现，因为当前没有足够证据引入持久依赖。R7 代码增量已完成，但
+整体验收仍未完成。若重新评估 catalog 产品化，仍必须证明 physical root identity/ignore
 fingerprint、watcher overflow 后禁用并 direct fallback、并发 reconcile 的 generation final check、
-严格 cancellation、变化目录/新文件遗漏与损坏回退，以及真实 1m 和不同磁盘类型证据。
+严格 cancellation、变化目录/新文件遗漏与损坏回退，以及不同磁盘类型上的端到端收益。
+
+### R8 desktopadmin 本地桌面管理投影第一增量（2026-09-16）
+
+`internal/desktopadmin` 是给未来 GUI/tray 消费的进程内、本地只读 projection，不是管理服务。
+它假设 `ConfigSource`、`StatusSource` 和可选 `DiagnosticsSource` 是受信的、进程内、非阻塞的
+快照源；这些 source 的 `Snapshot`/`Snapshots` 不得执行网络或进程 I/O，客户端只复制并重新校验
+返回值。当前实现只提供 bounded、脱敏的 overview、connection status、developer rule preview
+和 diagnostics；不返回 credential、token、key、endpoint、路径正文、argv、环境或实现错误文本。
+
+`start`、`stop`、`reconnect` 仅是严格 enum + connection ID 的 typed request。当前
+`DispatchAction` 始终返回 capability unavailable，绝不调用 `ActionDispatcher`，也不触碰
+`connectionmanager`/supervisor；`Exit`/`Close` 只关闭这个 projection，不停止 supervisor。
+`ProductionReady=false` 固定不变。配置 revision 接受内存 Store 的 `rN` 和 FileStore 的
+`sha256:<64 hex>`；config/status/connection 不一致时返回 unavailable 或 fail closed，不猜测状态。
+
+本增量没有 HTTP、named pipe、GUI、tray、process、credential、Tunnel 或 MCP 接线。因此 R6
+production gate 尚未闭合，实际 start/stop/reconnect、托盘和管理页面全部后置；本轮只冻结桌面
+客户端的数据与错误边界，不宣称已有可操作的桌面产品。
 
 ### R4/P08 Windows 固定探针与 developer-mode 本地核心（2026-09-12）
 
@@ -558,10 +579,15 @@ R5 Git root binding/filter 安全执行链、WFP/broker/capability、CLI 生产�
 - Metadata 版本是弱证据，无法检测保持相同元数据的内容更改；batch 也不是全仓快照。
 - R7 的 catalog 只提供受 scope/revision 约束的 metadata candidates；每项必须经当前
   `BoundScope`/`rootfs.Source` live verify，完整性仍依赖 direct scan 或完整 reconcile。当前
-  `ProductionReady=false`、未接 MCP、默认关闭。尚无 1m 实证；physical root identity/ignore
-  fingerprint、watcher overflow 后 direct fallback、并发 reconcile final generation check、
-  严格取消、变化目录/新文件遗漏/损坏回退和不同磁盘类型证据均未完成。10k/100k 的局部
-  candidate-query 加速在 live verify 后端到端被抵消，因此不能把 catalog 当成默认性能优化。
+  `ProductionReady=false`、未接 MCP、默认关闭。百万文件/1m 测试按本轮决策不运行，显式
+  harness 能力保留且不作为 R8 入口条件；physical root identity/ignore fingerprint、watcher
+  overflow 后 direct fallback、并发 reconcile final generation check、严格取消、变化目录/新文件
+  遗漏/损坏回退和不同磁盘类型证据均未完成。10k/100k 的局部 candidate-query 加速在 live
+  verify 后端到端被抵消，因此不能把 catalog 当成默认性能优化。
+- R8 的 `internal/desktopadmin` 目前只是 `ProductionReady=false` 的本地只读 projection；
+  它没有 listener、GUI/tray、process、credential 或 MCP 接线。overview、connection status、
+  developer rule preview 和 bounded sanitized diagnostics 可读；typed start/stop/reconnect
+  会被固定拒绝，`Exit` 不停止 supervisor。R6 production gate 未闭合，实际控制与桌面载体仍后置。
 - 暂不回收短文件/错误项的剩余配额；优先保证可解释和确定性。
 - 已验证实际 ChatGPT Business 插件、用户指定的“极高”推理档位、Cloudflare Tunnel 与一次自动重连；尚未验证两个真实账号并发、长时间运行和账号策略差异，本轮明确不以 Pro 模式替代。
 - 未完成独立审查、生产发布或任意命令开放；R4/P08 虽已有 Windows 固定映像/句柄守卫、
@@ -582,7 +608,7 @@ R5 Git root binding/filter 安全执行链、WFP/broker/capability、CLI 生产�
 
 ## 六、下一执行者的明确入口
 
-P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R7 已加入 local-only bounded catalog 与 direct/catalog 证据 harness，但默认关闭、未接 MCP，且 1m/生产硬门未完成。R4 已补齐严格 version args、`version_probe` 的 `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical resolved-input digest、confirmation v2（绑定 digest+revision，旧 v1 fail closed）、revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与本地 `command.result` 接线、R4-AUDIT-01（AuditRecorder、`command.reject`、`command.admission`/`command.start` 和审计失败 fail closed）、NET-01 contract/fake 以及 R4-NET-02 固定 plan/DisabledBackend；`fixed_command` typed runtime values 已进入本地 Prepare/Confirm/BuildRequest 边界，但字符串 `PathResolver` 尚不是可信 final path binding，执行仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝。R4 的 commandpath identity binding、R5 的固定 Git plan/parser 和 R6 的 transport config、非生产 FileStore、admission gate、fake supervisor automation core 已完成，但均不等于生产接线。下一增量实现可信 path resolver/final identity 和 Windows UTF-16/escaping 边界，并继续保持 shell/interpreter、Git plan 与 fixed MCP execution 关闭；真实 WFP ABI adapter、低权限 broker/service、由 broker 持有的 suspended Job integration、VM identity/network adversarial tests、Windows runtime/MCP/Tunnel health、双 connection soak 和 CLI/supervisor 生产接线仍按后续路线推进。硬门全部通过前不注册 MCP `run_probe`，也不开放 arbitrary shell 或模型自定义命令行。
+P06 的 `list_directory`、`find_files`、`search_text`、`tree_directory` 已部署并由现有 ChatGPT Business“极高”会话验证分页、发现、拒绝路径和后续范围读取；实测发现并修复了 `search_text` 返回 matches 时 `coverage.returned_entries` 未累加的问题，复测 10 个 matches 与计数一致。R1 的 direct-search 第一增量、audit.v1、R3 的无进程 `discover_tools`/`get_environment` 和 R2 的 lines/tail/snapshot 已完成本地 MCP 接入、脱敏/allowlist 测试，但 R2 新增能力尚未声称真实 Business 复测。R7 已加入 local-only bounded catalog 与 direct/catalog 证据 harness，默认关闭、未接 MCP；百万文件测试按本轮决策不运行，1m 选项仍显式保留，不构成 R8 入口条件。R8 `desktopadmin` 已冻结本地只读管理 projection 的 schema 与 fail-closed 动作边界，但尚无 HTTP/named pipe/GUI/tray/process/credential/MCP 接线。R4 已补齐严格 version args、`version_probe` 的 `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical resolved-input digest、confirmation v2（绑定 digest+revision，旧 v1 fail closed）、revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与本地 `command.result` 接线、R4-AUDIT-01（AuditRecorder、`command.reject`、`command.admission`/`command.start` 和审计失败 fail closed）、NET-01 contract/fake 以及 R4-NET-02 固定 plan/DisabledBackend；`fixed_command` typed runtime values 已进入本地 Prepare/Confirm/BuildRequest 边界，但字符串 `PathResolver` 尚不是可信 final path binding，执行仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝。R4 的 commandpath identity binding、R5 的固定 Git plan/parser 和 R6 的 transport config、非生产 FileStore、admission gate、fake supervisor automation core 已完成，但均不等于生产接线。下一增量实现可信 path resolver/final identity 和 Windows UTF-16/escaping 边界，并继续保持 shell/interpreter、Git plan 与 fixed MCP execution 关闭；真实 WFP ABI adapter、低权限 broker/service、由 broker 持有的 suspended Job integration、VM identity/network adversarial tests、Windows runtime/MCP/Tunnel health、双 connection soak 和 CLI/supervisor 生产接线仍按后续路线推进。硬门全部通过前不注册 MCP `run_probe`，也不开放 arbitrary shell 或模型自定义命令行。
 
 
-R5 受控 Git read actions、R6 P09/P10 多 connection/supervisor/recovery、R7 证据驱动的 index、R8 GUI/tray、R9 发布与独立审查依次推进；P14 写入始终独立。P04 的本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台仍按路线的停止条件跟踪，不把本地有界验证写成生产安全结论。
+R5 受控 Git read actions、R6 P09/P10 多 connection/supervisor/recovery、R7 证据驱动的 index、R8 desktopadmin 本地只读契约、R9 发布与独立审查依次推进；P14 写入始终独立。百万文件测试不在本轮运行，显式 harness 仍保留但不作为进入 R8 的条件。R8 实际控制、Win32 tray、loopback 管理页和 named-pipe broker 等后续载体必须等待 R6 production gate；P04 的本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台仍按路线的停止条件跟踪，不把本地有界验证写成生产安全结论。

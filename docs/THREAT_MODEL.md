@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-验证记录更新：2026-09-15。
+验证记录更新：2026-09-16。
 
-当前代码为无网络的 K0 读取内核、显式本地文件 demo，以及 P04 的部分安全边界实现。已有 `config`/`policy.BoundScope`、基于 Go 1.25+ `os.Root` 的只读 rootfs、`readcore` bound adapter，以及 R7 的 `ProductionReady=false` local-only metadata candidate catalog；**P04 的 Windows/WSL2 平台有界验证和一次真实 MCP/Cloudflare/ChatGPT 链路已有记录，但这不是发布放行，也不代表多账号、长期运行或 R7 索引产品验收已完成。** 以下仍是必须兑现的安全设计及验收条件，不是已通过的安全认证。
+当前代码为无网络的 K0 读取内核、显式本地文件 demo，以及 P04 的部分安全边界实现。已有 `config`/`policy.BoundScope`、基于 Go 1.25+ `os.Root` 的只读 rootfs、`readcore` bound adapter、R7 的 `ProductionReady=false` local-only metadata candidate catalog，以及 R8 的 `ProductionReady=false` desktopadmin 本地只读 projection；**P04 的 Windows/WSL2 平台有界验证和一次真实 MCP/Cloudflare/ChatGPT 链路已有记录，但这不是发布放行，也不代表多账号、长期运行、R7 索引产品验收或 R8 桌面产品验收已完成。** 以下仍是必须兑现的安全设计及验收条件，不是已通过的安全认证。
 
 ## 信任边界
 
@@ -25,8 +25,9 @@
 | 巨型文件/长行/超量请求拖垮进程 | 单项和整体预算、bounded concurrency、全局 admission、deadline | byte batch 预算已实现；全局调度/wire 限额待实现 |
 | Git external diff、PATH 劫持、解释器环境注入 | 固定 action/executable/args、净化 env、禁止任意 shell、进程树终止 | 没有命令工具，待 P08 |
 | localhost 管理页面被恶意网站访问 | loopback、认证、Host/Origin、CSRF；不通过 tunnel 暴露管理 API | 没有管理 HTTP 页面 |
+| 桌面客户端被误当作控制面或泄露敏感状态 | 本地只读 projection、typed enum action、bounded 脱敏诊断、revision/status 一致性校验；动作在生产 gate 前固定 unavailable | R8 `desktopadmin` 已实现 overview/connection status/developer rule preview/diagnostics；`DispatchAction` 绝不调用 dispatcher，`Exit` 不停止 supervisor；无 listener、GUI/tray、process、credential 或 MCP |
 | runtime key 在参数/日志/支持包泄漏 | secret reference、受保护存储、脱敏、admin/runtime 分离 | 没有存储或使用真实凭据 |
-| index 漏掉新文件后声称搜索完整 | freshness/coverage/reconcile，必要时 live scan | R7 local-only catalog 只产生候选；已验证 small/10k/100k 的集合相等和候选 live verify，但 1m、变化目录、新文件遗漏/损坏回退、physical root identity/ignore fingerprint、overflow fallback 和生产接线仍未完成；默认关闭 |
+| index 漏掉新文件后声称搜索完整 | freshness/coverage/reconcile，必要时 live scan | R7 local-only catalog 只产生候选；已验证 small/10k/100k 的集合相等和候选 live verify；百万文件/1m 按 2026-09-16 决策不运行，显式能力保留但不作为 R8 入口条件；变化目录、新文件遗漏/损坏回退、physical root identity/ignore fingerprint、overflow fallback 和生产接线仍未完成；默认关闭 |
 | 弱 metadata token 被当作强快照 | 标明 strength，强审查使用不可变来源，不承诺仓库事务 | rootfs 已生成 size/mtime/mode 弱 token 并标记 metadata；真实 snapshot 未实现 |
 
 ## R7 索引候选的安全边界
@@ -43,9 +44,36 @@ identity、打开与 metadata 校验。watcher 只可提供 dirty hint；overflo
 变化目录、新文件遗漏、损坏记录或 live verify 失败时必须禁用候选路径并回退 direct/reconcile。
 
 在任何产品接线前，还必须证明并绑定 physical root identity 和 ignore fingerprint，进行并发
-reconcile 的 generation final check，并保留严格 cancellation 语义。真实 1m 与不同磁盘类型
-证据尚未完成；SQLite/FTS 未实现。10k/100k 的 candidate query 局部较快，但 live verify 后
+reconcile 的 generation final check，并保留严格 cancellation 语义。百万文件/1m 按本轮决策不
+运行，显式 harness 能力保留；不同磁盘类型证据尚未完成；SQLite/FTS 未实现。10k/100k 的 candidate query 局部较快，但 live verify 后
 端到端慢于 direct，因此当前保持 `ProductionReady=false`、不接 MCP、默认关闭。
+
+## R8 桌面管理第一增量的安全边界
+
+`internal/desktopadmin` 是未来桌面客户端消费的进程内 projection，不是 listener、管理服务或
+授权器。它只接受受信的、进程内、非阻塞的 `ConfigSource`、`StatusSource` 和可选
+`DiagnosticsSource`；这些 source 的 `Snapshot`/`Snapshots` 不得做网络或进程 I/O。客户端会
+复制并重新校验 source 输出，source 失效、panic、超限或状态不一致时返回 unavailable/fail
+closed，不猜测状态。
+
+当前只读面是 bounded overview、connection status、developer rule preview 和脱敏 diagnostics。
+diagnostics 不含消息正文、路径、命令/argv、环境、endpoint、token、key 或 credential。revision
+接受内存 Store 的 `rN` 与 FileStore 的 `sha256:<64 hex>`；config/status/connection revision
+不一致时不应用旧状态。
+
+`start`、`stop`、`reconnect` 只能通过严格 typed request 表达；当前 `DispatchAction` 固定返回
+capability unavailable，绝不调用 `ActionDispatcher` 或 supervisor/connectionmanager。`Exit`/
+`Close` 只关闭客户端 projection，不停止 supervisor。`ProductionReady=false` 固定不变。
+本增量没有 HTTP、named pipe、GUI、tray、process、credential、Tunnel 或 MCP 接线，故不会
+新增本地端口或远程管理面。
+
+未来若闭合 R6 production gate，管理入口优先采用 per-user supervisor + Windows 原生 Win32
+tray + embedded loopback management page，并优先 named pipe + SID ACL。loopback fallback 必须
+同时具备 Host/Origin、CSRF、认证和 CSP 检查；管理入口不穿 Cloudflare Tunnel。当前不引入
+Electron、Wails、Fyne 或 Walk；实际控制、托盘和页面仍以后续独立安全审查为准。
+
+R7 的百万文件/1m 测试按 2026-09-16 决策不运行，现有显式 harness 档位保留但不作为 R8
+入口条件；这不改变 catalog 默认关闭和 direct fallback 的安全边界。
 
 ## 当前已验证的 P04 部分实现
 
