@@ -6,7 +6,16 @@
 
 当前事实基线：P04 已有 Windows/WSL2 等平台有界验证，P05 已完成一次 ChatGPT Business“极高”真实链路，P06 的四个发现工具已实现并完成真实链路验证，R2 的范围读取和 workspace snapshot 第一增量已接入本地 MCP；R4/P08 已有 Windows 固定 PE/句柄守卫、挂起进程复核、单进程 Job、严格 version profile、`version_probe` `slots:[]` 兼容、`fixed_command` exact argv/typed slots 本地解析与纯 `ResolveVariant`、root ID 交叉校验、同一 guard handle 的执行期 SHA256、canonical `ResolvedInput` digest、绑定 digest+revision 的 confirmation v2（旧 v1 token fail closed）、config revision lease、local commandexec fail-closed bridge、结构化 `ProcessOutcome` 与 `command.result` 本地接线、R4-AUDIT-01（AuditRecorder、同步 `command.reject`、`command.admission`/`command.start` 的有界异步入队、即时校验/入队错误 fail closed）、audit.v2 command producers、NET-01 networkguard contract/fake、R4-NET-02 固定 8-family opaque WFP deny plan、跨平台 DisabledBackend、一次性确认本地核心以及 fixed typed input 的本地 `Prepare`/`Confirm`/`BuildRequest` 边界；prepared input 绑定 profile revision、variant 和 resolved-input digest，Request 不承载可变 argv。`PathResolver` 仍是字符串回调，不能证明 root 授权、deny/reparse 或 final identity，fixed execution 仍在 confirmation/admission/start/runner 前以 `unsupported_profile` 拒绝，因此没有新 fixed 执行能力。`command.start` 仅表示确认后的 launch-dispatch intent，不是 OS 已启动证明。R4 另已增加 commandpath 的本地 final-handle/identity binding，但 `Source.New` 根目录交换竞态、长路径和 launcher 原子硬门仍未闭合。R5 已增加固定 `git_status`/`git_diff` plan/parser，但 `Plan.PreviewExecutable=false`：repo-local filters 无法完整关闭，`RootID` 也不是 root binding，因此不接 MCP。R6 已增加 transport config、明确 `ProductionReady=false` 的非生产 FileStore、全局/每 connection admission gate、注入式 fake supervisor automation core，以及 Windows `runtimeowner` 和 readiness 两个非生产本地契约；这些只证明本地契约与状态机，不代表真实 Windows runtime、Tunnel 或生产接线。R7 已增加 `ProductionReady=false` 的 bounded local-only metadata candidate catalog 与 direct/catalog 证据 harness；catalog 只给候选，必须经过当前 `BoundScope`/rootfs live verify，默认关闭且未接 MCP。10k/100k 的局部 candidate query 记录比 direct prefix 快，但 live verify 后端到端明显更慢；1m 尚未运行，SQLite/FTS 未实现。尚未完成 WFP/真实网络断开、broker/service、EnforcementCapability 铸造、CLI/supervisor 生产接线或远程 MCP `run_probe`；异步落盘失败只标记 `degraded`。本轮也未做新的 Windows 手工、网页、Tunnel、Linux runtime 或真实网络测试；R6 的双连接/soak、R7 的完整证据与发布级审查仍未完成。
 
-R7 的百万文件/1m 测试按 2026-09-16 决策不运行，以避免对本机磁盘造成不必要的写入和磨损；现有 harness 的 `1m` 档位仍作为显式 opt-in 能力保留，不是 R8 的入口条件，也不改变默认关闭 catalog 的决定。
+R7 的百万文件/1m 测试按 2026-09-16 决策不运行，以避免对本机磁盘造成不必要的写入和磨损；现有 harness 的 `1m` 档位仍作为显式 opt-in 能力保留，不是 R9 的入口条件，也不改变默认关闭 catalog 的决定。
+
+R9 已增加 `ProductionReady=false` 的 local-only typed releasecheck、固定 hard-code evidence gate、
+private `Report` 和 Windows `scripts/acceptance.ps1`。这些只提供可复现的本地证据收集边界，
+不等于 P13 通过；当前 acceptance 报告始终 `release_ready=false`。`releasecheck.Report`
+的 `release_ready` 由可信证据重新计算，固定的是 `ProductionReady=false`，不能把理论上完整
+的 evidence 评估结果当作产品发布。R9 当前状态必须拆分为 implemented、
+self-tested、independently-reviewed、release-ready，不能用代码存在、workflow 定义或一次本机
+命令代替独立审查和发布证明。若 `.github/workflows/release-preflight.yml` 随本次变更落盘，
+它也只定义 Windows CI 入口，实际 CI run 仍需单独记录。
 
 ### 当前 R4–R6 交付快照
 
@@ -526,15 +535,37 @@ R8 第一增量验收只检查 projection 的脱敏、上限、revision/status �
 
 ### R9：发布与独立安全审查
 
-依赖：R1–R8 中适用包、P13。产物：migration/rollback、签名发布、SBOM/license/CVE/provenance、安装更新卸载矩阵、独立审查报告、soak 和支持流程。验收：P13 的硬失败项全部为零，已实现、自测、独立审核、release-ready 分开记录。停止条件：任何硬失败项存在即不发布；P14 仍另行审批。
+依赖：R1–R8 中适用包、P13。R9 当前先冻结本地证据和复现入口：`internal/releasecheck`
+只接受进程内 typed evidence，使用固定 evidence/hard-code 词表，`Report` 保持 private snapshot，
+`commit=unknown` 对 `provenance_missing` fail closed，`ProductionReady=false`；
+`scripts/acceptance.ps1` 提供 Windows 本地检查、`-Quick`/`-WhatIf`、有界 JSON stdout 和 tracked
+safety policy（只检查路径名称与 fixture metadata，拒绝 `.runtime`、key/token/secret 和超大
+fixture）。这些机制不产生发布认证，所有当前 acceptance JSON 报告均为 `release_ready=false`。
+
+状态必须分四列记录：implemented（代码/脚本是否存在）、self-tested（本机实际命令是否通过）、
+independently-reviewed（独立安全审查是否通过）、release-ready（全部发布硬门是否满足）。
+当前 R9 为 implemented=是；self-tested 只能据实际复现命令填写；independently-reviewed=否；
+release-ready=否。
+
+真实产物与验收仍未完成：根 `LICENSE`、`NOTICE`、第三方清单，SBOM、CVE 扫描、签名、provenance、
+portable package、migration rollback、install/update/uninstall 矩阵、一小时双 connection soak、
+独立安全审查、支持流程以及 R4–R8 生产硬门（WFP/broker/capability、可信 runtime、MCP/Tunnel
+health、生产 CLI/桌面接线）均是阻塞项。1m/百万文件按 2026-09-16 用户决定不运行，不是 R9 入口条件；R7 catalog 仍保持默认关闭、local-only、必须 live verify。
+
+验收：P13 的硬失败项全部为零，且四种状态分别有证据后才可进入发布审查；任何 hard failure、
+pending、缺失 provenance、许可证/供应链材料、安装回滚缺口或生产 R4–R8 gate 缺口存在即不发布；
+P14 仍另行审批。若 `.github/workflows/release-preflight.yml` 随变更落盘，它只提供 Windows CI
+入口，不能代替实际 CI run、独立审查或 release-ready 证明。
 
 ## 九、并行关系与“现在做/暂不做”
 
 可并行：R1 与 R3 可在 R0 后并行；R4 可与 R1/R2 的非进程部分并行，但不能绕过 TOCTOU 硬门；
 R5/R6 的本地契约核心可分别推进，但其 launcher、MCP 和生产 runtime 接线必须等待对应硬门；
 R7 的 direct 基准依赖 R1/R2，当前已完成第一版本地证据 harness；百万文件/1m 本轮不运行，
-显式能力保留但不作为 R8 入口条件，变化目录与生产硬门仍未完成。R8 的本地 desktopadmin
-契约可与 R6 并行推进，但实际控制载体必须等待 R6 production gate；R9 汇总全部发布证据。
+显式能力保留但不作为 R9 入口条件，变化目录与生产硬门仍未完成，catalog 继续默认关闭。R8 的本地
+desktopadmin 契约可与 R6 并行推进，但实际控制载体必须等待 R6 production gate；R9 汇总全部发布
+证据，但当前仅有 local-only releasecheck 与 Windows acceptance 入口，所有当前 acceptance 报告保持
+`release_ready=false`。
 
 现在做：继续保持远程能力关闭。R4 commandpath 仍需完成可信 root resolver、祖先
 reparse/长路径和 Windows UTF-16/escaping/handle-based launcher 硬门；R5 继续保持
