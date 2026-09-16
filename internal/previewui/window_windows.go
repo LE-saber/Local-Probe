@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -291,6 +292,7 @@ type previewWindow struct {
 	statusText string
 	hoverNav   int
 	scroll     int
+	fontScale  FontScale
 
 	mu                sync.Mutex
 	refreshing        bool
@@ -311,6 +313,11 @@ var (
 	windowClassOnce sync.Once
 	windowClassErr  error
 	windowInstances sync.Map // map[windows.HWND]*previewWindow
+
+	// Painting is confined to the Win32 message-loop thread, but keeping the
+	// active value atomic also makes the drawText helper safe if that invariant
+	// is ever exercised by a diagnostic/test caller.
+	activeRenderFontScale uint32 = uint32(DefaultFontScale)
 )
 
 const (
@@ -415,6 +422,7 @@ func Run(options RunOptions) error {
 		current:    sanitizeSnapshot(unconfiguredSnapshot()),
 		statusText: "Loading local status...",
 		hoverNav:   -1,
+		fontScale:  DefaultFontScale,
 		mutex:      mutex,
 	}
 	windowInstances.Store(app.hwnd, app)
@@ -637,6 +645,7 @@ type previewLayout struct {
 	mainLeft    int
 	mainRight   int
 	headerTop   int
+	fontRect    winRect
 	refreshRect winRect
 	exportRect  winRect
 	navRects    [5]winRect
@@ -665,8 +674,18 @@ func makePreviewLayout(width, height int) previewLayout {
 		y := navTop + index*navRowHeight
 		result.navRects[index] = rectInt(12, y, sidebarWidth-12, y+navRowHeight-4)
 	}
-	result.refreshRect = rectInt(mainRight-232, 28, mainRight-128, 68)
-	result.exportRect = rectInt(mainRight-116, 28, mainRight, 68)
+	const (
+		fontButtonWidth    = 152
+		refreshButtonWidth = 104
+		exportButtonWidth  = 116
+		headerButtonGap    = 12
+	)
+	exportRight := mainRight
+	result.exportRect = rectInt(exportRight-exportButtonWidth, 28, exportRight, 68)
+	refreshRight := int(result.exportRect.Left) - headerButtonGap
+	result.refreshRect = rectInt(refreshRight-refreshButtonWidth, 28, refreshRight, 68)
+	fontRight := int(result.refreshRect.Left) - headerButtonGap
+	result.fontRect = rectInt(fontRight-fontButtonWidth, 28, fontRight, 68)
 	return result
 }
 
@@ -694,6 +713,12 @@ func (a *previewWindow) mouseDown(point winPoint) {
 			a.render()
 			return
 		}
+	}
+	if layout.fontRect.Contains(x, y) {
+		a.fontScale = NextFontScale(a.fontScale)
+		atomic.StoreUint32(&activeRenderFontScale, uint32(a.fontScale))
+		a.render()
+		return
 	}
 	if layout.refreshRect.Contains(x, y) {
 		a.command(idRefresh)
@@ -847,11 +872,14 @@ func (a *previewWindow) paint() {
 	snapshot := sanitizeSnapshot(a.current)
 	statusText := a.statusText
 	a.mu.Unlock()
+	scale := NormalizeFontScale(a.fontScale)
+	a.fontScale = scale
+	atomic.StoreUint32(&activeRenderFontScale, uint32(scale))
 	layout := makePreviewLayout(width, height)
 	fillRectColor(hdc, client, colorPage)
 	fillRectColor(hdc, rectInt(0, 0, sidebarWidth, height), colorSidebar)
 	drawSidebar(hdc, layout, a.section, a.hoverNav)
-	drawHeader(hdc, layout, a.section, statusText)
+	drawHeader(hdc, layout, a.section, statusText, scale)
 	drawSection(hdc, layout, snapshot, a.section, a.scroll)
 }
 
@@ -880,10 +908,11 @@ func drawSidebar(hdc uintptr, layout previewLayout, active Section, hover int) {
 	drawText(hdc, Version, rectInt(24, layout.height-38, sidebarWidth-16, layout.height-18), colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
 }
 
-func drawHeader(hdc uintptr, layout previewLayout, section Section, statusText string) {
+func drawHeader(hdc uintptr, layout previewLayout, section Section, statusText string, scale FontScale) {
 	title, subtitle := sectionTitle(section)
-	drawText(hdc, title, rectInt(layout.mainLeft, layout.headerTop, int(layout.refreshRect.Left)-18, layout.headerTop+36), colorText, 25, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
-	drawText(hdc, subtitle, rectInt(layout.mainLeft, layout.headerTop+38, int(layout.refreshRect.Left)-18, layout.headerTop+64), colorMuted, 11, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, title, rectInt(layout.mainLeft, layout.headerTop, int(layout.fontRect.Left)-18, layout.headerTop+36), colorText, 25, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, subtitle, rectInt(layout.mainLeft, layout.headerTop+38, int(layout.fontRect.Left)-18, layout.headerTop+64), colorMuted, 11, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawActionButton(hdc, layout.fontRect, FontScaleLabel(scale), false)
 	drawActionButton(hdc, layout.refreshRect, "↻  刷新", false)
 	drawActionButton(hdc, layout.exportRect, "导出诊断", false)
 	if statusText == "" {
@@ -1149,9 +1178,16 @@ func drawText(hdc uintptr, value string, rect winRect, color uint32, size, weigh
 	if value == "" || rect.Right <= rect.Left || rect.Bottom <= rect.Top {
 		return
 	}
+	if flags&dtSingleLine != 0 {
+		// All single-line labels are bounded by their local rectangle.  This is
+		// especially important after the user selects 175% or 200%.
+		flags |= dtEndEllipsis
+	}
+	scale := FontScale(atomic.LoadUint32(&activeRenderFontScale))
+	scaledSize := ScaleFontSize(size, scale)
 	face := wideString("Microsoft YaHei UI")
 	font, _, _ := procCreateFontW.Call(
-		uintptr(^uint32(uint32(size-1))), // negative height is character height
+		uintptr(^uint32(uint32(scaledSize-1))), // negative height is character height
 		0, 0, 0, uintptr(weight), 0, 0, 0,
 		0x86, 0, 0, 0, 0, uintptr(unsafe.Pointer(face)),
 	)

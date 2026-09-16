@@ -53,6 +53,8 @@ bin\local-probe-preview.exe
 
 窗口底部提供刷新和诊断导出。`Start`、`Stop`、`Reconnect` 会显示但保持禁用，原因固定为 `production_gate`；当前版本不会据此启动、停止或重连 MCP/Tunnel。
 
+窗口顶部的“字号”按钮可在 100%、125%、150%、175% 和 200% 之间循环切换，默认使用 150%。该设置只影响当前 Preview 进程中的界面绘制，不会修改配置或影响 MCP/Tunnel。
+
 ## 托盘与生命周期
 
 - Preview 使用单实例保护；同一用户会话中已有实例时，不再启动第二个实例。
