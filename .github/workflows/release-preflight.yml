@@ -1,0 +1,117 @@
+name: Windows release preflight
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preflight-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-preflight:
+    name: R9 Windows acceptance
+    runs-on: windows-latest
+    timeout-minutes: 30
+    continue-on-error: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up Go 1.26.5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache: false
+
+      - name: Run local acceptance (non-Quick)
+        shell: pwsh
+        continue-on-error: false
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP 'local-probe-r9-acceptance.json'
+          & pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File .\scripts\acceptance.ps1 -Json *> $reportPath
+          $acceptanceExit = $LASTEXITCODE
+          if ($acceptanceExit -ne 0) {
+            exit $acceptanceExit
+          }
+
+          try {
+            $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+            if ($null -eq $report) {
+              throw 'acceptance report must not be null'
+            }
+
+            $topLevelProperties = @($report.PSObject.Properties.Name)
+            foreach ($requiredProperty in @(
+                'schema_version',
+                'repository_verified',
+                'local_automated_checks_passed',
+                'release_ready',
+                'summary',
+                'checks'
+              )) {
+              if ($topLevelProperties -notcontains $requiredProperty) {
+                throw "acceptance report is missing required property: $requiredProperty"
+              }
+            }
+
+            if (($report.schema_version -isnot [string]) -or
+                $report.schema_version -cne 'r9.windows_acceptance.v2') {
+              throw 'acceptance report schema_version is invalid'
+            }
+            if (($report.repository_verified -isnot [bool]) -or
+                -not $report.repository_verified) {
+              throw 'acceptance report repository_verified must be boolean true'
+            }
+            if (($report.local_automated_checks_passed -isnot [bool]) -or
+                -not $report.local_automated_checks_passed) {
+              throw 'acceptance report local_automated_checks_passed must be boolean true'
+            }
+            if (($report.release_ready -isnot [bool]) -or
+                $report.release_ready) {
+              throw 'acceptance report release_ready must be boolean false'
+            }
+
+            if ($null -eq $report.summary) {
+              throw 'acceptance report summary must not be null'
+            }
+            $summaryProperties = @($report.summary.PSObject.Properties.Name)
+            foreach ($requiredSummaryProperty in @('hard_fail', 'hard_skip')) {
+              if ($summaryProperties -notcontains $requiredSummaryProperty) {
+                throw "acceptance report summary is missing required property: $requiredSummaryProperty"
+              }
+            }
+            $integerTypes = @(
+              [sbyte], [byte], [short], [ushort],
+              [int], [uint32], [long], [ulong]
+            )
+            foreach ($summaryProperty in @('hard_fail', 'hard_skip')) {
+              $summaryValue = $report.summary.$summaryProperty
+              $isInteger = $false
+              foreach ($integerType in $integerTypes) {
+                if ($summaryValue -is $integerType) {
+                  $isInteger = $true
+                  break
+                }
+              }
+              if (-not $isInteger -or $summaryValue -ne 0) {
+                throw "acceptance report summary.$summaryProperty must be integer zero"
+              }
+            }
+
+            if (($report.checks -isnot [array]) -or
+                @($report.checks).Count -eq 0) {
+              throw 'acceptance report checks must be a non-empty array'
+            }
+          } catch {
+            exit 1
+          }
