@@ -75,7 +75,11 @@ const (
 	tcnSelChange  = -551
 
 	menuString       = 0x00000000
+	menuChecked      = 0x00000008
+	menuPopup        = 0x00000010
+	menuRadioCheck   = 0x00000200
 	menuSeparator    = 0x00000800
+	menuByCommand    = 0x00000000
 	trackRightButton = 0x00000002
 	trackReturnCmd   = 0x00000100
 
@@ -114,6 +118,7 @@ var (
 	procGetClientRect          = user32.NewProc("GetClientRect")
 	procSetWindowTextW         = user32.NewProc("SetWindowTextW")
 	procEnableWindow           = user32.NewProc("EnableWindow")
+	procIsWindowVisible        = user32.NewProc("IsWindowVisible")
 	procInvalidateRect         = user32.NewProc("InvalidateRect")
 	procSetForegroundWindow    = user32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow    = user32.NewProc("GetForegroundWindow")
@@ -134,6 +139,7 @@ var (
 	procGetStockObject         = gdi32.NewProc("GetStockObject")
 	procCreatePopupMenu        = user32.NewProc("CreatePopupMenu")
 	procAppendMenuW            = user32.NewProc("AppendMenuW")
+	procCheckMenuRadioItem     = user32.NewProc("CheckMenuRadioItem")
 	procTrackPopupMenu         = user32.NewProc("TrackPopupMenu")
 	procDestroyMenu            = user32.NewProc("DestroyMenu")
 	procShellNotifyIconW       = shell32.NewProc("Shell_NotifyIconW")
@@ -306,6 +312,7 @@ type previewWindow struct {
 	mutex          windows.Handle
 	tray           bool
 	icon           windows.Handle
+	iconOwned      bool
 	taskbarCreated uint32
 }
 
@@ -330,12 +337,6 @@ const (
 	idStop      = 1007
 	idReconnect = 1008
 	idGate      = 1009
-
-	menuOpen    = 2001
-	menuRefresh = 2002
-	menuExport  = 2003
-	menuAbout   = 2004
-	menuExit    = 2005
 )
 
 const (
@@ -464,10 +465,19 @@ func registerPreviewClass() error {
 			return
 		}
 		className := wideString("LocalProbePreviewWindow")
-		icon, _, _ := procLoadIconW.Call(0, idiApplication)
+		// Class icons live for the lifetime of the registered class and are
+		// reclaimed by Windows when the Preview process exits.
+		icon, iconErr := loadPreviewIcon(32)
+		if iconErr != nil {
+			icon, _, _ = procLoadIconW.Call(0, idiApplication)
+		}
+		smallIcon, smallIconErr := loadPreviewIcon(16)
+		if smallIconErr != nil {
+			smallIcon = icon
+		}
 		cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 		brush, _, _ := procGetSysColorBrush.Call(colorWindow)
-		class := wndClassExW{CbSize: uint32(unsafe.Sizeof(wndClassExW{})), Style: 0x0003, WndProc: syscall.NewCallback(previewWindowProc), HInstance: instance, HIcon: windows.Handle(icon), HCursor: windows.Handle(cursor), HbrBackground: windows.Handle(brush), ClassName: className, HIconSm: windows.Handle(icon)}
+		class := wndClassExW{CbSize: uint32(unsafe.Sizeof(wndClassExW{})), Style: 0x0003, WndProc: syscall.NewCallback(previewWindowProc), HInstance: instance, HIcon: windows.Handle(icon), HCursor: windows.Handle(cursor), HbrBackground: windows.Handle(brush), ClassName: className, HIconSm: windows.Handle(smallIcon)}
 		atom, _, callErr := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&class)))
 		if atom == 0 && callErr != nil && !errors.Is(callErr, windows.ERROR_CLASS_ALREADY_EXISTS) {
 			windowClassErr = callErr
@@ -582,7 +592,7 @@ func (a *previewWindow) proc(msg uint32, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmClose:
 		// Closing the window is deliberately a hide-to-tray operation.
-		_, _, _ = procShowWindow.Call(uintptr(a.hwnd), showHide)
+		a.hideWindow()
 		return 0
 	case trayCallback:
 		a.trayMessage(uint32(lParam))
@@ -619,12 +629,16 @@ func (a *previewWindow) command(id uint32) {
 	case idExport, menuExport:
 		a.exportAsync()
 	case menuOpen:
-		a.showWindow()
+		a.toggleWindow()
 	case menuAbout:
 		a.showWindow()
 		a.section = SectionAbout
 		_, _, _ = procSendMessageW.Call(uintptr(a.tab), tabSetCurSel, uintptr(SectionAbout), 0)
 		a.render()
+	case menuFont100, menuFont125, menuFont150, menuFont175, menuFont200:
+		if scale, ok := trayFontScaleForCommand(id); ok {
+			a.setFontScale(scale)
+		}
 	case menuExit:
 		a.exit()
 	}
@@ -1653,6 +1667,38 @@ func (a *previewWindow) setStatus(value string) {
 	invalidate(a.hwnd)
 }
 
+func (a *previewWindow) windowVisible() bool {
+	if a == nil || a.hwnd == 0 {
+		return false
+	}
+	result, _, _ := procIsWindowVisible.Call(uintptr(a.hwnd))
+	return result != 0
+}
+
+func (a *previewWindow) hideWindow() {
+	if a == nil || a.hwnd == 0 {
+		return
+	}
+	_, _, _ = procShowWindow.Call(uintptr(a.hwnd), showHide)
+}
+
+func (a *previewWindow) toggleWindow() {
+	if a.windowVisible() {
+		a.hideWindow()
+		return
+	}
+	a.showWindow()
+}
+
+func (a *previewWindow) setFontScale(scale FontScale) {
+	if a == nil {
+		return
+	}
+	a.fontScale = NormalizeFontScale(scale)
+	atomic.StoreUint32(&activeRenderFontScale, uint32(a.fontScale))
+	a.render()
+}
+
 func (a *previewWindow) showWindow() {
 	if a == nil {
 		return
@@ -1689,8 +1735,17 @@ func (a *previewWindow) addTrayIcon() {
 	if a == nil || a.hwnd == 0 {
 		return
 	}
-	icon, _, _ := procLoadIconW.Call(0, idiApplication)
-	a.icon = windows.Handle(icon)
+	if a.icon == 0 {
+		icon, err := loadPreviewIcon(32)
+		if err == nil {
+			a.icon = windows.Handle(icon)
+			a.iconOwned = true
+		} else {
+			icon, _, _ = procLoadIconW.Call(0, idiApplication)
+			a.icon = windows.Handle(icon)
+			a.iconOwned = false
+		}
+	}
 	nid := notifyIconDataW{CbSize: uint32(unsafe.Sizeof(notifyIconDataW{})), HWnd: a.hwnd, UID: 1, UFlags: nifMessage | nifIcon | nifTip, UCallbackMessage: trayCallback, HIcon: a.icon, TimeoutOrVersion: notifyVersion}
 	copy(nid.Tip[:], utf16.Encode([]rune("Local-Probe Preview")))
 	if result, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid))); result != 0 {
@@ -1703,16 +1758,23 @@ func (a *previewWindow) addTrayIcon() {
 }
 
 func (a *previewWindow) removeTrayIcon() {
-	if a == nil || !a.tray {
+	if a == nil {
 		return
 	}
-	nid := notifyIconDataW{CbSize: uint32(unsafe.Sizeof(notifyIconDataW{})), HWnd: a.hwnd, UID: 1}
-	_, _, _ = procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&nid)))
+	if a.tray {
+		nid := notifyIconDataW{CbSize: uint32(unsafe.Sizeof(notifyIconDataW{})), HWnd: a.hwnd, UID: 1}
+		_, _, _ = procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&nid)))
+	}
 	a.tray = false
+	if a.iconOwned {
+		destroyPreviewIcon(uintptr(a.icon))
+	}
+	a.icon = 0
+	a.iconOwned = false
 }
 
 func (a *previewWindow) trayMessage(message uint32) {
-	switch message {
+	switch trayEventCode(message) {
 	case wmLButtonDblClk, ninSelect:
 		a.showWindow()
 	case wmRButtonUp, wmContextMenu:
@@ -1729,12 +1791,40 @@ func (a *previewWindow) showTrayMenu() {
 		return
 	}
 	defer procDestroyMenu.Call(menu)
-	appendMenu(menu, menuString, menuOpen, "Open")
-	appendMenu(menu, menuString, menuRefresh, "Refresh")
-	appendMenu(menu, menuString, menuExport, "Export diagnostics")
-	appendMenu(menu, menuString, menuAbout, "About")
-	appendMenu(menu, menuSeparator, 0, "")
-	appendMenu(menu, menuString, menuExit, "Exit Preview")
+	model := buildTrayMenuModel(a.windowVisible(), a.fontScale)
+	var fontMenu uintptr
+	for _, item := range model.Items {
+		switch item.Kind {
+		case trayMenuSeparator:
+			appendMenu(menu, menuSeparator, 0, "")
+		case trayMenuSubmenu:
+			fontMenu, _, _ = procCreatePopupMenu.Call()
+			if fontMenu == 0 {
+				continue
+			}
+			var firstFont, lastFont, checkedFont uintptr
+			for _, fontItem := range model.FontItems {
+				flags := uint32(menuString | menuRadioCheck)
+				if fontItem.Checked {
+					flags |= menuChecked
+				}
+				appendMenu(fontMenu, flags, uintptr(fontItem.Command), fontItem.Label)
+				if firstFont == 0 {
+					firstFont = uintptr(fontItem.Command)
+				}
+				lastFont = uintptr(fontItem.Command)
+				if fontItem.Checked {
+					checkedFont = uintptr(fontItem.Command)
+				}
+			}
+			if firstFont != 0 && checkedFont != 0 {
+				_, _, _ = procCheckMenuRadioItem.Call(fontMenu, firstFont, lastFont, checkedFont, menuByCommand)
+			}
+			appendMenu(menu, menuPopup|menuString, fontMenu, item.Label)
+		default:
+			appendMenu(menu, menuString, uintptr(item.Command), item.Label)
+		}
+	}
 	var point winPoint
 	_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&point)))
 	_, _, _ = procSetForegroundWindow.Call(uintptr(a.hwnd))
@@ -1742,9 +1832,11 @@ func (a *previewWindow) showTrayMenu() {
 	if choice != 0 {
 		a.command(uint32(choice))
 	}
+	// A WM_NULL lets the shell dismiss the menu cleanly when it loses focus.
+	postWindowMessage(a.hwnd, 0, 0, 0)
 }
 
-func appendMenu(menu uintptr, flags uint32, id uint32, title string) {
+func appendMenu(menu uintptr, flags uint32, id uintptr, title string) {
 	text := wideString(title)
 	_, _, _ = procAppendMenuW.Call(menu, uintptr(flags), uintptr(id), uintptr(unsafe.Pointer(text)))
 }

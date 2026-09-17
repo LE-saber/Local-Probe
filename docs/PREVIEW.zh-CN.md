@@ -59,7 +59,8 @@ bin\local-probe-preview.exe
 
 - Preview 使用单实例保护；同一用户会话中已有实例时，不再启动第二个实例。
 - 点击窗口关闭按钮只会把窗口隐藏到系统托盘。
-- 托盘菜单提供打开窗口、刷新、导出诊断、About 和 Exit。
+- 托盘右键菜单提供显示/隐藏主界面、刷新状态、导出诊断、关于和退出，并可直接在 100%–200% 字号档位之间切换；当前字号会显示勾选状态。
+- 托盘、窗口标题栏、任务栏和 Preview 可执行文件使用同一套 Local-Probe 橙蓝图标。
 - `Exit` 只退出 Preview 自身，不停止、不重启，也不接管现有 MCP/Tunnel。
 
 因此，现有 MCP/Tunnel 仍由原来的脚本或服务生命周期负责。Preview 退出不代表连接被关闭；同样，Preview 显示 unavailable 也不能单独证明 MCP/Tunnel 已停止。

@@ -1,0 +1,4 @@
+// Windows Explorer executable icon for the Preview binary.
+// Regenerate preview_icon_windows_amd64.syso with:
+//   windres -i preview_icon.rc -o preview_icon_windows_amd64.syso -O coff
+1 ICON "../../internal/previewui/assets/local-probe-preview.ico"
