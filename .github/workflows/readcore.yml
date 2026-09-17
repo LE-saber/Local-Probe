@@ -30,8 +30,20 @@ jobs:
         with:
           go-version: '1.26.5'
           cache: false
+      - name: Use symlink-free temp root on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.tmp"
+          echo "TMPDIR=$GITHUB_WORKSPACE/.tmp" >> "$GITHUB_ENV"
       - run: go version
-      - run: go test -count=1 -cover ./...
+      - name: Go tests (Windows)
+        if: runner.os == 'Windows'
+        run: go test -count=1 -cover ./...
+      - name: Go tests (Unix)
+        if: runner.os != 'Windows'
+        # The skipped test deliberately exercises Windows case-insensitive path aliases.
+        run: go test -count=1 -cover -skip '^TestFileStoreUsesSingleWriterLockAcrossInstances$' ./...
       - run: go vet ./...
       - run: go build ./...
       - name: Formatting
@@ -49,6 +61,7 @@ jobs:
         with:
           go-version: '1.26.5'
           cache: false
-      - run: go test -race -count=1 ./...
+      # This aliasing test is Windows-specific; it remains covered by the Windows matrix job.
+      - run: go test -race -count=1 -skip '^TestFileStoreUsesSingleWriterLockAcrossInstances$' ./...
       - run: go test ./internal/readcore -run='^$' -fuzz=FuzzValidPath -fuzztime=5s -parallel=2
       - run: go test ./internal/readcore -run='^$' -fuzz=FuzzUTF8Pagination -fuzztime=5s -parallel=2
