@@ -86,4 +86,12 @@ func TestWorkspaceErrorPresentationNeverUsesRawError(t *testing.T) {
 	if message != "工作空间操作超时" {
 		t.Fatalf("deadline presentation = %q", message)
 	}
+	message, remediation = WorkspaceErrorPresentation(errors.Join(ErrWorkspacePickerUnavailable, errors.New("raw COM detail")))
+	if message != "无法打开文件夹选择器" || strings.Contains(remediation, "COM") {
+		t.Fatalf("picker availability presentation = %q / %q", message, remediation)
+	}
+	message, remediation = WorkspaceErrorPresentation(ErrWorkspacePickerSelection)
+	if message != "所选文件夹无效" || remediation == "" {
+		t.Fatalf("picker selection presentation = %q / %q", message, remediation)
+	}
 }

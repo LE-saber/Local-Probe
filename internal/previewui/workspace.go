@@ -24,6 +24,8 @@ var (
 	ErrWorkspacePathTooLong        = errors.New("workspace path is too long")
 	ErrWorkspacePathInvalid        = errors.New("workspace path is invalid")
 	ErrWorkspaceSelectionIndex     = errors.New("workspace selection index is invalid")
+	ErrWorkspacePickerUnavailable  = errors.New("workspace folder picker unavailable")
+	ErrWorkspacePickerSelection    = errors.New("workspace folder picker selection invalid")
 )
 
 // WorkspaceManager is the deliberately small seam used by the native Preview
@@ -75,6 +77,12 @@ func WorkspaceErrorPresentation(err error) (message, remediation string) {
 	}
 	if errors.Is(err, ErrWorkspaceManagerUnavailable) {
 		return "工作空间管理器不可用", "检查 Preview 启动配置并重新启动应用"
+	}
+	if errors.Is(err, ErrWorkspacePickerUnavailable) {
+		return "无法打开文件夹选择器", "重新启动 Preview；如果仍失败，请检查 Windows 文件夹选择器权限"
+	}
+	if errors.Is(err, ErrWorkspacePickerSelection) {
+		return "所选文件夹无效", "选择现有的本地文件夹，不要选择网络位置或磁盘根目录"
 	}
 	if errors.Is(err, ErrWorkspacePathInvalid) || errors.Is(err, ErrWorkspacePathTooLong) {
 		return "文件夹路径无效或过长", "重新选择一个有效的本地文件夹"

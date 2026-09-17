@@ -51,7 +51,7 @@ func chooseWorkspaceFolders(owner windows.HWND) ([]string, error) {
 	defer runtime.UnlockOSThread()
 	initialized, err := initializeWorkspaceCOM()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerUnavailable, err)
 	}
 	if initialized {
 		defer workspaceCoUninitialize.Call()
@@ -66,20 +66,20 @@ func chooseWorkspaceFolders(owner windows.HWND) ([]string, error) {
 		uintptr(unsafe.Pointer(&dialog)),
 	)
 	if failedWorkspaceHRESULT(hr) {
-		return nil, fmt.Errorf("create folder picker: %w", workspaceHRESULTError(hr, callErr))
+		return nil, fmt.Errorf("%w: create folder picker: %v", ErrWorkspacePickerUnavailable, workspaceHRESULTError(hr, callErr))
 	}
 	if dialog == nil {
-		return nil, errors.New("create folder picker returned nil dialog")
+		return nil, fmt.Errorf("%w: create folder picker returned nil dialog", ErrWorkspacePickerUnavailable)
 	}
 	defer workspaceCOMRelease(dialog)
 
 	options, err := workspaceFileDialogGetOptions(dialog)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerUnavailable, err)
 	}
 	options |= workspaceFOSPickFolders | workspaceFOSAllowMultiSelect | workspaceFOSForceFileSystem
 	if err := workspaceFileDialogSetOptions(dialog, options); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerUnavailable, err)
 	}
 
 	hr, _, callErr = workspaceCOMCall(dialog, 3, uintptr(owner)) // IFileDialog.Show
@@ -87,39 +87,39 @@ func chooseWorkspaceFolders(owner windows.HWND) ([]string, error) {
 		if uint32(hr) == workspaceHResultCanceled {
 			return nil, errWorkspacePickerCanceled
 		}
-		return nil, fmt.Errorf("show folder picker: %w", workspaceHRESULTError(hr, callErr))
+		return nil, fmt.Errorf("%w: show folder picker: %v", ErrWorkspacePickerUnavailable, workspaceHRESULTError(hr, callErr))
 	}
 
 	var items unsafe.Pointer
 	hr, _, callErr = workspaceCOMCall(dialog, 27, uintptr(unsafe.Pointer(&items))) // IFileOpenDialog.GetResults
 	if failedWorkspaceHRESULT(hr) {
-		return nil, fmt.Errorf("get selected folders: %w", workspaceHRESULTError(hr, callErr))
+		return nil, fmt.Errorf("%w: get selected folders: %v", ErrWorkspacePickerUnavailable, workspaceHRESULTError(hr, callErr))
 	}
 	if items == nil {
-		return nil, errors.New("folder picker returned no selection")
+		return nil, fmt.Errorf("%w: folder picker returned no selection", ErrWorkspacePickerSelection)
 	}
 	defer workspaceCOMRelease(items)
 
 	count, err := workspaceShellItemArrayCount(items)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerUnavailable, err)
 	}
 	if count < 1 || count > MaxWorkspaceFolders {
-		return nil, fmt.Errorf("folder picker selection count %d is outside the supported bound", count)
+		return nil, fmt.Errorf("%w: folder picker selection count %d is outside the supported bound", ErrWorkspacePickerSelection, count)
 	}
 	paths := make([]string, 0, count)
 	for index := 0; index < count; index++ {
 		item, err := workspaceShellItemArrayItem(items, index)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerUnavailable, err)
 		}
 		path, pathErr := workspaceShellItemPath(item)
 		workspaceCOMRelease(item)
 		if pathErr != nil {
-			return nil, pathErr
+			return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerUnavailable, pathErr)
 		}
 		if err := ValidateWorkspacePath(path); err != nil {
-			return nil, fmt.Errorf("selected folder path is invalid: %w", err)
+			return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerSelection, err)
 		}
 		paths = append(paths, path)
 	}

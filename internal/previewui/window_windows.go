@@ -316,6 +316,7 @@ type previewWindow struct {
 	pendingExportErr       bool
 	pendingConnect         ConnectionResult
 	pendingConnectProgress ConnectionResult
+	connectProgressQueued  bool
 	workspaceFolders       []WorkspaceFolder
 	workspaceSelection     WorkspaceSelection
 	workspaceBusy          bool
@@ -1809,11 +1810,17 @@ func (a *previewWindow) connectAsync() {
 	}
 	connector := a.connector
 	previous := NormalizeConnectionResult(a.connectionState.Result)
-	a.connectionState = ConnectionControlState{Busy: true, Result: ConnectionResult{
+	initial := ConnectionResult{
 		Phase:           ConnectionPreflight,
 		PublicHost:      previous.PublicHost,
 		TokenConfigured: previous.TokenConfigured,
-	}}
+	}
+	a.connectionState = ConnectionControlState{Busy: true, Result: initial}
+	// A new attempt must not inherit a progress snapshot or a queued message
+	// from a previous attempt that finished while the backend was still
+	// unwinding its callback.
+	a.pendingConnectProgress = initial
+	a.connectProgressQueued = false
 	a.mu.Unlock()
 	a.setStatus("正在连接…")
 	a.render()
@@ -1857,15 +1864,29 @@ func (a *previewWindow) connectAsync() {
 }
 
 func (a *previewWindow) queueConnectProgress(progress ConnectionProgress) {
-	a.mu.Lock()
-	a.pendingConnectProgress = NormalizeConnectionResult(ConnectionResult{
+	next := NormalizeConnectionResult(ConnectionResult{
 		Phase: progress.Phase, Code: progress.Code, PublicHost: progress.PublicHost, TokenConfigured: progress.TokenConfigured,
 	})
-	exiting := a.exiting
-	a.mu.Unlock()
-	if !exiting {
-		postWindowMessage(a.hwnd, wmAppConnectProgress, 0, 0)
+	a.mu.Lock()
+	if a.exiting || !a.connectionState.Busy {
+		a.mu.Unlock()
+		return
 	}
+	// Controller polling can publish the same waiting status indefinitely.
+	// Keep only the latest distinct value and at most one message in flight;
+	// this keeps backend work independent from the UI message queue.
+	if !connectionProgressChanged(a.pendingConnectProgress, next) {
+		a.mu.Unlock()
+		return
+	}
+	a.pendingConnectProgress = next
+	if a.connectProgressQueued {
+		a.mu.Unlock()
+		return
+	}
+	a.connectProgressQueued = true
+	a.mu.Unlock()
+	postWindowMessage(a.hwnd, wmAppConnectProgress, 0, 0)
 }
 
 func (a *previewWindow) finishConnectProgress() {
@@ -1874,10 +1895,16 @@ func (a *previewWindow) finishConnectProgress() {
 	}
 	a.mu.Lock()
 	if !a.connectionState.Busy {
+		a.connectProgressQueued = false
 		a.mu.Unlock()
 		return
 	}
 	progress := a.pendingConnectProgress
+	a.connectProgressQueued = false
+	if !connectionProgressChanged(a.connectionState.Result, progress) {
+		a.mu.Unlock()
+		return
+	}
 	a.connectionState.Result = progress
 	a.mu.Unlock()
 	if progress.Phase != ConnectionIdle {
@@ -1892,6 +1919,7 @@ func (a *previewWindow) finishConnect() {
 	}
 	a.mu.Lock()
 	result := normalizeFinishedConnectionResult(a.pendingConnect)
+	a.connectProgressQueued = false
 	a.connectionState = ConnectionControlState{Result: result}
 	a.mu.Unlock()
 	display := a.connectionState.Display()

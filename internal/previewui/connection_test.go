@@ -71,6 +71,24 @@ func TestConnectionProgressNormalization(t *testing.T) {
 	}
 }
 
+func TestConnectionProgressChangedCoalescesRepeatedHealthPolls(t *testing.T) {
+	progress := ConnectionResult{
+		Phase:           ConnectionVerifying,
+		Code:            ConnectionCode(""),
+		PublicHost:      "mcp.example.test",
+		TokenConfigured: true,
+	}
+	if connectionProgressChanged(progress, progress) {
+		t.Fatal("identical health-poll progress should not trigger a repaint")
+	}
+	if !connectionProgressChanged(progress, ConnectionResult{Phase: ConnectionReady, PublicHost: "mcp.example.test", TokenConfigured: true}) {
+		t.Fatal("phase transition must remain visible")
+	}
+	if !connectionProgressChanged(progress, ConnectionResult{Phase: ConnectionVerifying, PublicHost: "other.example.test", TokenConfigured: true}) {
+		t.Fatal("public-host change must remain visible")
+	}
+}
+
 func TestConnectionDisplayMapsStopFailure(t *testing.T) {
 	display := (ConnectionControlState{Result: ConnectionResult{
 		Phase: ConnectionFailed,

@@ -90,6 +90,16 @@ type ConnectionProgress struct {
 	TokenConfigured bool
 }
 
+// connectionProgressChanged reports whether a progress snapshot can change
+// what the user sees.  The lifecycle backend may publish a snapshot on every
+// health-check poll; identical snapshots must not become one Win32 message
+// and one full-window repaint each.
+func connectionProgressChanged(previous, next ConnectionResult) bool {
+	previous = NormalizeConnectionResult(previous)
+	next = NormalizeConnectionResult(next)
+	return previous != next
+}
+
 // ConnectionControlState is local UI state, not a supervisor state machine.
 // Busy disables the action button while the backend owns the attempt.
 type ConnectionControlState struct {
