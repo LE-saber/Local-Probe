@@ -2041,29 +2041,33 @@ func (a *previewWindow) workspaceAddAsync() {
 	a.workspaceStatus = "请选择要授权的文件夹…"
 	a.mu.Unlock()
 	a.render()
+	// Keep the native input dialog on the Preview message-loop thread. This
+	// lets the user paste a path even when the COM picker is unavailable; only
+	// the manager mutation below runs asynchronously.
+	paths, pickErr := showWorkspacePathDialog(a.hwnd)
+	if errors.Is(pickErr, errWorkspacePickerCanceled) {
+		a.mu.Lock()
+		a.workspaceBusy = false
+		a.mu.Unlock()
+		a.setWorkspaceStatus("已取消选择")
+		return
+	}
+	if pickErr == nil && len(paths) == 0 {
+		pickErr = ErrWorkspacePickerSelection
+	}
+	if pickErr != nil {
+		a.mu.Lock()
+		a.workspaceBusy = false
+		a.mu.Unlock()
+		a.setWorkspaceStatus(workspaceErrorStatus(pickErr))
+		return
+	}
+	paths = append([]string(nil), paths...)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		paths, pickErr := chooseWorkspaceFolders(a.hwnd)
-		if errors.Is(pickErr, errWorkspacePickerCanceled) {
-			a.mu.Lock()
-			a.pendingWorkspaceNotice = "已取消选择"
-			a.pendingWorkspaceErr = nil
-			a.pendingWorkspace = append([]WorkspaceFolder(nil), a.workspaceFolders...)
-			exiting := a.exiting
-			a.mu.Unlock()
-			if !exiting {
-				postWindowMessage(a.hwnd, wmAppWorkspaceDone, 0, 0)
-			}
-			return
-		}
-		if pickErr == nil && len(paths) == 0 {
-			pickErr = errors.New("no workspace folders selected")
-		}
 		var folders []WorkspaceFolder
-		if pickErr == nil {
-			pickErr = manager.Add(ctx, paths)
-		}
+		pickErr := manager.Add(ctx, paths)
 		if pickErr == nil {
 			folders, pickErr = manager.List(ctx)
 		}

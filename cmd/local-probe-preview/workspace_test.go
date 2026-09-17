@@ -153,7 +153,7 @@ func TestWorkspaceErrorPresentationUsesSafeActionableMessages(t *testing.T) {
 		want string
 	}{
 		{err: &workspaceadmin.Problem{Code: workspaceadmin.CodePathMissing, Remediation: "secret-path"}, code: "path_missing", want: "不存在"},
-		{err: &workspaceadmin.Problem{Code: workspaceadmin.CodeRootOverlap, Remediation: "secret-path"}, code: "root_overlap", want: "父子重叠"},
+		{err: &workspaceadmin.Problem{Code: workspaceadmin.CodeRootOverlap, Remediation: "secret-path"}, code: "root_overlap", want: "无需重复添加"},
 		{err: &workspaceadmin.Problem{Code: workspaceadmin.CodeRevisionConflict, Remediation: "secret-path"}, code: "revision_conflict", want: "其他窗口"},
 		{err: &workspaceadmin.Problem{Code: workspaceadmin.CodeMutationBusy, Remediation: "secret-path"}, code: "busy", want: "稍后重试"},
 	}

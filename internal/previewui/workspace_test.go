@@ -73,6 +73,18 @@ func TestWorkspacePathAndDisplayBoundaries(t *testing.T) {
 	}
 }
 
+func TestNormalizeWorkspaceInputPathTrimsAndRejectsUnsafeText(t *testing.T) {
+	got, err := NormalizeWorkspaceInputPath("  C:\\Work\\Repo  ")
+	if err != nil || got != `C:\Work\Repo` {
+		t.Fatalf("normalized path = %q, err = %v", got, err)
+	}
+	for _, raw := range []string{"", "C:\\bad\npath", strings.Repeat("x", MaxWorkspacePathBytes+1)} {
+		if _, err := NormalizeWorkspaceInputPath(raw); err == nil {
+			t.Fatalf("unsafe input %q was accepted", raw)
+		}
+	}
+}
+
 func TestWorkspaceErrorPresentationNeverUsesRawError(t *testing.T) {
 	message, remediation := WorkspaceErrorPresentation(safeWorkspaceTestError{})
 	if message != "文件夹授权被拒绝" || remediation != "检查权限后重试" {
@@ -87,7 +99,7 @@ func TestWorkspaceErrorPresentationNeverUsesRawError(t *testing.T) {
 		t.Fatalf("deadline presentation = %q", message)
 	}
 	message, remediation = WorkspaceErrorPresentation(errors.Join(ErrWorkspacePickerUnavailable, errors.New("raw COM detail")))
-	if message != "无法打开文件夹选择器" || strings.Contains(remediation, "COM") {
+	if message != "无法打开文件夹选择器" || strings.Contains(remediation, "COM") || !strings.Contains(remediation, "完整文件夹路径") {
 		t.Fatalf("picker availability presentation = %q / %q", message, remediation)
 	}
 	message, remediation = WorkspaceErrorPresentation(ErrWorkspacePickerSelection)

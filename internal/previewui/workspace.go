@@ -79,7 +79,7 @@ func WorkspaceErrorPresentation(err error) (message, remediation string) {
 		return "工作空间管理器不可用", "检查 Preview 启动配置并重新启动应用"
 	}
 	if errors.Is(err, ErrWorkspacePickerUnavailable) {
-		return "无法打开文件夹选择器", "重新启动 Preview；如果仍失败，请检查 Windows 文件夹选择器权限"
+		return "无法打开文件夹选择器", "可直接输入完整文件夹路径；也可重新启动 Preview 后重试"
 	}
 	if errors.Is(err, ErrWorkspacePickerSelection) {
 		return "所选文件夹无效", "选择现有的本地文件夹，不要选择网络位置或磁盘根目录"
@@ -170,6 +170,18 @@ func ValidateWorkspacePath(path string) error {
 		}
 	}
 	return nil
+}
+
+// NormalizeWorkspaceInputPath applies the presentation-side normalization used
+// by the native path EDIT control. It deliberately does not canonicalize or
+// authorize the path: the workspace manager still performs existence,
+// filesystem, reparse-point, and overlap checks before saving it.
+func NormalizeWorkspaceInputPath(raw string) (string, error) {
+	path := strings.TrimSpace(raw)
+	if err := ValidateWorkspacePath(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // WorkspaceDisplayPath returns a bounded, human-readable path for the local

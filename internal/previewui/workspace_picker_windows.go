@@ -15,10 +15,13 @@ import (
 var (
 	ole32Workspace = windows.NewLazySystemDLL("ole32.dll")
 
-	workspaceCoInitializeEx   = ole32Workspace.NewProc("CoInitializeEx")
-	workspaceCoUninitialize   = ole32Workspace.NewProc("CoUninitialize")
-	workspaceCoCreateInstance = ole32Workspace.NewProc("CoCreateInstance")
-	workspaceCoTaskMemFree    = ole32Workspace.NewProc("CoTaskMemFree")
+	workspaceCoInitializeEx    = ole32Workspace.NewProc("CoInitializeEx")
+	workspaceCoUninitialize    = ole32Workspace.NewProc("CoUninitialize")
+	workspaceCoCreateInstance  = ole32Workspace.NewProc("CoCreateInstance")
+	workspaceCoTaskMemFree     = ole32Workspace.NewProc("CoTaskMemFree")
+	workspaceSHBrowseForFolder = shell32.NewProc("SHBrowseForFolderW")
+	workspaceSHGetPathFromIDEx = shell32.NewProc("SHGetPathFromIDListEx")
+	workspaceSHGetPathFromID   = shell32.NewProc("SHGetPathFromIDListW")
 )
 
 const (
@@ -29,9 +32,11 @@ const (
 	workspaceFOSForceFileSystem  = 0x00000040
 	workspaceFOSPickFolders      = 0x00000020
 
-	workspaceSIGDNFileSysPath          = 0x80058000
-	workspaceHResultCanceled    uint32 = 0x800704c7
-	workspaceHResultChangedMode uint32 = 0x80010106
+	workspaceSIGDNFileSysPath           = 0x80058000
+	workspaceHResultCanceled     uint32 = 0x800704c7
+	workspaceHResultChangedMode  uint32 = 0x80010106
+	workspaceBIFReturnOnlyFSDirs        = 0x00000001
+	workspaceBIFNewDialogStyle          = 0x00000040
 )
 
 var (
@@ -41,10 +46,33 @@ var (
 
 var errWorkspacePickerCanceled = errors.New("workspace folder picker canceled")
 
-// chooseWorkspaceFolders uses the Vista+ common file dialog. Unlike the old
-// SHBrowseForFolder API this supports selecting several folders in one modal
-// operation while still returning filesystem paths only.
+type workspaceBrowseInfo struct {
+	Owner       windows.HWND
+	Root        uintptr
+	DisplayName *uint16
+	Title       *uint16
+	Flags       uint32
+	Callback    uintptr
+	Param       uintptr
+	Image       int32
+}
+
+// chooseWorkspaceFolders prefers the Vista+ common file dialog because it can
+// select several folders. Some Windows sessions cannot create that COM dialog
+// (for example, a broken shell registration or an incompatible apartment), so
+// the older shell folder browser is a deliberate single-folder fallback.
 func chooseWorkspaceFolders(owner windows.HWND) ([]string, error) {
+	paths, err := chooseWorkspaceFoldersCommonDialog(owner)
+	if err == nil || errors.Is(err, errWorkspacePickerCanceled) || !errors.Is(err, ErrWorkspacePickerUnavailable) {
+		return paths, err
+	}
+	return chooseWorkspaceFolderFallback(owner)
+}
+
+// chooseWorkspaceFoldersCommonDialog uses the Vista+ common file dialog. It
+// supports selecting several folders in one modal operation while still
+// returning filesystem paths only.
+func chooseWorkspaceFoldersCommonDialog(owner windows.HWND) ([]string, error) {
 	// COM apartment state is thread-affine. Keep the dialog and its
 	// CoUninitialize on one OS thread even though the UI starts it in a worker.
 	runtime.LockOSThread()
@@ -124,6 +152,63 @@ func chooseWorkspaceFolders(owner windows.HWND) ([]string, error) {
 		paths = append(paths, path)
 	}
 	return deduplicateWorkspacePaths(paths), nil
+}
+
+// chooseWorkspaceFolderFallback uses the inbox shell folder browser. It is
+// intentionally single-select, but does not require IFileOpenDialog/COM and
+// therefore keeps the manual browse route usable when the modern picker is
+// unavailable.
+func chooseWorkspaceFolderFallback(owner windows.HWND) ([]string, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	initialized, err := initializeWorkspaceCOM()
+	if err != nil {
+		return nil, fmt.Errorf("%w: initialize fallback folder browser: %v", ErrWorkspacePickerUnavailable, err)
+	}
+	if initialized {
+		defer workspaceCoUninitialize.Call()
+	}
+
+	display := make([]uint16, 260)
+	prompt := wideString("选择要授权的本地文件夹")
+	flags := uint32(workspaceBIFReturnOnlyFSDirs)
+	if initialized {
+		flags |= workspaceBIFNewDialogStyle
+	}
+	info := workspaceBrowseInfo{
+		Owner:       owner,
+		DisplayName: &display[0],
+		Title:       prompt,
+		Flags:       flags,
+	}
+	item, _, callErr := workspaceSHBrowseForFolder.Call(uintptr(unsafe.Pointer(&info)))
+	if item == 0 {
+		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+			return nil, fmt.Errorf("%w: fallback folder browser unavailable: %v", ErrWorkspacePickerUnavailable, callErr)
+		}
+		return nil, errWorkspacePickerCanceled
+	}
+	defer workspaceCoTaskMemFree.Call(item)
+
+	pathBuffer := make([]uint16, 32768)
+	result, _, pathErr := workspaceSHGetPathFromIDEx.Call(item, uintptr(unsafe.Pointer(&pathBuffer[0])), uintptr(len(pathBuffer)), 0)
+	if result == 0 && pathErr != nil && errors.Is(pathErr, windows.ERROR_PROC_NOT_FOUND) {
+		// Vista+ exposes SHGetPathFromIDListEx; retain the older API as a
+		// compatibility fallback for a shell32 implementation that lacks it.
+		result, _, pathErr = workspaceSHGetPathFromID.Call(item, uintptr(unsafe.Pointer(&pathBuffer[0])))
+	}
+	if result == 0 {
+		if pathErr != nil && !errors.Is(pathErr, syscall.Errno(0)) {
+			return nil, fmt.Errorf("%w: fallback folder browser returned no filesystem path: %v", ErrWorkspacePickerSelection, pathErr)
+		}
+		return nil, fmt.Errorf("%w: fallback folder browser returned no filesystem path", ErrWorkspacePickerSelection)
+	}
+	path := windows.UTF16ToString(pathBuffer)
+	if path, err := NormalizeWorkspaceInputPath(path); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrWorkspacePickerSelection, err)
+	} else {
+		return []string{path}, nil
+	}
 }
 
 func initializeWorkspaceCOM() (bool, error) {

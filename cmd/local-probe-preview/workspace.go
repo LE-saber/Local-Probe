@@ -201,7 +201,7 @@ func workspaceErrorPresentation(err error) error {
 		workspaceadmin.CodeRemotePath:         {"remote_path", "网络共享或映射网络盘不能授权，请选择本机固定磁盘文件夹。"},
 		workspaceadmin.CodeNonFixedDrive:      {"non_fixed_drive", "工作空间必须位于本机固定磁盘，请重新选择。"},
 		workspaceadmin.CodeDriveRoot:          {"drive_root", "不能授权整个磁盘根目录，请选择具体项目文件夹。"},
-		workspaceadmin.CodeRootOverlap:        {"root_overlap", "新增文件夹与已有工作空间存在父子重叠，请只保留一个授权范围。"},
+		workspaceadmin.CodeRootOverlap:        {"root_overlap", "该文件夹与现有工作空间访问范围重叠，无需重复添加；如需扩大范围请先调整现有授权。"},
 		workspaceadmin.CodeRevisionConflict:   {"revision_conflict", "配置已被其他窗口修改，请刷新工作空间列表后重试。"},
 		workspaceadmin.CodeMutationBusy:       {"busy", "已有窗口正在修改工作空间，请稍后重试。"},
 		workspaceadmin.CodeRootMissing:        {"root_not_authorized", "只能删除当前连接已授权的文件夹，请刷新后重试。"},

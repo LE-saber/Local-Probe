@@ -87,9 +87,10 @@ The token value is never displayed, logged, or included in a diagnostic export.
 
 “工作空间访问”列表展示当前 `chatgpt-local -> profile -> roots` 的真实授权关系，不是装饰性收藏夹。列表中的每个文件夹都处于启用状态；行前复选框只用于多选批量移除。新增或移除会使用配置 revision 做并发保护，原子保存 `.runtime\local-probe.json`，随后重新连接本 Preview 管理的 MCP/Tunnel，使网页端 GPT 在新会话中取得最新授权。
 
-- 新增时使用 Windows 原生多选文件夹窗口；每个目录得到独立、稳定的 `root_id`。
+- 点击“新增文件夹”后，可直接粘贴或输入一个绝对路径并确认，也可点击“浏览文件夹…”选择目录。浏览优先使用 Windows 原生多选窗口；该组件不可用时自动回退到系统目录树单选窗口，手动路径输入始终独立可用。每个实际新增的目录得到独立、稳定的 `root_id`。
 - 网页端 GPT 通过 `server_info` 得到可用的 `root_id`，再调用现有的目录、检索与读取工具；本机绝对路径不会通过该发现接口发送给 GPT。
 - 只允许已存在的本机固定磁盘普通目录。磁盘根目录、UNC/映射网络盘、可移动盘、符号链接、junction/reparse point，以及父子重叠的授权范围会被拒绝。
+- 如果输入的目录已经位于现有 root 内（例如当前已授权 `repo`，再次输入 `repo\bin`），它本来已经可访问，界面会提示无需重复添加，而不会误报文件夹权限问题。
 - “删除选中”只撤销目标 profile 对目录的授权，不会删除、移动或修改物理文件夹。若其他 profile 或命令规则仍引用同一 root，配置实体也会保留。
 - 如果多个 connection 共用同一个 profile，修改该 profile 的 roots 会同时影响这些 connection；界面展示的 connection/profile 是判断影响范围的依据。
 - 保存后若 MCP/Tunnel 重连失败，授权配置仍已落盘，但界面会显示安全错误和处理建议；撤权场景不会忽略旧子进程停止失败。
