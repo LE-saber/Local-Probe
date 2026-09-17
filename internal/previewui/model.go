@@ -37,11 +37,14 @@ var (
 	ErrUnsupportedPlatform = errors.New("preview is unsupported on this platform")
 )
 
-// RunOptions contains only local UI dependencies.  In particular it has no
-// listener, process, credential, or network setting.
+// RunOptions contains only local UI dependencies. In particular it has no
+// listener, process, credential, or network setting. Connector is an
+// optional, typed seam for the application-owned local lifecycle backend; the
+// UI never accepts a command line or a shell callback.
 type RunOptions struct {
-	Model ViewModel
-	Title string
+	Model     ViewModel
+	Connector Connector
+	Title     string
 }
 
 // ViewModel is the only dependency required by the native UI.  Implementers
@@ -56,7 +59,7 @@ type ViewModel interface {
 
 // Snapshot is the render model for the Preview window.  It intentionally
 // contains counts, constrained identifiers, enums, and stable error codes
-// only.  It has no paths, URLs, commands, arguments, environment values,
+// only. It has no paths, URLs, commands, arguments, environment values,
 // credentials, tunnel IDs, or raw error strings.
 type Snapshot struct {
 	SchemaVersion     string            `json:"schema_version"`

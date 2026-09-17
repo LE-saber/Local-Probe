@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/LE-saber/Local-Probe/internal/previewapp"
+	"github.com/LE-saber/Local-Probe/internal/previewconnect"
 	"github.com/LE-saber/Local-Probe/internal/previewui"
 )
 
@@ -29,13 +30,34 @@ func main() {
 		os.Exit(1)
 	}
 	defer app.Close()
+	controller, err := previewconnect.New(previewconnect.DefaultOptions(defaultRepoRoot()))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "preview_connector_invalid")
+		os.Exit(1)
+	}
+	// Closing the window only hides it to the tray. Choosing Exit ends Run and
+	// then stops only the two child processes owned by this Preview instance.
+	defer controller.Stop()
 	model := previewui.NewPreviewAppModel(app)
-	if err := previewui.Run(previewui.RunOptions{Model: model, Title: "Local-Probe Preview"}); err != nil {
+	connector := previewConnector{controller: controller}
+	if err := previewui.Run(previewui.RunOptions{Model: model, Connector: connector, Title: "Local-Probe Preview"}); err != nil {
 		// Keep startup diagnostics stable and free of paths, OS messages, and
 		// any future adapter data. The GUI itself also uses stable categories.
 		fmt.Fprintln(os.Stderr, stableError(err))
 		os.Exit(1)
 	}
+}
+
+func defaultRepoRoot() string {
+	exe, err := os.Executable()
+	if err == nil {
+		return filepath.Dir(filepath.Dir(exe))
+	}
+	root, err := filepath.Abs(".")
+	if err == nil {
+		return root
+	}
+	return "."
 }
 
 func defaultConfigPath() string {

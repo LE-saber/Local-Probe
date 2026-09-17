@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -19,10 +20,12 @@ import (
 )
 
 const (
-	wmAppRefreshDone = uint32(0x8000 + 20)
-	wmAppExportDone  = uint32(0x8000 + 21)
-	wmAppTrayExit    = uint32(0x8000 + 22)
-	trayCallback     = uint32(0x8000 + 23)
+	wmAppRefreshDone     = uint32(0x8000 + 20)
+	wmAppExportDone      = uint32(0x8000 + 21)
+	wmAppTrayExit        = uint32(0x8000 + 22)
+	trayCallback         = uint32(0x8000 + 23)
+	wmAppConnectDone     = uint32(0x8000 + 24)
+	wmAppConnectProgress = uint32(0x8000 + 25)
 
 	wmCreate        = 0x0001
 	wmDestroy       = 0x0002
@@ -278,8 +281,9 @@ type openFileNameW struct {
 }
 
 type previewWindow struct {
-	model ViewModel
-	title string
+	model     ViewModel
+	connector Connector
+	title     string
 
 	hwnd      windows.HWND
 	tab       windows.HWND
@@ -293,21 +297,24 @@ type previewWindow struct {
 	gate      windows.HWND
 	font      windows.Handle
 
-	section    Section
-	current    Snapshot
-	statusText string
-	hoverNav   int
-	scroll     int
-	fontScale  FontScale
+	section         Section
+	current         Snapshot
+	connectionState ConnectionControlState
+	statusText      string
+	hoverNav        int
+	scroll          int
+	fontScale       FontScale
 
-	mu                sync.Mutex
-	refreshing        bool
-	pendingSnapshot   Snapshot
-	pendingRefreshErr bool
-	exporting         bool
-	pendingExport     []byte
-	pendingExportErr  bool
-	exiting           bool
+	mu                     sync.Mutex
+	refreshing             bool
+	pendingSnapshot        Snapshot
+	pendingRefreshErr      bool
+	exporting              bool
+	pendingExport          []byte
+	pendingExportErr       bool
+	pendingConnect         ConnectionResult
+	pendingConnectProgress ConnectionResult
+	exiting                bool
 
 	mutex          windows.Handle
 	tray           bool
@@ -337,6 +344,7 @@ const (
 	idStop      = 1007
 	idReconnect = 1008
 	idGate      = 1009
+	idConnect   = 1010
 )
 
 const (
@@ -417,6 +425,7 @@ func Run(options RunOptions) error {
 	}
 	app := &previewWindow{
 		model:      options.Model,
+		connector:  options.Connector,
 		title:      options.Title,
 		hwnd:       windows.HWND(hwndValue),
 		section:    SectionOverview,
@@ -604,6 +613,10 @@ func (a *previewWindow) proc(msg uint32, wParam, lParam uintptr) uintptr {
 		a.finishRefresh()
 	case wmAppExportDone:
 		a.finishExport()
+	case wmAppConnectProgress:
+		a.finishConnectProgress()
+	case wmAppConnectDone:
+		a.finishConnect()
 	case wmAppTrayExit:
 		a.exit()
 	case wmDestroy:
@@ -628,6 +641,8 @@ func (a *previewWindow) command(id uint32) {
 		a.refreshAsync()
 	case idExport, menuExport:
 		a.exportAsync()
+	case idConnect:
+		a.connectAsync()
 	case menuOpen:
 		a.toggleWindow()
 	case menuAbout:
@@ -660,6 +675,7 @@ type previewLayout struct {
 	mainRight   int
 	headerTop   int
 	fontRect    winRect
+	connectRect winRect
 	refreshRect winRect
 	exportRect  winRect
 	navRects    [5]winRect
@@ -690,6 +706,7 @@ func makePreviewLayout(width, height int) previewLayout {
 	}
 	const (
 		fontButtonWidth    = 152
+		connectButtonWidth = 156
 		refreshButtonWidth = 104
 		exportButtonWidth  = 116
 		headerButtonGap    = 12
@@ -700,6 +717,8 @@ func makePreviewLayout(width, height int) previewLayout {
 	result.refreshRect = rectInt(refreshRight-refreshButtonWidth, 28, refreshRight, 68)
 	fontRight := int(result.refreshRect.Left) - headerButtonGap
 	result.fontRect = rectInt(fontRight-fontButtonWidth, 28, fontRight, 68)
+	connectRight := int(result.fontRect.Left) - headerButtonGap
+	result.connectRect = rectInt(connectRight-connectButtonWidth, 28, connectRight, 68)
 	return result
 }
 
@@ -740,6 +759,10 @@ func (a *previewWindow) mouseDown(point winPoint) {
 	}
 	if layout.exportRect.Contains(x, y) {
 		a.command(idExport)
+		return
+	}
+	if layout.connectRect.Contains(x, y) {
+		a.command(idConnect)
 		return
 	}
 }
@@ -884,6 +907,8 @@ func (a *previewWindow) paint() {
 	}
 	a.mu.Lock()
 	snapshot := sanitizeSnapshot(a.current)
+	connectionState := a.connectionState
+	connectorAvailable := a.connector != nil
 	statusText := a.statusText
 	a.mu.Unlock()
 	scale := NormalizeFontScale(a.fontScale)
@@ -893,8 +918,8 @@ func (a *previewWindow) paint() {
 	fillRectColor(hdc, client, colorPage)
 	fillRectColor(hdc, rectInt(0, 0, sidebarWidth, height), colorSidebar)
 	drawSidebar(hdc, layout, a.section, a.hoverNav)
-	drawHeader(hdc, layout, a.section, statusText, scale)
-	drawSection(hdc, layout, snapshot, a.section, a.scroll)
+	drawHeader(hdc, layout, a.section, statusText, scale, connectionState, connectorAvailable)
+	drawSection(hdc, layout, snapshot, a.section, a.scroll, connectionState, connectorAvailable)
 }
 
 func drawSidebar(hdc uintptr, layout previewLayout, active Section, hover int) {
@@ -922,10 +947,11 @@ func drawSidebar(hdc uintptr, layout previewLayout, active Section, hover int) {
 	drawText(hdc, Version, rectInt(24, layout.height-38, sidebarWidth-16, layout.height-18), colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
 }
 
-func drawHeader(hdc uintptr, layout previewLayout, section Section, statusText string, scale FontScale) {
+func drawHeader(hdc uintptr, layout previewLayout, section Section, statusText string, scale FontScale, connectionState ConnectionControlState, connectorAvailable bool) {
 	title, subtitle := sectionTitle(section)
-	drawText(hdc, title, rectInt(layout.mainLeft, layout.headerTop, int(layout.fontRect.Left)-18, layout.headerTop+36), colorText, 25, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
-	drawText(hdc, subtitle, rectInt(layout.mainLeft, layout.headerTop+38, int(layout.fontRect.Left)-18, layout.headerTop+64), colorMuted, 11, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, title, rectInt(layout.mainLeft, layout.headerTop, int(layout.connectRect.Left)-18, layout.headerTop+36), colorText, 25, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, subtitle, rectInt(layout.mainLeft, layout.headerTop+38, int(layout.connectRect.Left)-18, layout.headerTop+64), colorMuted, 11, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawConnectButton(hdc, layout.connectRect, ConnectionButtonLabel(connectionState, connectorAvailable), connectorAvailable && !connectionState.Busy)
 	drawActionButton(hdc, layout.fontRect, FontScaleLabel(scale), false)
 	drawActionButton(hdc, layout.refreshRect, "↻  刷新", false)
 	drawActionButton(hdc, layout.exportRect, "导出诊断", false)
@@ -950,10 +976,10 @@ func sectionTitle(section Section) (string, string) {
 	}
 }
 
-func drawSection(hdc uintptr, layout previewLayout, snapshot Snapshot, section Section, scroll int) {
+func drawSection(hdc uintptr, layout previewLayout, snapshot Snapshot, section Section, scroll int, connectionState ConnectionControlState, connectorAvailable bool) {
 	switch section {
 	case SectionConnections:
-		drawConnectionsPage(hdc, layout, snapshot, scroll)
+		drawConnectionsPage(hdc, layout, snapshot, scroll, connectionState, connectorAvailable)
 	case SectionDeveloperRules:
 		drawRulesPage(hdc, layout, snapshot, scroll)
 	case SectionLogs:
@@ -961,11 +987,11 @@ func drawSection(hdc uintptr, layout previewLayout, snapshot Snapshot, section S
 	case SectionAbout:
 		drawAboutPage(hdc, layout, snapshot)
 	default:
-		drawOverviewPage(hdc, layout, snapshot)
+		drawOverviewPage(hdc, layout, snapshot, connectionState, connectorAvailable)
 	}
 }
 
-func drawOverviewPage(hdc uintptr, layout previewLayout, s Snapshot) {
+func drawOverviewPage(hdc uintptr, layout previewLayout, s Snapshot, connectionState ConnectionControlState, connectorAvailable bool) {
 	mainLeft, mainRight := layout.mainLeft, layout.mainRight
 	cardWidth := mainRight - mainLeft
 	statusRect := rectInt(mainLeft, 128, mainRight, 244)
@@ -1010,7 +1036,7 @@ func drawOverviewPage(hdc uintptr, layout previewLayout, s Snapshot) {
 	leftWidth := (cardWidth - 14) / 2
 	drawConnectionsCard(hdc, rectInt(mainLeft, bottomTop, mainLeft+leftWidth, 570), s)
 	drawAuditCard(hdc, rectInt(mainLeft+leftWidth+14, bottomTop, mainRight, 570), s)
-	drawGateCard(hdc, rectInt(mainLeft, 588, mainRight, minInt(layout.height-22, 668)), s)
+	drawGateCard(hdc, rectInt(mainLeft, 588, mainRight, minInt(layout.height-22, 742)), s, connectionState, connectorAvailable)
 }
 
 func drawConnectionsCard(hdc uintptr, rect winRect, s Snapshot) {
@@ -1044,24 +1070,41 @@ func drawAuditCard(hdc uintptr, rect winRect, s Snapshot) {
 	drawText(hdc, "内容、路径、命令和凭据不会显示在 Preview", winRect{Left: valueX, Top: rect.Bottom - 30, Right: rect.Right - 18, Bottom: rect.Bottom - 12}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
 }
 
-func drawGateCard(hdc uintptr, rect winRect, s Snapshot) {
+func drawGateCard(hdc uintptr, rect winRect, s Snapshot, connectionState ConnectionControlState, connectorAvailable bool) {
 	if rect.Bottom <= rect.Top {
 		return
 	}
-	drawRoundRect(hdc, rect, 10, colorAmberSoft, colorAmberSoft)
-	drawStatusDotColor(hdc, int(rect.Left)+28, int(rect.Top)+31, colorAmber)
-	drawText(hdc, "生命周期控制暂不可用", winRect{Left: rect.Left + 52, Top: rect.Top + 14, Right: rect.Right - 20, Bottom: rect.Top + 40}, colorText, 13, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
-	drawText(hdc, "Start / Stop / Reconnect 保持禁用（production_gate）", winRect{Left: rect.Left + 52, Top: rect.Top + 43, Right: rect.Right - 20, Bottom: rect.Top + 68}, colorMuted, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
-	drawPill(hdc, winRect{Left: rect.Right - 148, Top: rect.Top + 24, Right: rect.Right - 20, Bottom: rect.Top + 54}, "只读预览", struct{ fg, bg uint32 }{colorAmber, colorWhite})
+	display := connectionState.Display()
+	background := uint32(colorBlueSoft)
+	statusColorValue := uint32(colorBlue)
+	if display.Healthy {
+		background, statusColorValue = colorGreenSoft, colorGreen
+	} else if display.Title == "连接失败" || strings.Contains(display.StatusLabel, "失败") {
+		background, statusColorValue = colorRedSoft, colorRed
+	} else if display.Busy {
+		background, statusColorValue = colorAmberSoft, colorAmber
+	}
+	drawRoundRect(hdc, rect, 10, background, background)
+	drawStatusDotColor(hdc, int(rect.Left)+28, int(rect.Top)+31, statusColorValue)
+	drawText(hdc, "Tunnel 连接", winRect{Left: rect.Left + 52, Top: rect.Top + 11, Right: rect.Right - 260, Bottom: rect.Top + 36}, colorText, 13, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, display.Title, winRect{Left: rect.Left + 52, Top: rect.Top + 38, Right: rect.Right - 260, Bottom: rect.Top + 63}, statusColorValue, 11, fontMedium, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+	drawText(hdc, display.PhaseLabel+" · "+display.StatusLabel, winRect{Left: rect.Left + 52, Top: rect.Top + 66, Right: rect.Right - 260, Bottom: rect.Top + 88}, colorMuted, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, display.Detail, winRect{Left: rect.Left + 52, Top: rect.Top + 91, Right: rect.Right - 260, Bottom: rect.Top + 113}, colorText, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+	drawText(hdc, display.Remediation, winRect{Left: rect.Left + 52, Top: rect.Top + 115, Right: rect.Right - 260, Bottom: rect.Bottom - 12}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+	drawPill(hdc, winRect{Left: rect.Right - 242, Top: rect.Top + 18, Right: rect.Right - 20, Bottom: rect.Top + 47}, "公开主机 "+displayAtom(display.PublicHost, "未配置"), struct{ fg, bg uint32 }{colorBlue, colorWhite})
+	drawPill(hdc, winRect{Left: rect.Right - 242, Top: rect.Top + 57, Right: rect.Right - 20, Bottom: rect.Top + 86}, "Token "+display.TokenStatus, struct{ fg, bg uint32 }{colorMuted, colorWhite})
+	drawText(hdc, ConnectionButtonLabel(connectionState, connectorAvailable), winRect{Left: rect.Right - 242, Top: rect.Top + 96, Right: rect.Right - 20, Bottom: rect.Top + 122}, colorText, 10, fontMedium, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
 	_ = s
 }
 
-func drawConnectionsPage(hdc uintptr, layout previewLayout, s Snapshot, scroll int) {
+func drawConnectionsPage(hdc uintptr, layout previewLayout, s Snapshot, scroll int, connectionState ConnectionControlState, connectorAvailable bool) {
 	card := rectInt(layout.mainLeft, 128, layout.mainRight, layout.height-24)
 	drawCard(hdc, card)
 	drawText(hdc, fmt.Sprintf("%d 个连接", len(s.Connections)), winRect{Left: card.Left + 22, Top: card.Top + 16, Right: card.Right - 20, Bottom: card.Top + 44}, colorText, 14, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
-	drawText(hdc, "只读投影 · 未显示路径、端点、凭据或进程信息", winRect{Left: card.Left + 22, Top: card.Top + 45, Right: card.Right - 20, Bottom: card.Top + 68}, colorMuted, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
-	rowTop := int(card.Top) + 84
+	drawText(hdc, "只读投影 · 公开主机和 token 状态可见，私有路径与凭据不会显示", winRect{Left: card.Left + 22, Top: card.Top + 45, Right: card.Right - 20, Bottom: card.Top + 68}, colorMuted, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	control := rectInt(int(card.Left)+18, int(card.Top)+76, int(card.Right)-18, int(card.Top)+194)
+	drawConnectionControlCard(hdc, control, connectionState, connectorAvailable)
+	rowTop := int(card.Top) + 210
 	visible := 0
 	visibleLimit := maxVisibleRows(int(card.Bottom)-rowTop, 58, 8)
 	for index := scroll; index < len(s.Connections) && visible < visibleLimit; index++ {
@@ -1075,6 +1118,28 @@ func drawConnectionsPage(hdc uintptr, layout previewLayout, s Snapshot, scroll i
 	} else if scroll > 0 || scroll+visible < len(s.Connections) {
 		drawText(hdc, fmt.Sprintf("显示 %d-%d / %d · 使用鼠标滚轮或方向键浏览", scroll+1, minInt(scroll+visible, len(s.Connections)), len(s.Connections)), winRect{Left: card.Left + 22, Top: card.Bottom - 31, Right: card.Right - 20, Bottom: card.Bottom - 12}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
 	}
+}
+
+func drawConnectionControlCard(hdc uintptr, rect winRect, state ConnectionControlState, connectorAvailable bool) {
+	display := state.Display()
+	background := uint32(colorGraySoft)
+	statusColorValue := uint32(colorGray)
+	if display.Healthy {
+		background, statusColorValue = colorGreenSoft, colorGreen
+	} else if display.Busy {
+		background, statusColorValue = colorAmberSoft, colorAmber
+	} else if display.Title == "连接失败" || strings.Contains(display.StatusLabel, "失败") {
+		background, statusColorValue = colorRedSoft, colorRed
+	}
+	drawRoundRect(hdc, rect, 8, background, background)
+	drawStatusDotColor(hdc, int(rect.Left)+22, int(rect.Top)+28, statusColorValue)
+	drawText(hdc, display.Title, winRect{Left: rect.Left + 42, Top: rect.Top + 10, Right: rect.Right - 360, Bottom: rect.Top + 36}, colorText, 12, fontBold, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+	drawText(hdc, display.PhaseLabel+" · "+display.StatusLabel, winRect{Left: rect.Left + 42, Top: rect.Top + 39, Right: rect.Right - 360, Bottom: rect.Top + 62}, statusColorValue, 10, fontMedium, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, display.Detail, winRect{Left: rect.Left + 42, Top: rect.Top + 66, Right: rect.Right - 360, Bottom: rect.Top + 90}, colorText, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+	drawText(hdc, display.Remediation, winRect{Left: rect.Left + 42, Top: rect.Top + 91, Right: rect.Right - 360, Bottom: rect.Bottom - 10}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+	drawPill(hdc, winRect{Left: rect.Right - 332, Top: rect.Top + 16, Right: rect.Right - 18, Bottom: rect.Top + 44}, "公开主机 "+displayAtom(display.PublicHost, "未配置"), struct{ fg, bg uint32 }{colorBlue, colorWhite})
+	drawPill(hdc, winRect{Left: rect.Right - 332, Top: rect.Top + 52, Right: rect.Right - 18, Bottom: rect.Top + 80}, "Token "+display.TokenStatus, struct{ fg, bg uint32 }{colorMuted, colorWhite})
+	drawText(hdc, ConnectionButtonLabel(state, connectorAvailable), winRect{Left: rect.Right - 332, Top: rect.Top + 88, Right: rect.Right - 18, Bottom: rect.Top + 112}, colorText, 10, fontMedium, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
 }
 
 func drawRulesPage(hdc uintptr, layout previewLayout, s Snapshot, scroll int) {
@@ -1227,6 +1292,15 @@ func drawActionButton(hdc uintptr, rect winRect, label string, disabled bool) {
 	}
 	drawRoundRect(hdc, rect, 8, fill, border)
 	drawText(hdc, label, winRect{Left: rect.Left + 8, Top: rect.Top, Right: rect.Right - 8, Bottom: rect.Bottom}, text, 11, fontMedium, dtSingleLine|dtVCenter|dtNoPrefix)
+}
+
+func drawConnectButton(hdc uintptr, rect winRect, label string, active bool) {
+	if !active {
+		drawActionButton(hdc, rect, label, true)
+		return
+	}
+	drawRoundRect(hdc, rect, 8, colorBlue, colorBlue)
+	drawText(hdc, label, winRect{Left: rect.Left + 8, Top: rect.Top, Right: rect.Right - 8, Bottom: rect.Bottom}, colorWhite, 11, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
 }
 
 func drawPill(hdc uintptr, rect winRect, label string, style struct{ fg, bg uint32 }) {
@@ -1548,6 +1622,129 @@ func moveControl(hwnd windows.HWND, x, y, width, height int) {
 	if hwnd != 0 {
 		_, _, _ = procMoveWindow.Call(uintptr(hwnd), uintptr(x), uintptr(y), uintptr(width), uintptr(height), 1)
 	}
+}
+
+func (a *previewWindow) connectAsync() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.connectionState.Busy || a.exiting {
+		a.mu.Unlock()
+		return
+	}
+	connector := a.connector
+	previous := NormalizeConnectionResult(a.connectionState.Result)
+	a.connectionState = ConnectionControlState{Busy: true, Result: ConnectionResult{
+		Phase:           ConnectionPreflight,
+		PublicHost:      previous.PublicHost,
+		TokenConfigured: previous.TokenConfigured,
+	}}
+	a.mu.Unlock()
+	a.setStatus("正在连接…")
+	a.render()
+	if connector == nil {
+		a.mu.Lock()
+		a.pendingConnect = ConnectionResult{Phase: ConnectionFailed, Code: ConnectionConnectorMissing, PublicHost: previous.PublicHost, TokenConfigured: previous.TokenConfigured}
+		a.mu.Unlock()
+		postWindowMessage(a.hwnd, wmAppConnectDone, 0, 0)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		var result ConnectionResult
+		if previous.Phase == ConnectionReady {
+			if progressReconnector, ok := connector.(ProgressReconnector); ok {
+				result = progressReconnector.ReconnectWithProgress(ctx, func(progress ConnectionProgress) {
+					a.queueConnectProgress(progress)
+				})
+			} else if reconnector, ok := connector.(Reconnector); ok {
+				result = reconnector.Reconnect(ctx)
+			} else {
+				result = connector.Connect(ctx)
+			}
+		} else if progressConnector, ok := connector.(ProgressConnector); ok {
+			result = progressConnector.ConnectWithProgress(ctx, func(progress ConnectionProgress) {
+				a.queueConnectProgress(progress)
+			})
+		} else {
+			result = connector.Connect(ctx)
+		}
+		result = normalizeFinishedConnectionResult(result)
+		a.mu.Lock()
+		a.pendingConnect = result
+		exiting := a.exiting
+		a.mu.Unlock()
+		if !exiting {
+			postWindowMessage(a.hwnd, wmAppConnectDone, 0, 0)
+		}
+	}()
+}
+
+func (a *previewWindow) queueConnectProgress(progress ConnectionProgress) {
+	a.mu.Lock()
+	a.pendingConnectProgress = NormalizeConnectionResult(ConnectionResult{
+		Phase: progress.Phase, Code: progress.Code, PublicHost: progress.PublicHost, TokenConfigured: progress.TokenConfigured,
+	})
+	exiting := a.exiting
+	a.mu.Unlock()
+	if !exiting {
+		postWindowMessage(a.hwnd, wmAppConnectProgress, 0, 0)
+	}
+}
+
+func (a *previewWindow) finishConnectProgress() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if !a.connectionState.Busy {
+		a.mu.Unlock()
+		return
+	}
+	progress := a.pendingConnectProgress
+	a.connectionState.Result = progress
+	a.mu.Unlock()
+	if progress.Phase != ConnectionIdle {
+		a.setStatus(connectionPhaseLabel(progress.Phase) + "…")
+	}
+	a.render()
+}
+
+func (a *previewWindow) finishConnect() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	result := normalizeFinishedConnectionResult(a.pendingConnect)
+	a.connectionState = ConnectionControlState{Result: result}
+	a.mu.Unlock()
+	display := a.connectionState.Display()
+	if display.Healthy {
+		a.setStatus("Tunnel 已连接")
+	} else {
+		a.setStatus(display.Title)
+	}
+	a.render()
+}
+
+func normalizeFinishedConnectionResult(result ConnectionResult) ConnectionResult {
+	result = NormalizeConnectionResult(result)
+	if result.Phase == ConnectionReady {
+		result.Code = ConnectionOK
+		return result
+	}
+	if result.Phase != ConnectionFailed {
+		if result.Code == "" {
+			result.Code = ConnectionUnknown
+		}
+		result.Phase = ConnectionFailed
+	}
+	if result.Code == "" || result.Code == ConnectionOK {
+		result.Code = ConnectionUnknown
+	}
+	return result
 }
 
 func (a *previewWindow) refreshAsync() {

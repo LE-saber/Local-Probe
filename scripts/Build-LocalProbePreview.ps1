@@ -2,6 +2,7 @@
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$OutputPath,
+    [string]$McpOutputPath,
     [switch]$Console
 )
 
@@ -35,6 +36,23 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 if ([IO.Path]::GetExtension($OutputPath) -ne '.exe' -or -not (Test-PathInside $OutputPath $RepoRoot)) {
     throw 'OutputPath must be a .exe path inside RepoRoot.'
 }
+if ([string]::IsNullOrWhiteSpace($McpOutputPath)) {
+    # Keep the MCP origin beside the Preview artifact.  The Preview connection
+    # controller resolves this fixed, repo-local path and never accepts an
+    # executable path from a model request.
+    $McpOutputPath = Join-Path $RepoRoot 'bin\local-probe-mcp.exe'
+} else {
+    if (-not [IO.Path]::IsPathRooted($McpOutputPath)) {
+        $McpOutputPath = Join-Path $RepoRoot $McpOutputPath
+    }
+    $McpOutputPath = Get-FullPath $McpOutputPath
+}
+if ([IO.Path]::GetExtension($McpOutputPath) -ne '.exe' -or -not (Test-PathInside $McpOutputPath $RepoRoot)) {
+    throw 'McpOutputPath must be a .exe path inside RepoRoot.'
+}
+if ($OutputPath.Equals($McpOutputPath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'OutputPath and McpOutputPath must be different files.'
+}
 
 $go = Get-Command go -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
@@ -46,6 +64,10 @@ $outputDirectory = Split-Path -Parent $OutputPath
 if (-not (Test-Path -LiteralPath $outputDirectory -PathType Container)) {
     $null = New-Item -ItemType Directory -Path $outputDirectory -Force
 }
+$mcpOutputDirectory = Split-Path -Parent $McpOutputPath
+if (-not (Test-Path -LiteralPath $mcpOutputDirectory -PathType Container)) {
+    $null = New-Item -ItemType Directory -Path $mcpOutputDirectory -Force
+}
 
 # The Preview binary has no network or credential flags.  Build arguments are
 # passed as an array so paths never become shell fragments or secret output.
@@ -56,7 +78,7 @@ $ldflags = '-s -w'
 if (-not $Console) {
     $ldflags = '-H=windowsgui -s -w'
 }
-$buildArgs = @(
+$previewBuildArgs = @(
     'build',
     '-trimpath',
     '-ldflags',
@@ -65,11 +87,24 @@ $buildArgs = @(
     $OutputPath,
     './cmd/local-probe-preview'
 )
+$mcpBuildArgs = @(
+    'build',
+    '-trimpath',
+    '-ldflags',
+    '-s -w',
+    '-o',
+    $McpOutputPath,
+    './cmd/local-probe-mcp'
+)
 Push-Location $RepoRoot
 try {
-    & $go.Source @buildArgs
+    & $go.Source @previewBuildArgs
     if ($LASTEXITCODE -ne 0) {
         throw 'Go failed to build Local-Probe Preview.'
+    }
+    & $go.Source @mcpBuildArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Go failed to build the Local-Probe MCP origin required by Preview Connect.'
     }
 } finally {
     Pop-Location
@@ -80,4 +115,10 @@ if (-not $artifact.PSIsContainer -and $artifact.Length -gt 0) {
     Write-Output ('Built Local-Probe Preview: ' + $OutputPath)
 } else {
     throw 'Preview build did not produce a regular executable.'
+}
+$mcpArtifact = Get-Item -LiteralPath $McpOutputPath -Force
+if (-not $mcpArtifact.PSIsContainer -and $mcpArtifact.Length -gt 0) {
+    Write-Output ('Built Local-Probe MCP origin for Preview Connect: ' + $McpOutputPath)
+} else {
+    throw 'MCP build did not produce a regular executable.'
 }
