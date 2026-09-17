@@ -69,6 +69,7 @@ const (
 	ConnectionNoEdgeConnections  ConnectionCode = "tunnel_no_edge_connections"
 	ConnectionDNSMismatch        ConnectionCode = "dns_route_mismatch"
 	ConnectionTimeout            ConnectionCode = "connect_timeout"
+	ConnectionStopFailed         ConnectionCode = "stop_failed"
 	ConnectionUnknown            ConnectionCode = "unknown"
 )
 
@@ -197,6 +198,8 @@ func ConnectionIssueFor(code ConnectionCode) ConnectionIssue {
 		return ConnectionIssue{Code: ConnectionDNSMismatch, Title: "公开主机路由不匹配", Detail: "公开主机没有指向当前 Tunnel。", Remediation: "检查 Cloudflare DNS/Tunnel route，确认公开主机与当前 Tunnel 一致。"}
 	case ConnectionTimeout:
 		return ConnectionIssue{Code: ConnectionTimeout, Title: "连接检查超时", Detail: "本地服务或 Tunnel 在限定时间内未就绪。", Remediation: "检查日志与诊断，确认网络和端口可用后重新连接。"}
+	case ConnectionStopFailed:
+		return ConnectionIssue{Code: ConnectionStopFailed, Title: "旧连接清理失败", Detail: "Preview 未能完整停止上一次由它启动的连接进程。", Remediation: "关闭仍在运行的 Preview 实例，确认 8788/49300 端口已释放后再重新连接。"}
 	default:
 		return ConnectionIssue{Code: ConnectionUnknown, Title: "连接失败", Detail: "连接后端返回了未分类的安全错误。", Remediation: "打开日志与诊断查看错误码，修复对应问题后重新连接。"}
 	}

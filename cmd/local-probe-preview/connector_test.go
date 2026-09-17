@@ -42,6 +42,7 @@ func TestConnectionCodeMapsActionableFailures(t *testing.T) {
 		previewconnect.CodeEdgeUnreachable:     previewui.ConnectionEdgeUnreachable,
 		previewconnect.CodeNoEdgeConnections:   previewui.ConnectionNoEdgeConnections,
 		previewconnect.CodeAccessConfigInvalid: previewui.ConnectionAccessInvalid,
+		previewconnect.CodeStopFailed:          previewui.ConnectionStopFailed,
 	}
 	for input, want := range tests {
 		if got := connectionCode(input); got != want {

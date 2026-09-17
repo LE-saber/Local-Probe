@@ -42,9 +42,10 @@ var (
 // optional, typed seam for the application-owned local lifecycle backend; the
 // UI never accepts a command line or a shell callback.
 type RunOptions struct {
-	Model     ViewModel
-	Connector Connector
-	Title     string
+	Model            ViewModel
+	Connector        Connector
+	WorkspaceManager WorkspaceManager
+	Title            string
 }
 
 // ViewModel is the only dependency required by the native UI.  Implementers
@@ -161,6 +162,7 @@ type Section int
 const (
 	SectionOverview Section = iota
 	SectionConnections
+	SectionWorkspaceAccess
 	SectionDeveloperRules
 	SectionLogs
 	SectionAbout
@@ -217,6 +219,8 @@ func Render(snapshot Snapshot, section Section) string {
 		return renderOverview(snapshot)
 	case SectionConnections:
 		return renderConnections(snapshot)
+	case SectionWorkspaceAccess:
+		return renderWorkspaceAccess()
 	case SectionDeveloperRules:
 		return renderDeveloperRules(snapshot)
 	case SectionLogs:
@@ -226,6 +230,15 @@ func Render(snapshot Snapshot, section Section) string {
 	default:
 		return renderOverview(snapshot)
 	}
+}
+
+func renderWorkspaceAccess() string {
+	var b strings.Builder
+	b.WriteString("Workspace Access\r\n=================\r\n\r\n")
+	b.WriteString("This page is managed by the local Preview workspace manager.\r\n")
+	b.WriteString("Folder paths are intentionally not included in snapshots or diagnostic exports.\r\n")
+	b.WriteString("Use the Windows workspace page to add, select, or remove authorized folders.\r\n")
+	return b.String()
 }
 
 func renderOverview(s Snapshot) string {

@@ -51,6 +51,7 @@ const (
 	CodeNone                Code = ""
 	CodeAlreadyConnecting   Code = "already_connecting"
 	CodeCancelled           Code = "cancelled"
+	CodeStopFailed          Code = "stop_failed"
 	CodeMCPBinaryMissing    Code = "mcp_binary_missing"
 	CodeCloudflaredMissing  Code = "cloudflared_missing"
 	CodeConfigMissing       Code = "config_missing"
@@ -307,7 +308,9 @@ func (c *Controller) Connect(ctx context.Context, progress ProgressFunc) (Status
 // Reconnect stops only child processes owned by this controller, then starts
 // a fresh connection.  Unrelated listeners are never killed.
 func (c *Controller) Reconnect(ctx context.Context, progress ProgressFunc) (Status, error) {
-	_ = c.Stop()
+	if err := c.Stop(); err != nil {
+		return c.fail(progress, c.now(), problem(CodeStopFailed))
+	}
 	return c.Connect(ctx, progress)
 }
 
@@ -722,6 +725,7 @@ func problem(code Code) *Problem {
 	messages := map[Code][2]string{
 		CodeAlreadyConnecting:   {"正在连接，请等待当前操作完成。", "不要重复点击连接按钮。"},
 		CodeCancelled:           {"连接已取消。", "再次点击“一键连接”重试。"},
+		CodeStopFailed:          {"旧连接无法安全停止。", "退出 Preview，确认旧的 MCP/Tunnel 进程已结束后再启动；在此之前不会加载新的工作空间权限。"},
 		CodeMCPBinaryMissing:    {"找不到本地 MCP 程序。", "重新运行 Preview 构建/安装步骤，确保 bin\\local-probe-mcp.exe 存在。"},
 		CodeCloudflaredMissing:  {"找不到 cloudflared 程序。", "安装或恢复 Cloudflare Tunnel 客户端后再重试。"},
 		CodeConfigMissing:       {"找不到 Local-Probe 配置。", "先完成初始化配置，再点击连接。"},

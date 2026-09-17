@@ -116,6 +116,8 @@ func connectionCode(code previewconnect.Code) previewui.ConnectionCode {
 		return previewui.ConnectionTunnelNotReady
 	case previewconnect.CodeCancelled:
 		return previewui.ConnectionTimeout
+	case previewconnect.CodeStopFailed:
+		return previewui.ConnectionStopFailed
 	default:
 		return previewui.ConnectionUnknown
 	}

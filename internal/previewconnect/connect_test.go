@@ -7,7 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+type stopFailChild struct{}
+
+func (stopFailChild) Wait() error { return nil }
+func (stopFailChild) Kill() error { return errors.New("injected stop failure") }
 
 func TestDefaultOptionsUsePackagedMCPAndExternalCloudflared(t *testing.T) {
 	opts := DefaultOptions(`C:\work\Local-Probe\repo`)
@@ -128,6 +134,20 @@ func TestProblemIsSafeAndTyped(t *testing.T) {
 	}
 	if strings.Contains(typed.Remedy, "cloudflared-tunnel-token.txt") == false {
 		t.Fatalf("setup hint missing from token remedy: %q", typed.Remedy)
+	}
+}
+
+func TestReconnectFailsClosedWhenOwnedChildCannotStop(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	controller := &Controller{
+		status: Status{Stage: StageReady},
+		mcp:    &childHandle{process: stopFailChild{}, done: done},
+		now:    time.Now,
+	}
+	status, err := controller.Reconnect(nil, nil)
+	if asProblem(err).Code != CodeStopFailed || status.Stage != StageFailed {
+		t.Fatalf("reconnect result = %+v err=%v", status, err)
 	}
 }
 

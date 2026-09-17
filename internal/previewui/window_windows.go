@@ -26,6 +26,7 @@ const (
 	trayCallback         = uint32(0x8000 + 23)
 	wmAppConnectDone     = uint32(0x8000 + 24)
 	wmAppConnectProgress = uint32(0x8000 + 25)
+	wmAppWorkspaceDone   = uint32(0x8000 + 26)
 
 	wmCreate        = 0x0001
 	wmDestroy       = 0x0002
@@ -281,9 +282,10 @@ type openFileNameW struct {
 }
 
 type previewWindow struct {
-	model     ViewModel
-	connector Connector
-	title     string
+	model            ViewModel
+	connector        Connector
+	workspaceManager WorkspaceManager
+	title            string
 
 	hwnd      windows.HWND
 	tab       windows.HWND
@@ -314,6 +316,13 @@ type previewWindow struct {
 	pendingExportErr       bool
 	pendingConnect         ConnectionResult
 	pendingConnectProgress ConnectionResult
+	workspaceFolders       []WorkspaceFolder
+	workspaceSelection     WorkspaceSelection
+	workspaceBusy          bool
+	workspaceStatus        string
+	pendingWorkspace       []WorkspaceFolder
+	pendingWorkspaceErr    error
+	pendingWorkspaceNotice string
 	exiting                bool
 
 	mutex          windows.Handle
@@ -335,16 +344,18 @@ var (
 )
 
 const (
-	idTab       = 1001
-	idEdit      = 1002
-	idStatus    = 1003
-	idRefresh   = 1004
-	idExport    = 1005
-	idStart     = 1006
-	idStop      = 1007
-	idReconnect = 1008
-	idGate      = 1009
-	idConnect   = 1010
+	idTab             = 1001
+	idEdit            = 1002
+	idStatus          = 1003
+	idRefresh         = 1004
+	idExport          = 1005
+	idStart           = 1006
+	idStop            = 1007
+	idReconnect       = 1008
+	idGate            = 1009
+	idConnect         = 1010
+	idWorkspaceAdd    = 1011
+	idWorkspaceRemove = 1012
 )
 
 const (
@@ -424,16 +435,19 @@ func Run(options RunOptions) error {
 		return errors.New("preview window creation failed")
 	}
 	app := &previewWindow{
-		model:      options.Model,
-		connector:  options.Connector,
-		title:      options.Title,
-		hwnd:       windows.HWND(hwndValue),
-		section:    SectionOverview,
-		current:    sanitizeSnapshot(unconfiguredSnapshot()),
-		statusText: "Loading local status...",
-		hoverNav:   -1,
-		fontScale:  DefaultFontScale,
-		mutex:      mutex,
+		model:              options.Model,
+		connector:          options.Connector,
+		workspaceManager:   options.WorkspaceManager,
+		title:              options.Title,
+		hwnd:               windows.HWND(hwndValue),
+		section:            SectionOverview,
+		current:            sanitizeSnapshot(unconfiguredSnapshot()),
+		statusText:         "Loading local status...",
+		hoverNav:           -1,
+		fontScale:          DefaultFontScale,
+		workspaceSelection: NewWorkspaceSelection(),
+		workspaceStatus:    "工作空间管理器未加载",
+		mutex:              mutex,
 	}
 	windowInstances.Store(app.hwnd, app)
 	if err := app.initControls(instance); err != nil {
@@ -447,6 +461,7 @@ func Run(options RunOptions) error {
 	_, _, _ = procShowWindow.Call(hwndValue, showShow)
 	_, _, _ = procUpdateWindow.Call(hwndValue)
 	app.refreshAsync()
+	app.workspaceRefreshAsync()
 
 	var msg winMessage
 	for {
@@ -617,6 +632,8 @@ func (a *previewWindow) proc(msg uint32, wParam, lParam uintptr) uintptr {
 		a.finishConnectProgress()
 	case wmAppConnectDone:
 		a.finishConnect()
+	case wmAppWorkspaceDone:
+		a.finishWorkspaceOperation()
 	case wmAppTrayExit:
 		a.exit()
 	case wmDestroy:
@@ -643,6 +660,10 @@ func (a *previewWindow) command(id uint32) {
 		a.exportAsync()
 	case idConnect:
 		a.connectAsync()
+	case idWorkspaceAdd:
+		a.workspaceAddAsync()
+	case idWorkspaceRemove:
+		a.workspaceRemoveAsync()
 	case menuOpen:
 		a.toggleWindow()
 	case menuAbout:
@@ -669,16 +690,18 @@ func (a *previewWindow) layout() {
 // the painter and hit testing so a high-DPI resize cannot move a clickable
 // control away from the thing the user sees.
 type previewLayout struct {
-	width       int
-	height      int
-	mainLeft    int
-	mainRight   int
-	headerTop   int
-	fontRect    winRect
-	connectRect winRect
-	refreshRect winRect
-	exportRect  winRect
-	navRects    [5]winRect
+	width               int
+	height              int
+	mainLeft            int
+	mainRight           int
+	headerTop           int
+	fontRect            winRect
+	connectRect         winRect
+	refreshRect         winRect
+	exportRect          winRect
+	navRects            [6]winRect
+	workspaceAddRect    winRect
+	workspaceRemoveRect winRect
 }
 
 func makePreviewLayout(width, height int) previewLayout {
@@ -719,6 +742,10 @@ func makePreviewLayout(width, height int) previewLayout {
 	result.fontRect = rectInt(fontRight-fontButtonWidth, 28, fontRight, 68)
 	connectRight := int(result.fontRect.Left) - headerButtonGap
 	result.connectRect = rectInt(connectRight-connectButtonWidth, 28, connectRight, 68)
+	workspaceButtonWidth := 128
+	workspaceRight := mainRight - 22
+	result.workspaceAddRect = rectInt(workspaceRight-workspaceButtonWidth, 150, workspaceRight, 190)
+	result.workspaceRemoveRect = rectInt(workspaceRight-workspaceButtonWidth-12-128, 150, workspaceRight-workspaceButtonWidth-12, 190)
 	return result
 }
 
@@ -743,6 +770,9 @@ func (a *previewWindow) mouseDown(point winPoint) {
 			a.section = Section(index)
 			a.scroll = 0
 			a.hoverNav = index
+			if a.section == SectionWorkspaceAccess {
+				a.workspaceRefreshAsync()
+			}
 			a.render()
 			return
 		}
@@ -765,6 +795,20 @@ func (a *previewWindow) mouseDown(point winPoint) {
 		a.command(idConnect)
 		return
 	}
+	if a.section == SectionWorkspaceAccess {
+		if layout.workspaceAddRect.Contains(x, y) {
+			a.command(idWorkspaceAdd)
+			return
+		}
+		if layout.workspaceRemoveRect.Contains(x, y) {
+			a.command(idWorkspaceRemove)
+			return
+		}
+		if index, ok := a.workspaceRowAt(x, y, layout); ok {
+			a.toggleWorkspaceRow(index)
+			return
+		}
+	}
 }
 
 func (a *previewWindow) mouseMove(point winPoint) {
@@ -785,6 +829,52 @@ func (a *previewWindow) mouseMove(point winPoint) {
 		a.hoverNav = hover
 		a.render()
 	}
+}
+
+func (a *previewWindow) workspaceRowAt(x, y int, layout previewLayout) (int, bool) {
+	if a == nil || a.workspaceManager == nil {
+		return 0, false
+	}
+	a.mu.Lock()
+	count := len(a.workspaceFolders)
+	scroll := a.scroll
+	a.mu.Unlock()
+	cardBottom := layout.height - 24
+	rowTop := 128 + 82
+	visible := 0
+	visibleLimit := maxVisibleRows(cardBottom-rowTop-36, 54, 8)
+	for index := scroll; index < count && visible < visibleLimit; index++ {
+		row := rectInt(layout.mainLeft+18, rowTop, layout.mainRight-18, rowTop+54)
+		if row.Contains(x, y) {
+			return index, true
+		}
+		rowTop += 62
+		visible++
+	}
+	return 0, false
+}
+
+func (a *previewWindow) toggleWorkspaceRow(index int) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.workspaceBusy || index < 0 || index >= len(a.workspaceFolders) {
+		a.mu.Unlock()
+		return
+	}
+	selection, err := a.workspaceSelection.Toggle(a.workspaceFolders, index)
+	folders := append([]WorkspaceFolder(nil), a.workspaceFolders...)
+	if err == nil {
+		a.workspaceSelection = selection
+	}
+	a.mu.Unlock()
+	if err != nil {
+		a.setWorkspaceStatus("选择项无效")
+		return
+	}
+	a.setWorkspaceStatus(fmt.Sprintf("已选择 %d 个文件夹", len(selection.Selected(folders))))
+	a.render()
 }
 
 func (a *previewWindow) mouseWheel(delta int16) {
@@ -835,6 +925,8 @@ func (a *previewWindow) maxScroll() int {
 	switch a.section {
 	case SectionConnections:
 		count = len(a.current.Connections)
+	case SectionWorkspaceAccess:
+		count = len(a.workspaceFolders)
 	case SectionDeveloperRules:
 		count = len(a.current.DeveloperRules.Rules)
 	case SectionLogs:
@@ -910,6 +1002,11 @@ func (a *previewWindow) paint() {
 	connectionState := a.connectionState
 	connectorAvailable := a.connector != nil
 	statusText := a.statusText
+	workspaceFolders := append([]WorkspaceFolder(nil), a.workspaceFolders...)
+	workspaceSelection := a.workspaceSelection
+	workspaceBusy := a.workspaceBusy
+	workspaceStatus := a.workspaceStatus
+	workspaceManagerAvailable := a.workspaceManager != nil
 	a.mu.Unlock()
 	scale := NormalizeFontScale(a.fontScale)
 	a.fontScale = scale
@@ -919,7 +1016,7 @@ func (a *previewWindow) paint() {
 	fillRectColor(hdc, rectInt(0, 0, sidebarWidth, height), colorSidebar)
 	drawSidebar(hdc, layout, a.section, a.hoverNav)
 	drawHeader(hdc, layout, a.section, statusText, scale, connectionState, connectorAvailable)
-	drawSection(hdc, layout, snapshot, a.section, a.scroll, connectionState, connectorAvailable)
+	drawSection(hdc, layout, snapshot, a.section, a.scroll, connectionState, connectorAvailable, workspaceFolders, workspaceSelection, workspaceBusy, workspaceStatus, workspaceManagerAvailable)
 }
 
 func drawSidebar(hdc uintptr, layout previewLayout, active Section, hover int) {
@@ -928,7 +1025,7 @@ func drawSidebar(hdc uintptr, layout previewLayout, active Section, hover int) {
 	drawBrandMark(hdc, 42, 24)
 	drawText(hdc, "LOCAL-PROBE", rectInt(74, 26, sidebarWidth-12, 48), colorDarkBlue, 12, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
 	drawText(hdc, "Preview", rectInt(74, 46, sidebarWidth-12, 65), colorMuted, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
-	labels := []string{"总览", "连接", "开发者规则", "日志与诊断", "关于 / 设置"}
+	labels := []string{"总览", "连接", "工作空间访问", "开发者规则", "日志与诊断", "关于 / 设置"}
 	for index, rect := range layout.navRects {
 		if index == int(active) {
 			drawRoundRect(hdc, rect, 9, colorWhite, colorWhite)
@@ -965,6 +1062,8 @@ func sectionTitle(section Section) (string, string) {
 	switch section {
 	case SectionConnections:
 		return "连接", "查看本地 MCP 与 Tunnel 配置的只读投影"
+	case SectionWorkspaceAccess:
+		return "工作空间访问", "管理 GPT 可访问的本地文件夹；支持新增、删除和多选"
 	case SectionDeveloperRules:
 		return "开发者规则", "查看已登记的命令规则；Preview 不会修改或启用规则"
 	case SectionLogs:
@@ -976,10 +1075,12 @@ func sectionTitle(section Section) (string, string) {
 	}
 }
 
-func drawSection(hdc uintptr, layout previewLayout, snapshot Snapshot, section Section, scroll int, connectionState ConnectionControlState, connectorAvailable bool) {
+func drawSection(hdc uintptr, layout previewLayout, snapshot Snapshot, section Section, scroll int, connectionState ConnectionControlState, connectorAvailable bool, workspaceFolders []WorkspaceFolder, workspaceSelection WorkspaceSelection, workspaceBusy bool, workspaceStatus string, workspaceManagerAvailable bool) {
 	switch section {
 	case SectionConnections:
 		drawConnectionsPage(hdc, layout, snapshot, scroll, connectionState, connectorAvailable)
+	case SectionWorkspaceAccess:
+		drawWorkspaceAccessPage(hdc, layout, workspaceFolders, scroll, workspaceSelection, workspaceBusy, workspaceStatus, workspaceManagerAvailable)
 	case SectionDeveloperRules:
 		drawRulesPage(hdc, layout, snapshot, scroll)
 	case SectionLogs:
@@ -1117,6 +1218,79 @@ func drawConnectionsPage(hdc uintptr, layout previewLayout, s Snapshot, scroll i
 		drawEmptyState(hdc, card, "暂无已配置连接", "连接配置将由本地管理入口提供")
 	} else if scroll > 0 || scroll+visible < len(s.Connections) {
 		drawText(hdc, fmt.Sprintf("显示 %d-%d / %d · 使用鼠标滚轮或方向键浏览", scroll+1, minInt(scroll+visible, len(s.Connections)), len(s.Connections)), winRect{Left: card.Left + 22, Top: card.Bottom - 31, Right: card.Right - 20, Bottom: card.Bottom - 12}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	}
+}
+
+func drawWorkspaceAccessPage(hdc uintptr, layout previewLayout, folders []WorkspaceFolder, scroll int, selection WorkspaceSelection, busy bool, status string, managerAvailable bool) {
+	card := rectInt(layout.mainLeft, 128, layout.mainRight, layout.height-24)
+	drawCard(hdc, card)
+	drawText(hdc, "GPT 可访问的文件夹", winRect{Left: card.Left + 22, Top: card.Top + 16, Right: card.Right - 320, Bottom: card.Top + 44}, colorText, 14, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
+	drawText(hdc, "列表中的全部文件夹都是当前授权范围；勾选项目可批量删除", winRect{Left: card.Left + 22, Top: card.Top + 46, Right: card.Right - 320, Bottom: card.Top + 70}, colorMuted, 10, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+	drawActionButton(hdc, layout.workspaceRemoveRect, "删除选中", !managerAvailable || busy || len(selection.Selected(folders)) == 0)
+	drawActionButton(hdc, layout.workspaceAddRect, "＋ 新增文件夹", !managerAvailable || busy)
+
+	if !managerAvailable {
+		drawStatusDotColor(hdc, int(card.Left)+42, int(card.Top)+126, colorGray)
+		drawText(hdc, "工作空间管理不可用", winRect{Left: card.Left + 64, Top: card.Top + 106, Right: card.Right - 22, Bottom: card.Top + 136}, colorText, 13, fontBold, dtSingleLine|dtVCenter|dtNoPrefix)
+		drawText(hdc, "当前 Preview 没有注入 WorkspaceManager；此页保持只读，无法新增或删除文件夹。", winRect{Left: card.Left + 64, Top: card.Top + 140, Right: card.Right - 22, Bottom: card.Top + 190}, colorMuted, 10, fontNormal, dtWordBreak|dtNoPrefix)
+		return
+	}
+
+	rowTop := int(card.Top) + 82
+	visible := 0
+	visibleLimit := maxVisibleRows(int(card.Bottom)-rowTop-36, 54, 8)
+	for index := scroll; index < len(folders) && visible < visibleLimit; index++ {
+		folder := folders[index]
+		row := rectInt(int(card.Left)+18, rowTop, int(card.Right)-18, rowTop+54)
+		selected := selection.IsSelected(folder)
+		if selected {
+			drawRoundRect(hdc, row, 7, colorBlueSoft, colorBlueSoft)
+		} else {
+			drawRoundRect(hdc, row, 7, colorWhite, colorCardBorder)
+		}
+		drawWorkspaceCheckbox(hdc, int(row.Left)+26, rowTop+27, selected, busy)
+		drawText(hdc, WorkspaceDisplayPath(folder.Path), winRect{Left: row.Left + 52, Top: row.Top + 5, Right: row.Right - 180, Bottom: row.Top + 28}, colorText, 11, fontMedium, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+		rootLabel := "root_id: 未分配"
+		if folder.RootID != "" {
+			rootLabel = "root_id: " + displayWorkspaceRootID(folder.RootID)
+		}
+		drawText(hdc, rootLabel, winRect{Left: row.Left + 52, Top: row.Top + 29, Right: row.Right - 180, Bottom: row.Top + 49}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+		drawText(hdc, "GPT 可访问", winRect{Left: row.Right - 164, Top: row.Top + 14, Right: row.Right - 18, Bottom: row.Top + 38}, colorGreen, 10, fontMedium, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+		rowTop += 62
+		visible++
+	}
+	if len(folders) == 0 {
+		drawEmptyState(hdc, card, "暂无授权文件夹", "点击“新增文件夹”选择一个或多个本地目录，完成后 GPT 才能访问这些目录。")
+	} else if scroll > 0 || scroll+visible < len(folders) {
+		drawText(hdc, fmt.Sprintf("显示 %d-%d / %d · 使用鼠标滚轮或方向键浏览", scroll+1, minInt(scroll+visible, len(folders)), len(folders)), winRect{Left: card.Left + 22, Top: card.Bottom - 31, Right: card.Right - 20, Bottom: card.Bottom - 12}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix)
+	}
+	if status == "" {
+		status = "已加载"
+	}
+	drawText(hdc, status, winRect{Left: card.Left + 22, Top: card.Bottom - 58, Right: card.Right - 240, Bottom: card.Bottom - 36}, colorMuted, 9, fontNormal, dtSingleLine|dtVCenter|dtNoPrefix|dtEndEllipsis)
+}
+
+func drawWorkspaceCheckbox(hdc uintptr, x, y int, selected, disabled bool) {
+	border := uint32(colorGray)
+	fill := uint32(colorWhite)
+	if selected {
+		border, fill = colorBlue, colorBlue
+	}
+	if disabled && !selected {
+		border, fill = colorCardBorder, colorGraySoft
+	}
+	drawRoundRect(hdc, rectInt(x-9, y-9, x+9, y+9), 3, fill, border)
+	if selected {
+		pen, _, _ := procCreatePen.Call(0, 2, uintptr(colorWhite))
+		if pen == 0 {
+			return
+		}
+		old, _, _ := procSelectObject.Call(hdc, pen)
+		_, _, _ = procMoveToEx.Call(hdc, uintptr(x-5), uintptr(y), 0, 0)
+		_, _, _ = procLineTo.Call(hdc, uintptr(x-1), uintptr(y+4))
+		_, _, _ = procLineTo.Call(hdc, uintptr(x+6), uintptr(y-5))
+		_, _, _ = procSelectObject.Call(hdc, old)
+		_, _, _ = procDeleteObject.Call(pen)
 	}
 }
 
@@ -1786,6 +1960,197 @@ func (a *previewWindow) finishRefresh() {
 	}
 	a.current = sanitizeSnapshot(snapshot)
 	a.setStatus("Ready")
+	a.render()
+}
+
+func (a *previewWindow) workspaceRefreshAsync() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	manager := a.workspaceManager
+	if manager == nil {
+		a.workspaceStatus = "工作空间管理器未接入，当前不可用"
+		a.mu.Unlock()
+		a.render()
+		return
+	}
+	if a.workspaceBusy || a.exiting {
+		a.mu.Unlock()
+		return
+	}
+	a.workspaceBusy = true
+	a.workspaceStatus = "正在读取工作空间…"
+	a.mu.Unlock()
+	a.render()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		folders, err := manager.List(ctx)
+		a.mu.Lock()
+		a.pendingWorkspace = NormalizeWorkspaceFolders(folders)
+		a.pendingWorkspaceErr = err
+		a.pendingWorkspaceNotice = ""
+		exiting := a.exiting
+		a.mu.Unlock()
+		if !exiting {
+			postWindowMessage(a.hwnd, wmAppWorkspaceDone, 0, 0)
+		}
+	}()
+}
+
+func (a *previewWindow) workspaceAddAsync() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	manager := a.workspaceManager
+	if manager == nil || a.workspaceBusy || a.exiting {
+		a.mu.Unlock()
+		return
+	}
+	a.workspaceBusy = true
+	a.workspaceStatus = "请选择要授权的文件夹…"
+	a.mu.Unlock()
+	a.render()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		paths, pickErr := chooseWorkspaceFolders(a.hwnd)
+		if errors.Is(pickErr, errWorkspacePickerCanceled) {
+			a.mu.Lock()
+			a.pendingWorkspaceNotice = "已取消选择"
+			a.pendingWorkspaceErr = nil
+			a.pendingWorkspace = append([]WorkspaceFolder(nil), a.workspaceFolders...)
+			exiting := a.exiting
+			a.mu.Unlock()
+			if !exiting {
+				postWindowMessage(a.hwnd, wmAppWorkspaceDone, 0, 0)
+			}
+			return
+		}
+		if pickErr == nil && len(paths) == 0 {
+			pickErr = errors.New("no workspace folders selected")
+		}
+		var folders []WorkspaceFolder
+		if pickErr == nil {
+			pickErr = manager.Add(ctx, paths)
+		}
+		if pickErr == nil {
+			folders, pickErr = manager.List(ctx)
+		}
+		a.mu.Lock()
+		a.pendingWorkspace = NormalizeWorkspaceFolders(folders)
+		a.pendingWorkspaceErr = pickErr
+		if pickErr == nil {
+			a.pendingWorkspaceNotice = fmt.Sprintf("已新增 %d 个文件夹", len(paths))
+		} else {
+			a.pendingWorkspaceNotice = ""
+		}
+		exiting := a.exiting
+		a.mu.Unlock()
+		if !exiting {
+			postWindowMessage(a.hwnd, wmAppWorkspaceDone, 0, 0)
+		}
+	}()
+}
+
+func (a *previewWindow) workspaceRemoveAsync() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	manager := a.workspaceManager
+	paths := a.workspaceSelection.Selected(a.workspaceFolders)
+	if manager == nil || a.workspaceBusy || a.exiting {
+		a.mu.Unlock()
+		return
+	}
+	if len(paths) == 0 {
+		a.mu.Unlock()
+		a.setWorkspaceStatus("请先勾选要删除的文件夹")
+		return
+	}
+	a.workspaceBusy = true
+	a.workspaceStatus = fmt.Sprintf("正在删除 %d 个文件夹…", len(paths))
+	a.mu.Unlock()
+	a.render()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err := manager.Remove(ctx, paths)
+		var folders []WorkspaceFolder
+		if err == nil {
+			folders, err = manager.List(ctx)
+		}
+		a.mu.Lock()
+		a.pendingWorkspace = NormalizeWorkspaceFolders(folders)
+		a.pendingWorkspaceErr = err
+		if err == nil {
+			a.pendingWorkspaceNotice = fmt.Sprintf("已删除 %d 个文件夹", len(paths))
+		} else {
+			a.pendingWorkspaceNotice = ""
+		}
+		exiting := a.exiting
+		a.mu.Unlock()
+		if !exiting {
+			postWindowMessage(a.hwnd, wmAppWorkspaceDone, 0, 0)
+		}
+	}()
+}
+
+func (a *previewWindow) finishWorkspaceOperation() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	folders := NormalizeWorkspaceFolders(a.pendingWorkspace)
+	err := a.pendingWorkspaceErr
+	notice := a.pendingWorkspaceNotice
+	a.pendingWorkspace = nil
+	a.pendingWorkspaceErr = nil
+	a.pendingWorkspaceNotice = ""
+	a.workspaceBusy = false
+	if err == nil {
+		a.workspaceFolders = folders
+		// Entries deleted by the manager can no longer remain selected.
+		kept := NewWorkspaceSelection()
+		for _, folder := range folders {
+			if a.workspaceSelection.IsSelected(folder) {
+				kept.selected[workspaceFolderKey(folder)] = struct{}{}
+			}
+		}
+		a.workspaceSelection = kept
+	}
+	a.mu.Unlock()
+	if err != nil {
+		a.setWorkspaceStatus(workspaceErrorStatus(err))
+	} else if notice != "" {
+		a.setWorkspaceStatus(notice)
+	} else {
+		a.setWorkspaceStatus(fmt.Sprintf("已加载 %d 个文件夹", len(folders)))
+	}
+	a.render()
+}
+
+func workspaceErrorStatus(err error) string {
+	message, remediation := WorkspaceErrorPresentation(err)
+	if message == "" {
+		return "工作空间操作失败，请检查文件夹权限后重试"
+	}
+	if remediation == "" {
+		return message
+	}
+	return message + " · " + remediation
+}
+
+func (a *previewWindow) setWorkspaceStatus(value string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.workspaceStatus = value
+	a.mu.Unlock()
 	a.render()
 }
 

@@ -92,6 +92,9 @@ func TestStreamableHTTPClientLifecycleAndReadTools(t *testing.T) {
 	if info.Server != ServerName || info.ConnectionID != "connection-one" || !info.ReadOnly {
 		t.Fatalf("server_info = %#v", info)
 	}
+	if !reflect.DeepEqual(info.RootIDs, []string{"workspace"}) {
+		t.Fatalf("server_info root ids = %v", info.RootIDs)
+	}
 
 	readResult := callTool(t, ctx, session, ToolReadFile, map[string]any{
 		"root_id":   "workspace",

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/LE-saber/Local-Probe/internal/config"
@@ -55,6 +56,9 @@ func TestBoundScopesAreIsolatedAndDenyWins(t *testing.T) {
 	}
 	if !a.AllowsRoot("project") || a.AllowsRoot("private") || b.AllowsRoot("project") || !b.AllowsRoot("private") {
 		t.Fatal("cross-profile root access was allowed")
+	}
+	if got := a.RootIDs(); !reflect.DeepEqual(got, []string{"project"}) {
+		t.Fatalf("authorized root ids = %v", got)
 	}
 	if !a.AllowsTool("read_file") || !a.AllowsTool("batch_read") || a.AllowsTool("git_diff") {
 		t.Fatal("tool allowlist is incorrect")
@@ -130,6 +134,9 @@ func TestDisabledAndReplacedConnectionsRevokeOldScopes(t *testing.T) {
 	}
 	if old.AllowsRoot("project") || old.AllowsTool("read_file") || old.AllowsPath("project", "src/main.go") {
 		t.Fatal("revoked scope still authorized operations")
+	}
+	if got := old.RootIDs(); got != nil {
+		t.Fatalf("revoked scope exposed root ids: %v", got)
 	}
 	if _, err := manager.BindAuthenticated("account-a"); !errors.Is(err, ErrDenied) {
 		t.Fatalf("disabled connection was accepted: %v", err)

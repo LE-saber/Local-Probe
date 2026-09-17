@@ -71,6 +71,16 @@ func TestConnectionProgressNormalization(t *testing.T) {
 	}
 }
 
+func TestConnectionDisplayMapsStopFailure(t *testing.T) {
+	display := (ConnectionControlState{Result: ConnectionResult{
+		Phase: ConnectionFailed,
+		Code:  ConnectionStopFailed,
+	}}).Display()
+	if display.Title != "旧连接清理失败" || !strings.Contains(display.Remediation, "端口") {
+		t.Fatalf("stop failure display = %+v", display)
+	}
+}
+
 type fakeConnector struct{}
 
 func (fakeConnector) Connect(context.Context) ConnectionResult {

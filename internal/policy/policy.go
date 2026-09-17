@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/LE-saber/Local-Probe/internal/config"
@@ -157,6 +158,21 @@ func (b BoundScope) AllowsRoot(rootID string) bool {
 	}
 	_, ok := b.roots[rootID]
 	return ok
+}
+
+// RootIDs returns the logical roots authorized for this authenticated scope.
+// It deliberately exposes no filesystem paths and returns nothing after the
+// bound configuration has been revoked.
+func (b BoundScope) RootIDs() []string {
+	if b.Validate() != nil {
+		return nil
+	}
+	values := make([]string, 0, len(b.roots))
+	for rootID := range b.roots {
+		values = append(values, rootID)
+	}
+	sort.Strings(values)
+	return values
 }
 
 // AllowsPath applies lexical validation and deny patterns after checking the

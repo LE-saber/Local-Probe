@@ -54,11 +54,12 @@ The token value is never displayed, logged, or included in a diagnostic export.
 
 ## 当前界面能力
 
-窗口包含以下只读页面：
+窗口包含以下页面；除“工作空间访问”外，其余页面仍是只读投影：
 
 - **Overview**：配置 revision、root/profile/connection 数量、审计摘要，以及连接阶段、连接结果和可执行的解决建议。
 - **Connections**：连接、profile、transport 和 Tunnel 配置的脱敏投影；提供“一键连接/重新连接”入口，并显示本地 MCP、Tunnel metrics readiness 和 edge connection 的分阶段状态。
 - **Developer Rules**：开发者模式、允许的 connection 和固定规则/variant/slot 摘要；此处不能编辑或启用规则。
+- **工作空间访问**：管理 `chatgpt-local` 当前 profile 可以访问的本地文件夹。可一次选择多个文件夹，也可勾选多项后批量移除授权。
 - **Logs / Diagnostics**：从审计文件读取并筛选后的结构化事件与诊断摘要。
 - **About**：版本、Preview 边界和运行说明。
 
@@ -81,6 +82,19 @@ The token value is never displayed, logged, or included in a diagnostic export.
 按钮只负责本机已授权的固定流程，不会登录 Cloudflare、创建 Tunnel、改 DNS、写入 token 或扩大 Access 权限。连接成功后，网页端 ChatGPT 仍需使用已经配置的公开 MCP 应用/入口；GUI 的成功状态只表示本地 origin 和 Tunnel readiness 已通过检查。
 
 窗口顶部的“字号”按钮可在 100%、125%、150%、175% 和 200% 之间循环切换，默认使用 150%。该设置只影响当前 Preview 进程中的界面绘制，不会修改配置或影响 MCP/Tunnel。
+
+### 工作空间访问
+
+“工作空间访问”列表展示当前 `chatgpt-local -> profile -> roots` 的真实授权关系，不是装饰性收藏夹。列表中的每个文件夹都处于启用状态；行前复选框只用于多选批量移除。新增或移除会使用配置 revision 做并发保护，原子保存 `.runtime\local-probe.json`，随后重新连接本 Preview 管理的 MCP/Tunnel，使网页端 GPT 在新会话中取得最新授权。
+
+- 新增时使用 Windows 原生多选文件夹窗口；每个目录得到独立、稳定的 `root_id`。
+- 网页端 GPT 通过 `server_info` 得到可用的 `root_id`，再调用现有的目录、检索与读取工具；本机绝对路径不会通过该发现接口发送给 GPT。
+- 只允许已存在的本机固定磁盘普通目录。磁盘根目录、UNC/映射网络盘、可移动盘、符号链接、junction/reparse point，以及父子重叠的授权范围会被拒绝。
+- “删除选中”只撤销目标 profile 对目录的授权，不会删除、移动或修改物理文件夹。若其他 profile 或命令规则仍引用同一 root，配置实体也会保留。
+- 如果多个 connection 共用同一个 profile，修改该 profile 的 roots 会同时影响这些 connection；界面展示的 connection/profile 是判断影响范围的依据。
+- 保存后若 MCP/Tunnel 重连失败，授权配置仍已落盘，但界面会显示安全错误和处理建议；撤权场景不会忽略旧子进程停止失败。
+
+文件夹路径仅出现在本机的这一管理页面，不进入 MCP `server_info`、审计记录或 support bundle。工作空间管理不提供文件写入能力；GPT 能做什么仍由该 profile 的工具白名单和现有只读边界共同决定。
 
 ## 托盘与生命周期
 
@@ -105,7 +119,7 @@ The token value is never displayed, logged, or included in a diagnostic export.
 当前 Windows Preview 不包含：
 
 - MCP/Tunnel 的生产级 supervisor、服务安装、崩溃后无限重试或跨用户进程 ownership；
-- 配置、开发者规则或命令放行规则的 GUI 编辑；
+- 除工作空间 roots 外的配置、开发者规则或命令放行规则 GUI 编辑；
 - 凭据、token、key、Cookie、原始命令输出或文件内容展示；
 - HTTP、loopback 管理站点、named pipe broker 或任何额外网络监听；
 - 安装器、自动更新、代码签名、正式发布包或生产就绪声明；

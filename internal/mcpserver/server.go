@@ -812,6 +812,7 @@ type serverInfoOutput struct {
 	Transport     string   `json:"transport"`
 	ConnectionID  string   `json:"connection_id"`
 	ProfileID     string   `json:"profile_id"`
+	RootIDs       []string `json:"root_ids"`
 	Tools         []string `json:"tools"`
 }
 
@@ -1162,6 +1163,7 @@ func (s *Server) handleServerInfo(ctx context.Context, _ *mcp.CallToolRequest) (
 		Transport:     "mcp-streamable-http",
 		ConnectionID:  bound.ConnectionID(),
 		ProfileID:     bound.ProfileID(),
+		RootIDs:       bound.RootIDs(),
 		Tools:         tools,
 	}
 	return s.jsonResult(out), nil

@@ -40,7 +40,13 @@ func main() {
 	defer controller.Stop()
 	model := previewui.NewPreviewAppModel(app)
 	connector := previewConnector{controller: controller}
-	if err := previewui.Run(previewui.RunOptions{Model: model, Connector: connector, Title: "Local-Probe Preview"}); err != nil {
+	workspaceAdmin, err := newWorkspaceAdmin(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "preview_workspace_config_invalid")
+		os.Exit(1)
+	}
+	workspaceManager := newPreviewWorkspaceManager(workspaceAdmin, controller)
+	if err := previewui.Run(previewui.RunOptions{Model: model, Connector: connector, WorkspaceManager: workspaceManager, Title: "Local-Probe Preview"}); err != nil {
 		// Keep startup diagnostics stable and free of paths, OS messages, and
 		// any future adapter data. The GUI itself also uses stable categories.
 		fmt.Fprintln(os.Stderr, stableError(err))
