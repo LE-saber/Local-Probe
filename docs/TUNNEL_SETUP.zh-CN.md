@@ -1,5 +1,7 @@
 # ChatGPT App / OpenAI Tunnel 本机准备
 
+本文只描述 OpenAI Secure MCP Tunnel 的 8787 独立路径。它不是 Windows Preview GUI 的一键连接方式；Preview 使用 Cloudflare Access + cloudflared 的 8788 路径。两者请二选一，完整选择和首次部署顺序见 [Windows Preview 部署](DEPLOYMENT_PREVIEW.zh-CN.md)。
+
 本文只覆盖 Windows 本机的官方 `tunnel-client` 准备和真实账户联调入口。
 它不把本地预检写成已经完成的 P01/P05 真实调用证据；只有目标账户实际完成
 `initialize -> tools/list -> tools/call` 后，才能更新 `docs/COMPATIBILITY.md`。
@@ -17,9 +19,9 @@
 初始化脚本会在仓库外建立以下目录和空文件：
 
 ```text
-D:\HOPP\download\Local-Probe\.secrets\control-plane-api-key.txt
-D:\HOPP\download\Local-Probe\.secrets\tunnel-id.txt
-D:\HOPP\download\Local-Probe\.secrets\mcp-bearer-token.txt
+<仓库父目录>\.secrets\control-plane-api-key.txt
+<仓库父目录>\.secrets\tunnel-id.txt
+<仓库父目录>\.secrets\mcp-bearer-token.txt
 ```
 
 把值写入文件时各占一行，不要加引号，不要把值发到聊天、Issue、PR 或命令
@@ -49,7 +51,7 @@ bearer 文件，分别覆盖正常 MCP 请求和需要认证的发现/初始化�
 `cloudflared.exe`）位于仓库外：
 
 ```text
-D:\HOPP\download\Local-Probe\_tools\tunnel-client-v0.0.14-windows-amd64\
+<仓库父目录>\_tools\tunnel-client-v0.0.14-windows-amd64\
 ```
 
 下载压缩包的 SHA-256 已核对为：
@@ -99,7 +101,7 @@ loopback 随机端口，不使用 `--allow-remote-ui`。
 Tunnel ID（非 secret）作为参数传给官方客户端，并把健康 URL 写入：
 
 ```text
-D:\HOPP\download\Local-Probe\repo\.runtime\tunnel-health-url.txt
+<仓库根目录>\.runtime\tunnel-health-url.txt
 ```
 
 不要启用 `--log.http-raw-unsafe`，不要把健康监听改成 `0.0.0.0`。

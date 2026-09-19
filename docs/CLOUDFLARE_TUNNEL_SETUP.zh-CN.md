@@ -51,7 +51,7 @@ MCP 传输同时兼容两代客户端：带 `Mcp-Protocol-Version: 2026-07-28` �
 
 本方案统一使用 Cloudflare 推荐的**远程托管 Named Tunnel**。Tunnel 身份由仓库外 token 文件提供；Published application route 与 Host Header 等 origin 参数在 Cloudflare Dashboard 管理。不要把本地托管 Tunnel 的 `credentials-file`/ingress YAML 与远程 token 启动方式混用。
 
-编辑 `.runtime\cloudflare-access.json`：
+编辑 `.runtime\cloudflare-access.json`。字段结构也可参考仓库模板 [configs/cloudflare-access.example.json](../configs/cloudflare-access.example.json)：
 
 ```json
 {

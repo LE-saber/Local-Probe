@@ -58,7 +58,7 @@
 实际 PASS/FAIL/SKIP 结果由主代理在本轮运行后补入状态记录；本清单不预填未运行的结果。
 
 ```powershell
-Set-Location 'D:\HOPP\download\Local-Probe\repo'
+Set-Location '<clone-root>'
 
 go test -count=1 ./internal/releasecheck
 go test -race -count=1 ./internal/releasecheck

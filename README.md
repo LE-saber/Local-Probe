@@ -1,72 +1,127 @@
 # Local-Probe
 
-让 ChatGPT Web 通过原生自定义 App / MCP 高效调查被授权的本地文件和开发环境。优先级：**有效读取 > 简单环境探查 > 可靠稳定 > 文件修改**。
+Local-Probe 是一个面向 Windows 的只读 MCP Preview：让 ChatGPT 在明确授权的本地工作空间内进行目录发现、文件检索、范围读取、有限环境探查和审计查看。当前交付是可构建的 Preview 源码，不是生产级 supervisor、安装器或签名发布包。
 
-## 先读计划
+## 5 分钟开始（Windows Preview）
 
-**[总体计划与逐步骤实施手册](docs/MASTER_PLAN.zh-CN.md)** 是本项目的主要交付物，包含 P00–P14 的输入、具体文件、命令、实施步骤、依赖、测试和停止条件。它作为空仓库的第一个提交保存，早于任何代码。
+当前 Preview 有两条互相独立的接入方式：
 
-[实际进度与验证记录](docs/IMPLEMENTATION_STATUS.md) · [Windows Preview 使用说明](docs/PREVIEW.zh-CN.md) · [下一阶段执行路线](docs/NEXT_PHASE_PLAN.zh-CN.md) · [接口与边界](docs/TOOL_CONTRACTS.md) · [R4 Windows network deny 设计](docs/R4_WINDOWS_NETWORK_DENY.md) · [威胁模型](docs/THREAT_MODEL.md) · [兼容性预检](docs/COMPATIBILITY.md) · [上游来源与复用决定](docs/UPSTREAM_REVIEW.md)
+| 方式 | 本地端口 | 身份 | GUI 一键连接 |
+| --- | ---: | --- | --- |
+| Cloudflare Preview（推荐） | `127.0.0.1:8788` | Cloudflare Access JWT | 支持 |
+| OpenAI Secure MCP Tunnel | `127.0.0.1:8787` | 本地 hop token + Platform Tunnel | 不支持，使用独立脚本 |
 
-## 当前状态：内核与本地 MCP 增量，以及 Windows GUI/tray Preview
+新用户建议先阅读 [Windows Preview 部署](docs/DEPLOYMENT_PREVIEW.zh-CN.md)，它包含依赖、配置文件、Cloudflare route、工作空间、故障处理和两条链路的完整顺序。
 
-当前实现了兼容旧输入的有界字节读取、`bytes|lines|tail` 范围读取、确定性批量预算、输入顺序保持、部分失败、UTF-8 安全续读、版本变化检测及本机命令行演示。P04 已有配置/策略校验、`policy.BoundScope`、基于 Go `os.Root` 的只读 rootfs、绑定到 `readcore` 的 Source adapter，以及 Windows 本轮和历史 WSL2 的有界特殊文件、链接边界与 loopback SMB 验证；P05 已完成官方 SDK 的认证 loopback MCP listener、Cloudflare Access/Tunnel 真实链路和 `server_info`、`ping`、`read_file`、`batch_read`；P06 的目录发现、文件查找、literal 搜索和 tree 分页也已由 ChatGPT Business“极高”验证。R1 的 direct-search 第一增量与 audit.v1、R3 的无进程环境发现、R2 的 `workspace_snapshot` 已接入本地 MCP；R2 新工具和范围读取目前有本地 Windows 集成测试，尚未做真实 Business 复测。
+### 克隆和检查
 
-本轮还提供 Windows 原生 GUI/tray Preview：只读展示总览、连接配置投影、开发者规则、经过筛选的日志/诊断和 About，并可导出有界、二次脱敏且不覆盖已有文件的诊断 JSON。它是本地观察器，不是生产控制面；`Start`、`Stop`、`Reconnect` 固定为 `production_gate`，不会管理 MCP/Tunnel 进程，也不编辑配置、展示凭据或新增网络监听。详见 [`docs/PREVIEW.zh-CN.md`](docs/PREVIEW.zh-CN.md)。
+如果当前 Preview 仍在功能分支：
 
-rootfs 已对绝对/相对 root、普通文件、逐组件 symlink/reparse 拒绝、Scope 撤权、hardlink 和元数据 identity 做有界实现与平台测试；这不是完整文件系统隔离或独立安全审查。本轮 WSL Ubuntu-22.04 未安装 Go，未运行 Linux runtime 测试；Windows 本轮验证和历史 WSL2 记录均不能替代独立安全审查。本地管理员主动竞态、裸机/非 NTFS/其他 Unix 平台、全量 TOCTOU 和生产发布仍是残余风险。演示程序仅打开本地操作者明确指定的文件，不能改成接收远程路径后直接部署。
+```powershell
+git clone --branch feat/cloudflare-mcp-ingress https://github.com/LE-saber/Local-Probe.git
+Set-Location .\Local-Probe
+```
 
-## 运行已有代码
+在仓库根目录运行安全环境检查。它不会打印或上传秘密：
 
-使用受支持的 Go 版本。当前 `go.mod` 要求 Go 1.25.0；Windows 本机验证使用 Go 1.26.0。该版本要求服务于 `os.Root` rootfs 和后续官方 SDK 集成，不代表产品已经完成发布工具链、真实认证或 MCP 链路。
+```powershell
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Test-LocalProbeEnvironment.ps1 `
+  -RepoRoot (Get-Location).Path
+```
 
-```sh
+要求 Windows x64、Git、PowerShell 和 Go 1.25 或更高版本；本轮使用 Go 1.26.0 验证。Go 模块首次构建需要网络或模块缓存。Cloudflare 方案还需要官方 `cloudflared.exe`，OpenAI 方案需要官方 `tunnel-client.exe`；第三方二进制不随源码提交。
+
+### 初始化、构建和启动
+
+推荐使用统一初始化入口：
+
+```powershell
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Setup-LocalProbePreview.ps1 `
+  -RepoRoot (Get-Location).Path
+
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Build-LocalProbePreview.ps1 `
+  -RepoRoot (Get-Location).Path
+
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Start-LocalProbePreview.ps1 `
+  -RepoRoot (Get-Location).Path
+```
+
+初始化会创建被 Git 忽略的 `.runtime/`、仓库内被忽略的 `.tools\cloudflared.exe` 位置和仓库外仅供 Cloudflare token 使用的 `.secrets/`。Cloudflare token 只填写到仓库父目录的 `.secrets\cloudflared-tunnel-token.txt`；不要把 token、key、JWT 或 Cookie 写入配置、命令行、日志或 Git。
+
+Preview 默认需要以下外部工具布局：
+
+```text
+<clone-root>\.tools\cloudflared.exe
+```
+
+构建产物位于被忽略的 `bin/`：`local-probe-preview.exe` 与 `local-probe-mcp.exe`。在 GUI Connections 页面点击“一键连接”后，Preview 会按固定顺序启动 8788 MCP、等待 loopback、启动 cloudflared、检查 `/ready` 和 HA connection。它只管理本次自己启动的子进程。
+
+Cloudflare route 必须把公网 hostname 转发到 `http://127.0.0.1:8788`，并在 `.runtime\cloudflare-access.json` 中填写 issuer、JWKS、audience、JWT subject 映射和相同的 `public_hosts`。连接成功后，ChatGPT 使用 `https://<public-host>/mcp`，先调用 `initialize`、`tools/list`、`ping`，再进行只读文件操作。
+
+## 当前能力
+
+- `server_info`、`ping`、有界 bytes/lines/tail 读取和批量读取；
+- 目录列表、文件查找、literal 文本检索、分页 tree；
+- 受 profile/root/deny/ignore 约束的 workspace snapshot 和有限环境探查；
+- Windows Preview 的 Overview、Connections、工作空间访问、Developer Rules 投影、Logs/Diagnostics、About；
+- 工作空间文件夹输入/浏览、多选撤销授权、原子配置保存和 revision 并发保护；
+- 托盘主界面/刷新/诊断/字号/退出菜单，二次脱敏且不覆盖已有文件的诊断导出；
+- 结构化审计和受限的 Cloudflare Access/OpenAI Tunnel 接入脚本。
+
+GPT 能访问什么，取决于 profile 的 roots、tools、deny/ignore 和只读策略。当前 Preview 不开放任意 shell、任意命令、写入、凭据展示或模型编辑配置。
+
+## 重要边界
+
+Preview 的“一键连接”只覆盖 Cloudflare 8788 链路。OpenAI Secure MCP Tunnel 是另一条 8787 链路，需使用 [OpenAI Tunnel 部署说明](docs/TUNNEL_SETUP.zh-CN.md) 的 `Initialize-TunnelClient.ps1`、`Start-LocalProbeMcp.ps1` 和 `Start-TunnelClient.ps1`；不要同时启动两条链路。
+
+当前尚未完成或未声明：生产级 supervisor/service、真实 WFP/broker、代码签名、安装器、自动更新、Linux/macOS GUI、任意命令执行、写入工具、默认大规模索引、百万文件端到端证据和独立安全审查。`release_ready` 仍为 false。
+
+## 文档索引
+
+- [Windows Preview 部署](docs/DEPLOYMENT_PREVIEW.zh-CN.md)：陌生用户的完整部署和故障排查入口；
+- [Preview 使用说明](docs/PREVIEW.zh-CN.md)：GUI、托盘、工作空间和诊断真实能力；
+- [开发指南](docs/DEVELOPMENT.zh-CN.md)：代码地图、测试、提交和安全边界；
+- [架构说明](docs/ARCHITECTURE.zh-CN.md)：MCP、两种 ingress、rootfs、Preview 和审计数据流；
+- [Cloudflare Tunnel + Access](docs/CLOUDFLARE_TUNNEL_SETUP.zh-CN.md)：Cloudflare route、Access JWT 和 metrics 预检；
+- [OpenAI Secure MCP Tunnel](docs/TUNNEL_SETUP.zh-CN.md)：官方 tunnel-client 的独立 8787 路径；
+- [接口与工具契约](docs/TOOL_CONTRACTS.md)；
+- [威胁模型](docs/THREAT_MODEL.md)；
+- [实际实施状态与验证记录](docs/IMPLEMENTATION_STATUS.md)；
+- [R9 发布检查清单](docs/R9_RELEASE_CHECKLIST.zh-CN.md)；
+- [代码结构映射](.planning/codebase/STRUCTURE.md)。
+
+## 开发和验证
+
+```powershell
 go test ./...
 go test -race ./...
 go vet ./...
 go build ./...
-go run ./cmd/readcore-demo -file ./README.md -offset 0 -max-bytes 4096
+git diff --check
 ```
 
-### Windows Preview
-
-在 PowerShell 中构建并启动：
+Windows Preview 构建：
 
 ```powershell
-.\scripts\Build-LocalProbePreview.ps1
-.\scripts\Start-LocalProbePreview.ps1
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Build-LocalProbePreview.ps1 `
+  -RepoRoot (Get-Location).Path
 ```
 
-也可以一次构建并启动：
+生成不含 token、运行配置和第三方工具的本地 Preview ZIP：
 
 ```powershell
-.\scripts\Start-LocalProbePreview.ps1 -Build
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Package-LocalProbePreview.ps1 `
+  -RepoRoot (Get-Location).Path -Version R9-preview -Build
 ```
 
-默认读取仓库 `.runtime\local-probe.json`，审计目录默认为 `%APPDATA%\Local-Probe\audit`；两者都可用脚本参数覆盖。关闭窗口只会隐藏到托盘，托盘 `Exit` 只退出 Preview，不会停止 MCP 或 Tunnel。该版本保持只读与 `production_gate` 边界，完整用法和限制见 [`docs/PREVIEW.zh-CN.md`](docs/PREVIEW.zh-CN.md)。
+ZIP 是便于人工测试的未签名 Preview 包，不代表 `release_ready=true`。
 
-演示返回结构化 JSON。`next_offset` 是下次读取的字节位置；续读时同时传入返回的 `version.token`：
+发布前还需要环境检查、Preview packaging 检查、非 Quick acceptance、干净目录构建和实际 Windows/Tunnel/ChatGPT 分层验收。脚本存在或 CI workflow 存在不等于对应外部链路已经通过。
 
-```sh
-go run ./cmd/readcore-demo -file ./README.md -offset 4096 -max-bytes 4096 -expected-version TOKEN_FROM_PREVIOUS_RESULT
-```
-
-上面的 offset 只是参数示例，实际必须使用前一结果的 `next_offset`，不能猜测 UTF-8 边界。版本是弱元数据版本，不能用于证明强快照一致性。
-
-## 目标架构
-
-```text
-ChatGPT 原生自定义 App
-       -> MCP / 官方 Secure MCP Tunnel
-       -> 认证 ingress -> connection/profile/root 策略
-       -> 高层概览、检索、批量读取、有限环境探查
-       -> 本机文件系统 / Git
-```
-
-多账号需求落实为多个受控 connection/ingress，不保存 ChatGPT 密码或 Cookie，也不把 tunnel ID 当作身份认证。原生 Tunnel 的可用性要在真实目标账户上预检，不承诺所有订阅和所有模型均可调用。
-
-## 接续开发
-
-下一条关键路径见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](docs/NEXT_PHASE_PLAN.zh-CN.md)：先按 [`manual-test-targets/r4/README.md`](manual-test-targets/r4/README.md) 完成 Windows 本地负例与固定映像边界复核，再补齐 network deny、profile→probe 接线、执行期 SHA256 和独立审查；在这些硬门完成前不接入 MCP `run_probe`。Windows Preview 已作为只读载体实现，但 R6 生产 runtime/控制链、R7 index 默认启用收益和 R9 发布审查仍按依赖推进。当前仍不开放 raw command、Shell、任意 args/env/cwd/timeout 或写入能力；真实 Business 调用通过不等于所有账号、Pro、长时间运行或生产发布已通过。audit 运行时故障 fail-closed、全局配额和部分生产事件来源仍未实现。
-
-本仓库暂未选择对外发布许可证。当前代码是本项目独立实现，未复制 LCA、ChatCMD 或 Codex Free 源码；任何后续复用必须先审核上游许可并保留必要通知。
+总体计划仍保存在 [MASTER_PLAN.zh-CN.md](docs/MASTER_PLAN.zh-CN.md)，但它是维护和决策记录，不是新用户的首要部署入口。仓库目前尚未选择对外发布许可证；正式发布前必须补充许可证和第三方通知审查。

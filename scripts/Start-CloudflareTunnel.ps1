@@ -26,7 +26,12 @@ if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
     $RuntimeRoot = Join-Path $RepoRoot '.runtime'
 }
 if ([string]::IsNullOrWhiteSpace($CloudflaredPath)) {
-    $CloudflaredPath = Join-Path (Split-Path -Parent $RepoRoot) '_tools\tunnel-client-v0.0.14-windows-amd64\bin\cloudflared.exe'
+    $CloudflaredPath = Join-Path $RepoRoot '.tools\cloudflared.exe'
+    $legacyCloudflaredPath = Join-Path (Split-Path -Parent $RepoRoot) '_tools\tunnel-client-v0.0.14-windows-amd64\bin\cloudflared.exe'
+    if (-not (Test-Path -LiteralPath $CloudflaredPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $legacyCloudflaredPath -PathType Leaf)) {
+        $CloudflaredPath = $legacyCloudflaredPath
+    }
 }
 if ([string]::IsNullOrWhiteSpace($TunnelConfigPath)) {
     $TunnelConfigPath = Join-Path $RuntimeRoot 'cloudflare-tunnel.json'

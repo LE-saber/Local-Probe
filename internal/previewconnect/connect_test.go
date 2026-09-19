@@ -15,16 +15,55 @@ type stopFailChild struct{}
 func (stopFailChild) Wait() error { return nil }
 func (stopFailChild) Kill() error { return errors.New("injected stop failure") }
 
-func TestDefaultOptionsUsePackagedMCPAndExternalCloudflared(t *testing.T) {
+func TestDefaultOptionsUsePackagedMCPAndRepoLocalCloudflared(t *testing.T) {
 	opts := DefaultOptions(`C:\work\Local-Probe\repo`)
 	if want := `C:\work\Local-Probe\repo\bin\local-probe-mcp.exe`; opts.MCPBinary != want {
 		t.Fatalf("MCPBinary = %q, want %q", opts.MCPBinary, want)
 	}
-	if want := `C:\work\Local-Probe\_tools\tunnel-client-v0.0.14-windows-amd64\bin\cloudflared.exe`; opts.CloudflaredBinary != want {
+	if want := `C:\work\Local-Probe\repo\.tools\cloudflared.exe`; opts.CloudflaredBinary != want {
 		t.Fatalf("CloudflaredBinary = %q, want %q", opts.CloudflaredBinary, want)
 	}
 	if want := `.secrets/cloudflared-tunnel-token.txt`; credentialHint(opts) != want {
 		t.Fatalf("credential hint = %q, want %q", credentialHint(opts), want)
+	}
+}
+
+func TestNormalizeOptionsFallsBackToLegacyCloudflared(t *testing.T) {
+	repo := t.TempDir()
+	legacy := filepath.Join(filepath.Dir(repo), "_tools", "tunnel-client-v0.0.14-windows-amd64", "bin", "cloudflared.exe")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("test executable placeholder"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := normalizeOptions(Options{RepoRoot: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.CloudflaredBinary != legacy {
+		t.Fatalf("CloudflaredBinary = %q, want legacy path %q", opts.CloudflaredBinary, legacy)
+	}
+}
+
+func TestNormalizeOptionsPrefersRepoLocalCloudflared(t *testing.T) {
+	repo := t.TempDir()
+	primary := filepath.Join(repo, ".tools", "cloudflared.exe")
+	legacy := filepath.Join(filepath.Dir(repo), "_tools", "tunnel-client-v0.0.14-windows-amd64", "bin", "cloudflared.exe")
+	for _, path := range []string{primary, legacy} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("test executable placeholder"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts, err := normalizeOptions(Options{RepoRoot: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.CloudflaredBinary != primary {
+		t.Fatalf("CloudflaredBinary = %q, want primary path %q", opts.CloudflaredBinary, primary)
 	}
 }
 

@@ -129,7 +129,10 @@ type Options struct {
 }
 
 // DefaultOptions returns the repository layout used by the Preview build.
-// The secret root deliberately lives beside the repository, not in it.
+// The secret root deliberately lives beside the repository, not in it. The
+// cloudflared binary is expected in the ignored, repo-local .tools directory;
+// normalizeOptions keeps the old sibling _tools layout as a compatibility
+// fallback for existing local installations.
 func DefaultOptions(repoRoot string) Options {
 	repoRoot = filepath.Clean(repoRoot)
 	runtimeRoot := filepath.Join(repoRoot, ".runtime")
@@ -139,7 +142,7 @@ func DefaultOptions(repoRoot string) Options {
 		RuntimeRoot:       runtimeRoot,
 		SecretRoot:        secretRoot,
 		MCPBinary:         filepath.Join(repoRoot, "bin", "local-probe-mcp.exe"),
-		CloudflaredBinary: filepath.Join(filepath.Dir(repoRoot), "_tools", "tunnel-client-v0.0.14-windows-amd64", "bin", "cloudflared.exe"),
+		CloudflaredBinary: filepath.Join(repoRoot, ".tools", "cloudflared.exe"),
 		MCPConfig:         filepath.Join(runtimeRoot, "local-probe.json"),
 		AccessConfig:      filepath.Join(runtimeRoot, "cloudflare-access.json"),
 		TunnelConfig:      filepath.Join(runtimeRoot, "cloudflare-tunnel.json"),
@@ -383,6 +386,13 @@ func normalizeOptions(in Options) (Options, error) {
 	if in.CloudflaredBinary == "" {
 		in.CloudflaredBinary = defaults.CloudflaredBinary
 	}
+	// DefaultOptions is also passed back into New by the Preview executable, so
+	// the fallback must run for the default path even though the field is no
+	// longer empty. Explicit custom paths remain explicit and are not silently
+	// replaced.
+	if samePath(in.CloudflaredBinary, defaults.CloudflaredBinary) {
+		in.CloudflaredBinary = resolveDefaultCloudflared(in.RepoRoot, in.CloudflaredBinary)
+	}
 	if in.MCPConfig == "" {
 		in.MCPConfig = defaults.MCPConfig
 	}
@@ -452,6 +462,21 @@ func (c *Controller) validate() (validatedConfig, error) {
 func regularFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func samePath(left, right string) bool {
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+}
+
+func resolveDefaultCloudflared(repoRoot, primary string) string {
+	if regularFile(primary) {
+		return primary
+	}
+	legacy := filepath.Join(filepath.Dir(repoRoot), "_tools", "tunnel-client-v0.0.14-windows-amd64", "bin", "cloudflared.exe")
+	if regularFile(legacy) {
+		return legacy
+	}
+	return primary
 }
 
 func validJSONFile(path string) bool {

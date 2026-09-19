@@ -7,7 +7,7 @@
 
 - 目标仓库当前工作分支为 `feat/readcore-foundation`，从已有的
   `origin/feat/readcore-foundation` 建立本地跟踪分支；没有覆盖 `main`。
-- 上游检出均位于目标仓库外的 `D:\HOPP\download\Local-Probe\_references`，使用
+- 上游检出均位于目标仓库外的 `<clone-parent>\_references`，使用
   detached HEAD 和 sparse-checkout，只保留调查文件。没有运行上游安装脚本，也没有把
   上游源码、提示词、UI、生成文件或二进制复制进 Local-Probe。
 - LCA 的许可证是 AGPL-3.0-or-later；ChatCMD 和 Codex Free 的许可证是 MIT；
@@ -119,11 +119,11 @@
 
 ## 5. 复核命令
 
-下列命令用于复核固定来源（路径相对于 `D:\HOPP\download\Local-Probe\repo` 的
+下列命令用于复核固定来源（路径相对于 `<clone-root>` 的
 父目录）；它们只读取 Git 元数据/文件，不运行上游安装脚本：
 
 ```powershell
-$refRoot = 'D:\HOPP\download\Local-Probe\_references'
+$refRoot = Join-Path (Split-Path -Parent (Get-Location).Path) '_references'
 git -C "$refRoot\lca" rev-parse HEAD
 git -C "$refRoot\chatcmd" rev-parse HEAD
 git -C "$refRoot\codex-free" rev-parse HEAD

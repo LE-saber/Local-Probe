@@ -16,6 +16,7 @@ logs/
 
 # Build, test and reference-only inputs.
 /bin/
+/.tools/
 /dist/
 /coverage/
 /coverage.out
