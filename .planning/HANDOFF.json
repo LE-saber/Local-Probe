@@ -1,0 +1,119 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-09-20T01:00:54.933Z",
+  "phase": "preview-release",
+  "phase_name": "Windows Preview repository cleanup and source publication",
+  "phase_dir": ".planning",
+  "plan": 1,
+  "task": 5,
+  "total_tasks": 8,
+  "status": "paused",
+  "completed_tasks": [
+    {
+      "id": 1,
+      "name": "Map the existing codebase and environment",
+      "status": "done",
+      "commit": "dd17589"
+    },
+    {
+      "id": 2,
+      "name": "Write the Preview repository release plan",
+      "status": "done",
+      "commit": "0d0ca81"
+    },
+    {
+      "id": 3,
+      "name": "Implement portable Windows Preview setup, environment probe, package tooling, and documentation",
+      "status": "done",
+      "commit": "97c92df"
+    },
+    {
+      "id": 4,
+      "name": "Validate and push the source Preview branch to GitHub",
+      "status": "done",
+      "commit": "97c92df"
+    }
+  ],
+  "remaining_tasks": [
+    {
+      "id": 5,
+      "name": "Choose and add the repository license and third-party notices before a formal public release",
+      "status": "not_started"
+    },
+    {
+      "id": 6,
+      "name": "Run real Cloudflare Tunnel and ChatGPT initialize/tools/list/ping/read_file acceptance on the published source",
+      "status": "not_started"
+    },
+    {
+      "id": 7,
+      "name": "Optionally create a GitHub Preview Release and attach the locally generated ZIP with its SHA-256",
+      "status": "not_started"
+    },
+    {
+      "id": 8,
+      "name": "Review and merge feat/cloudflare-mcp-ingress into the default branch when explicitly authorized",
+      "status": "not_started"
+    }
+  ],
+  "blockers": [
+    {
+      "description": "The repository has no selected LICENSE, so a formal redistributable release should not be declared yet.",
+      "type": "human_action",
+      "workaround": "Keep the current delivery labeled as source Preview and release_ready=false until the owner chooses a license."
+    },
+    {
+      "description": "Real Cloudflare Access, Tunnel, ChatGPT Workspace, signing, installer, and long-running soak checks were not run in this release-cleanup session.",
+      "type": "external",
+      "workaround": "Use docs/DEPLOYMENT_PREVIEW.zh-CN.md and docs/R9_RELEASE_CHECKLIST.zh-CN.md for explicit manual acceptance."
+    }
+  ],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {
+      "action": "Choose the source license and approve any third-party notice policy.",
+      "context": "Required before treating the Preview as a formally redistributable release.",
+      "blocking": true
+    },
+    {
+      "action": "Log in to the target Cloudflare and ChatGPT accounts and run the real external acceptance flow.",
+      "context": "Local tests cannot prove Access policy, public route, Workspace permission, or browser MCP behavior.",
+      "blocking": true
+    },
+    {
+      "action": "Explicitly authorize a GitHub Release or merge to the default branch if desired.",
+      "context": "Only the feature branch source was pushed; no release object, binary asset upload, PR merge, or force push was performed.",
+      "blocking": false
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Publish source on feat/cloudflare-mcp-ingress rather than merge main.",
+      "rationale": "Preserves review boundaries and avoids claiming production readiness.",
+      "phase": "preview-release"
+    },
+    {
+      "decision": "Use repo-local ignored .tools/cloudflared.exe as the new default and retain the old sibling _tools path only as compatibility fallback.",
+      "rationale": "A clean clone gets a predictable layout without committing a third-party executable.",
+      "phase": "preview-release"
+    },
+    {
+      "decision": "Generate Cloudflare Preview configuration without invoking the legacy OpenAI Tunnel initializer.",
+      "rationale": "The 8788 Cloudflare path should not create unrelated 8787 API-key, tunnel-id, or local-hop credentials.",
+      "phase": "preview-release"
+    },
+    {
+      "decision": "Build Preview ZIPs only from the Git index plus the two expected executables.",
+      "rationale": "Prevents untracked runtime state or credentials from entering a package.",
+      "phase": "preview-release"
+    },
+    {
+      "decision": "Archive confirmed legacy local files instead of deleting them.",
+      "rationale": "Keeps cleanup recoverable while removing confusing duplicate source trees from the active project directory.",
+      "phase": "preview-release"
+    }
+  ],
+  "uncommitted_files": [],
+  "next_action": "Run git status --short --branch and git fetch origin, then decide whether the next objective is license work, real Cloudflare/ChatGPT acceptance, a GitHub Preview Release, or review/merge of feat/cloudflare-mcp-ingress.",
+  "context_notes": "Source publication is complete. Branch feat/cloudflare-mcp-ingress is at 97c92df locally and remotely. The ignored local ZIP is dist/Local-Probe-Preview-R9-preview.zip with SHA-256 3EA41670C874E451CDDD63C4224770196E5E91A761DD1B1E10AE2A358A2E63C5. Full local acceptance passed, but release_ready remains false by design."
+}
