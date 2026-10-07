@@ -1,0 +1,66 @@
+{
+  "schema_version": "local-probe.config.v1",
+  "roots": [
+    {
+      "id": "project",
+      "path": "D:/replace/with/an/absolute/project/path",
+      "deny_patterns": [".env", ".env.*", "secrets/**", "manual-test-targets/denied/**", "manual-test-targets/r2/denied/**"],
+      "ignore_patterns": [".git/**", "node_modules/**", "vendor/**", "*.tmp"]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "read_only",
+      "roots": ["project"],
+      "tools": [
+        "server_info",
+        "ping",
+        "read_file",
+        "batch_read",
+        "list_directory",
+        "find_files",
+        "search_text",
+        "tree_directory",
+        "get_environment",
+        "discover_tools",
+        "workspace_snapshot"
+      ],
+      "deny_patterns": [],
+      "ignore_patterns": [],
+      "read_only": true
+    }
+  ],
+  "connections": [
+    {
+      "id": "local",
+      "label": "local read-only MCP",
+      "profile_id": "read_only",
+      "credential_ref": "local_token",
+      "transport": "local",
+      "enabled": true
+    }
+  ],
+  "credentials": [
+    {
+      "id": "local_token",
+      "kind": "local_bearer"
+    }
+  ],
+  "environment_tools": [
+    {
+      "id": "git",
+      "candidate_files": ["D:/replace/with/an/absolute/path/to/git.exe"],
+      "candidate_dirs": []
+    },
+    {
+      "id": "node",
+      "candidate_files": [],
+      "candidate_dirs": ["D:/replace/with/an/absolute/tool-directory"]
+    },
+    {
+      "id": "codex",
+      "candidate_files": ["D:/replace/with/an/absolute/path/to/codex.exe"],
+      "candidate_dirs": []
+    }
+  ]
+}

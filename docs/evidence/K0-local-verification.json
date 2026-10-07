@@ -1,0 +1,44 @@
+{
+  "schema_version": "local-probe.evidence.v0",
+  "date": "2026-09-07",
+  "verification_level": "implementer_self_verified_kernel_only",
+  "environment": {"go": "go1.23.2", "os": "linux", "arch": "amd64"},
+  "plan_first_commit": "1df00950e302cf509d2c521cc8f26548f0f2109d",
+  "unit_tests": {"result": "PASS", "top_level_test_functions": 22},
+  "race": "PASS",
+  "vet": "PASS",
+  "statement_coverage_percent": {"internal/readcore": 94.1, "cmd/readcore-demo": 75.9},
+  "fuzz": [
+    {"target": "FuzzValidPath", "seconds_requested": 3, "workers": 2, "executions": 39940, "result": "PASS"},
+    {"target": "FuzzUTF8Pagination", "seconds_requested": 3, "workers": 2, "executions": 28747, "result": "PASS"}
+  ],
+  "cross_builds": [
+    {"target": "linux/amd64", "result": "PASS", "runtime_tested": true},
+    {"target": "windows/amd64", "result": "PASS", "runtime_tested": false},
+    {"target": "darwin/arm64", "result": "PASS", "runtime_tested": false}
+  ],
+  "sparse_file_test": {
+    "kind": "real_local_sparse_file_not_a_repository_benchmark",
+    "logical_size_bytes": 10737418240,
+    "allocated_disk_bytes": 4096,
+    "offset": 9663676416,
+    "returned_bytes": 4096,
+    "reader_bytes": 4096,
+    "version_strength": "metadata",
+    "result": "PASS"
+  },
+  "tested_source_git_blobs": {
+    "go.mod": "ac6f3731ef798a7137fa86429eb7458123f285c1",
+    "internal/readcore/types.go": "e85947df2199923a3e906a177cef24022ad35c7b",
+    "internal/readcore/path.go": "439ee574cbf467c51dd05a573635e75b917bb2e0",
+    "internal/readcore/engine.go": "a58836f245b9ccf9ee7d1587bcf65e41936a2e0a",
+    "internal/readcore/engine_test.go": "c8ca63319e159d532e634a9cfa696f835bc46b7b",
+    "cmd/readcore-demo/main.go": "c852cd643fcda2c058322969666687eecfb1985b",
+    "cmd/readcore-demo/main_test.go": "e8cda0d230c4f410191b5eda2b235e600a6b4e13"
+  },
+  "not_verified": [
+    "production rootfs confinement", "MCP protocol integration", "ChatGPT Pro calls",
+    "OpenAI Secure MCP Tunnel", "real multi-account isolation", "Windows/macOS runtime security",
+    "repository-scale task quality", "independent review", "release readiness"
+  ]
+}

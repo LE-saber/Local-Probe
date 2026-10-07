@@ -1,0 +1,37 @@
+# Never commit local access configuration or credentials.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials/
+secrets/
+/.secrets/
+local-probe.local.json
+*.local.json
+runtime/
+/.runtime/
+logs/
+*.log
+
+# Build, test and reference-only inputs.
+/bin/
+/.tools/
+/dist/
+/coverage/
+/coverage.out
+/coverage.html
+/_references/
+/tmp/
+/.cache/
+*.test
+*.exe
+.DS_Store
+
+# Machine-specific assistant state and local planning drafts (tracked history stays).
+/.serena/
+/.planning/
+*.lpbackup
+*.desktop-events.json
+*.desktop-backup.json
+*.desktop-backup.json.bak

@@ -1,0 +1,12 @@
+{
+  "issuer": "https://REPLACE_WITH_TEAM.cloudflareaccess.com",
+  "jwks_url": "https://REPLACE_WITH_TEAM.cloudflareaccess.com/cdn-cgi/access/certs",
+  "audience": "REPLACE_WITH_ACCESS_APPLICATION_AUDIENCE_TAG",
+  "clock_skew_seconds": 30,
+  "principal_to_connection": {
+    "REPLACE_WITH_CLOUDFLARE_SUBJECT": "chatgpt-local"
+  },
+  "public_hosts": [
+    "mcp.example.test"
+  ]
+}

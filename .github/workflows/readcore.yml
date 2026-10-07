@@ -1,0 +1,67 @@
+name: Readcore verification
+
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readcore-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Use symlink-free temp root on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.tmp"
+          echo "TMPDIR=$GITHUB_WORKSPACE/.tmp" >> "$GITHUB_ENV"
+      - run: go version
+      - name: Go tests (Windows)
+        if: runner.os == 'Windows'
+        run: go test -count=1 -cover ./...
+      - name: Go tests (Unix)
+        if: runner.os != 'Windows'
+        # The skipped test deliberately exercises Windows case-insensitive path aliases.
+        run: go test -count=1 -cover -skip '^TestFileStoreUsesSingleWriterLockAcrossInstances$' ./...
+      - run: go vet ./...
+      - run: go build ./...
+      - name: Formatting
+        if: runner.os == 'Linux'
+        shell: bash
+        run: test -z "$(gofmt -l internal cmd)"
+  race-and-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache: false
+      # This aliasing test is Windows-specific; it remains covered by the Windows matrix job.
+      - run: go test -race -count=1 -skip '^TestFileStoreUsesSingleWriterLockAcrossInstances$' ./...
+      - run: go test ./internal/readcore -run='^$' -fuzz=FuzzValidPath -fuzztime=5s -parallel=2
+      - run: go test ./internal/readcore -run='^$' -fuzz=FuzzUTF8Pagination -fuzztime=5s -parallel=2

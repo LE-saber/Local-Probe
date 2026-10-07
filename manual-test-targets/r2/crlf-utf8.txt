@@ -1,0 +1,3 @@
+第一行：LP_R2_CRLF_UTF8_第一行 🌏
+第二行：LP_R2_CRLF_UTF8_第二行
+最后一行：LP_R2_NO_TRAILING_NEWLINE

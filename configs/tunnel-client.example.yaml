@@ -1,0 +1,34 @@
+# Reference shape only. Prefer scripts/Initialize-TunnelClient.ps1, which
+# generates real absolute paths for the current checkout. The runtime profile
+# is ignored by git. Do not replace file: references with literal credentials.
+config_version: 1
+control_plane:
+  base_url: https://api.openai.com
+  # The wrapper passes the selected value from the external tunnel-id.txt.
+  tunnel_id: tunnel_00000000000000000000000000000000
+  # Runtime key only: Platform Tunnels Read + Use.  Never use an admin key here.
+  api_key: 'file:<repo-parent>/.secrets/control-plane-api-key.txt'
+
+health:
+  listen_addr: 127.0.0.1:0
+  url_file: <repo-root>/.runtime/tunnel-health-url.txt
+
+admin_ui:
+  open_browser: false
+
+log:
+  level: info
+  format: struct-text
+
+mcp:
+  server_urls:
+    - channel: main
+      url: http://127.0.0.1:8787/mcp
+  # Initialize-TunnelClient.ps1 creates this local hop token automatically.
+  # The MCP server must load the same protected file at startup.
+  extra_headers:
+    X-Local-Probe-Token: 'file:<repo-parent>/.secrets/mcp-bearer-token.txt'
+  discovery_extra_headers:
+    X-Local-Probe-Token: 'file:<repo-parent>/.secrets/mcp-bearer-token.txt'
+  startup_wait_timeout: 30s
+  max_concurrent_requests: 10

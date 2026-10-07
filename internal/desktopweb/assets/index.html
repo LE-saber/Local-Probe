@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-locale="zh">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri 'none'; object-src 'none'; script-src-attr 'none'; style-src-attr 'none'"><title>Local-Probe</title><link rel="stylesheet" href="./app.css"></head>
+<body>
+
+<div class="app" id="app">
+<header class="topbar">
+ <div class="brand"><span class="brand-name">Local-Probe</span></div>
+ <div class="top-context"><span id="crumb">概览</span></div>
+ <div class="top-actions"><button class="btn" id="localeBtn">中 / EN</button><button class="icon-btn" id="themeBtn" aria-label="主题"></button></div>
+</header>
+<aside class="sidebar" id="sidebar">
+ <div class="side-project"><span class="project-icon" id="projectIcon"></span><div class="project-copy"><b>Local-Probe</b><small id="workspaceLabel">本地工作区</small></div><button class="icon-btn sidebar-toggle" id="sidebarToggle" aria-label="收起侧栏" aria-expanded="true">&lt;</button></div>
+ <nav class="nav-list" id="pageNav" aria-label="页面导航"></nav>
+ <button class="side-scope btn" data-action="permissions"><span class="side-scope-head" id="scopeSummary"></span><span class="side-scope-path mono" id="scopeSummaryMeta"></span></button>
+</aside>
+<main class="workspace" id="workspace">
+<section class="page active" id="overview">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">概览</h1><button class="btn" data-page="access" id="manageButton"></button></div>
+ <div class="metrics" id="metrics"></div>
+ <div class="overview-layout">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="topologyHeading"></span><span class="pill mono" id="topologyTag"></span></div><div class="panel-body" id="overviewFlow"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="controlHeading"></span></div><div class="panel-body" id="connectionControls"></div></div>
+ </div>
+ <div class="section-grid">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="folderHeading"></span><button class="btn" data-page="access" id="allFolders"></button></div><div id="overviewRoots"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="recentHeading"></span><button class="btn" data-page="activity" id="allActivity"></button></div><div class="timeline" id="recentTimeline"></div></div>
+ </div>
+</section>
+<section class="page" id="connections">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">连接</h1></div>
+ <div class="panel"><div class="new-connection"><span class="node-icon" id="newConnectionIcon"></span><div class="row-text"><span class="row-name" id="newConnectionHeading"></span><span class="muted small" id="newConnectionDescription"></span></div><button class="btn primary" data-action="add-connection" id="addConnectionButton"></button></div></div>
+ <div class="panel"><div class="panel-head"><span class="panel-title" id="historyHeading"></span><span class="pill mono" id="historyCount"></span></div><div class="table-wrap" id="connectionHistory"></div></div>
+</section>
+<section class="page" id="access">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">访问范围</h1><div class="toolbar"><button class="btn" data-action="permissions" id="permissionsButton"></button><button class="btn primary" data-action="add-root" id="addRootButton"></button></div></div>
+ <div class="access-layout">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="scopeHeading"></span></div><div class="file-tree" id="scopeTree"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="directoryHeading"></span><div class="scope-tools"><input class="input" id="rootSearch"><button class="icon-btn" data-action="scope-all" id="scopeAll"></button></div></div><div id="rootList"></div></div>
+ </div>
+</section>
+<section class="page" id="activity">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">活动</h1><button class="btn" data-action="export" id="exportButton"></button></div>
+ <div class="panel"><div class="activity-filters">
+  <label><span id="workspaceFilterLabel"></span><select class="select" id="logWorkspace"></select></label>
+  <label><span id="transportFilterLabel"></span><select class="select" id="logTransport"></select></label>
+  <label><span id="resultFilterLabel"></span><select class="select" id="logFilter"></select></label>
+  <label><span id="fromFilterLabel"></span><input class="input" type="datetime-local" id="logFrom"></label>
+  <label><span id="untilFilterLabel"></span><input class="input" type="datetime-local" id="logUntil"></label>
+  <label><span id="categoryFilterLabel"></span><select class="select" id="logCategory"></select></label>
+ </div><div class="filter-bottom"><input class="input" id="logSearch"><button class="btn" data-action="reset-filters" id="resetFilters"></button></div></div>
+ <div class="panel"><div class="panel-head"><span class="panel-title" id="sequenceHeading"></span><span class="pill mono" id="eventCount"></span></div><div class="timeline" id="activityTimeline"></div></div>
+ <div class="panel"><div class="panel-head"><span class="panel-title" id="recordHeading"></span></div><div class="table-wrap" id="logTable"></div></div>
+</section>
+<section class="page" id="settings">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">设置</h1></div>
+ <div class="settings-grid">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="appearanceHeading"></span></div><div class="setting-group" id="appearanceSettings"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="aboutHeading"></span></div><div class="panel-body" id="aboutSettings"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="healthHeading"></span></div><div class="panel-body" id="healthSettings"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="backupHeading"></span></div><div class="panel-body" id="backupSettings"></div></div>
+ </div>
+</section>
+</main>
+</div>
+<div class="backdrop" id="backdrop"></div><div class="toast" id="toast" role="status"></div>
+<dialog id="editDialog" aria-labelledby="editTitle"><div id="editForm">
+ <h2 id="editTitle"></h2><label for="itemName" id="nameLabel"></label><input class="input" id="itemName" maxlength="60" required>
+ <div id="rootFields"><label for="itemPath" id="pathLabel"></label><div class="path-picker"><input class="input" id="itemPath" maxlength="32768"><button class="btn" type="button" data-action="browse" id="browseButton"></button></div><p id="browseNote" class="inline-note" hidden></p><button class="btn" type="button" id="configImportButton" disabled title="后续只读导入用户选定配置文件中的工作目录">从 config.toml 导入</button></div>
+ <div id="connectionFields"><label for="itemTransport" id="itemTransportLabel"></label><select class="select" id="itemTransport"><option value="openai">OpenAI Secure Tunnel</option><option value="cloudflare">Cloudflare Named Tunnel</option></select><div class="dialog-columns"><div><label for="itemPort" id="itemPortLabel"></label><input class="input" id="itemPort" type="number" min="1024" max="65535" value="8787"></div><div><label for="itemProfile" id="itemProfileLabel"></label><input class="input" id="itemProfile" readonly></div></div></div>
+ <div class="dialog-actions"><button type="button" class="btn" data-action="close-dialog" id="editCancel"></button><button class="btn primary" type="submit" id="editSubmit"></button></div>
+</div></dialog>
+<dialog id="confirmDialog" aria-labelledby="confirmTitle"><h2 id="confirmTitle"></h2><p id="confirmCopy"></p><div class="dialog-actions"><button class="btn" data-action="close-dialog" id="confirmCancel"></button><button class="btn danger" id="confirmRemove"></button></div></dialog>
+<dialog id="navDialog" aria-labelledby="navTitle"><h2 id="navTitle" tabindex="-1"></h2><div class="nav-choices" id="quickNav"></div></dialog>
+<dialog class="json-dialog" id="exportDialog" aria-labelledby="exportTitle"><h2 id="exportTitle"></h2><pre id="exportBody"></pre><div class="dialog-actions"><button class="btn" data-action="close-dialog" id="exportClose"></button></div></dialog>
+<dialog class="permission-dialog" id="permissionDialog" aria-labelledby="permissionTitle"><div id="permissionForm"><h2 id="permissionTitle"></h2><p class="dialog-note" id="permissionNote"></p><label class="checkbox-row"><input type="checkbox" id="developerMode"><span id="developerModeLabel"></span></label><label for="permissionRoot" id="permissionRootLabel"></label><select class="select" id="permissionRoot"></select><div class="rule-list" id="permissionRules"></div><label for="customPattern" id="customPatternLabel"></label><input class="input mono" id="customPattern" maxlength="100" placeholder="src/**/*.go"><p class="inline-note" id="permissionHelp"></p><div class="dialog-actions"><button type="button" class="btn" data-action="close-dialog" id="permissionCancel"></button><button type="submit" class="btn primary" id="permissionSave"></button></div></div></dialog>
+<dialog id="maintenanceDialog" aria-labelledby="maintenanceTitle"><h2 id="maintenanceTitle"></h2><div id="maintenanceBody"></div><div class="dialog-actions"><button class="btn" data-action="close-dialog" id="maintenanceClose"></button><button class="btn primary" id="maintenanceConfirm" hidden></button></div></dialog>
+<dialog class="command-dialog" id="commandDialog" aria-labelledby="commandTitle"><h2 id="commandTitle"></h2><p class="inline-note" id="commandNote"></p><label for="commandJSON" id="commandJSONLabel"></label><textarea class="input mono command-editor" id="commandJSON" maxlength="49152" spellcheck="false"></textarea><p class="inline-note" id="commandError" role="alert" hidden></p><div class="dialog-actions"><button class="btn" data-action="close-dialog" id="commandCancel"></button><button class="btn primary" id="commandSave"></button></div></dialog>
+<dialog class="rules-dialog" id="rulesDialog" aria-labelledby="rulesTitle">
+ <h2 id="rulesTitle"></h2><p class="dialog-note" id="rulesContext"></p>
+ <p class="inline-note" id="rulesHelp"></p>
+ <div class="dialog-columns"><div><label for="ruleDeny" id="ruleDenyLabel"></label><textarea class="input mono rule-editor" id="ruleDeny" maxlength="65536" spellcheck="false"></textarea></div><div><label for="ruleIgnore" id="ruleIgnoreLabel"></label><textarea class="input mono rule-editor" id="ruleIgnore" maxlength="65536" spellcheck="false"></textarea></div></div>
+ <label for="ruleSampleRoot" id="ruleSampleRootLabel"></label><select class="select" id="ruleSampleRoot"></select>
+ <label for="ruleSamples" id="ruleSamplesLabel"></label><textarea class="input mono rule-samples" id="ruleSamples" maxlength="16384" spellcheck="false" placeholder="src/main.go&#10;secrets/key.txt&#10;node_modules/"></textarea>
+ <div class="toolbar"><button class="btn" id="rulesPreviewButton"></button></div><div id="rulesPreviewResult" aria-live="polite"></div>
+ <label class="checkbox-row"><input type="checkbox" id="rulesOfflineAck"><span id="rulesOfflineLabel"></span></label>
+ <p class="inline-note" id="rulesError" role="alert" hidden></p>
+ <div class="dialog-actions"><button class="btn" data-action="close-dialog" id="rulesCancel"></button><button class="btn primary" id="rulesApplyButton" disabled></button></div>
+</dialog>
+<script src="./icons.js"></script><script src="./app.js"></script>
+</body></html>

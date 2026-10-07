@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-locale="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local-Probe · 界面预览</title>
+<link rel="preconnect" href="https://registry.npmmirror.com" crossorigin>
+<link rel="stylesheet" href="https://registry.npmmirror.com/@lobehub/webfont-geist/latest/files/css/index.css">
+<link rel="stylesheet" href="https://registry.npmmirror.com/@lobehub/webfont-geist-mono/latest/files/css/index.css">
+<link rel="stylesheet" href="https://registry.npmmirror.com/@lobehub/webfont-harmony-sans-sc-mini/latest/files/css/index.css">
+<style>
+@font-face{font-family:"LP Chinese Title";src:local("STZhongsong"),local("华文中宋");font-style:normal;font-weight:400;font-display:swap}
+:root{--side:232px;--body-size:14px;--top:48px;--ui:"Geist","HarmonyOS Sans SC","Microsoft YaHei UI",sans-serif;--mono:"Geist Mono","Cascadia Code",Consolas,monospace;--title:"LP Chinese Title","HarmonyOS Sans SC","Microsoft YaHei UI",sans-serif;--radius:12px}
+[data-theme="dark"]{--bg:#181818;--panel:#222222;--panel2:#292929;--panel3:#333333;--line:#3c3c3c;--strong:#555555;--text:#f2f0ec;--secondary:#cbc8c3;--muted:#a5a29c;--accent:#d6cfc2;--accentbg:#37342f;--onaccent:#211f1b;--good:#91bfa0;--goodbg:#29392f;--warn:#d5b875;--warnbg:#3d3426;--danger:#dc9a8b;--shadow:0 12px 40px #0005}
+[data-theme="light"]{--bg:#f5f5f1;--panel:#fff;--panel2:#f8f8f4;--panel3:#efefe8;--line:#e2e3da;--strong:#c4c7b9;--text:#23261f;--secondary:#4d5146;--muted:#72776b;--accent:#56683f;--accentbg:#edf1e5;--onaccent:#fff;--good:#427759;--goodbg:#edf5ed;--warn:#8b682a;--warnbg:#fbf3e5;--danger:#a24e41;--shadow:0 12px 40px #20201815}
+[hidden]{display:none!important}*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--text);font:var(--body-size)/1.6 var(--ui);font-synthesis:none;-webkit-font-smoothing:antialiased;overflow:hidden}
+button,input,select{color:inherit;font:400 calc(13px * var(--font-scale,1))/calc(20px * var(--font-scale,1)) var(--ui)}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button,input,select{outline-offset:3px}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent)}
+svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round;flex:none}.mono{font-family:var(--mono);font-size:calc(12px * var(--font-scale,1));line-height:calc(18px * var(--font-scale,1));overflow-wrap:anywhere}.muted{color:var(--muted)}.small{font-size:calc(12px * var(--font-scale,1));line-height:calc(19px * var(--font-scale,1))}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.app{height:100dvh;display:grid;grid-template-columns:var(--side) minmax(0,1fr);grid-template-rows:var(--top) minmax(0,1fr)}
+.topbar{grid-column:1/-1;display:grid;grid-template-columns:var(--side) minmax(0,1fr) auto;align-items:center;background:var(--panel);border-bottom:1px solid var(--line);z-index:8}
+.brand{height:100%;display:flex;align-items:center;gap:10px;padding:0 14px;border-right:1px solid var(--line);font-size:calc(13px * var(--font-scale,1));font-weight:600}.brand-mark{width:24px;height:24px;display:grid;place-items:center;background:var(--accentbg);color:var(--accent);border:1px solid var(--strong);border-radius:7px;font:500 calc(10px * var(--font-scale,1))/1 var(--mono)}
+.top-context{display:flex;align-items:center;gap:9px;min-width:0;padding:0 16px;font-size:calc(12px * var(--font-scale,1));color:var(--muted)}.top-context span:first-child{color:var(--secondary)}
+.top-actions{height:100%;display:flex;align-items:center;gap:6px;padding:0 10px;border-left:1px solid var(--line)}
+.btn,.icon-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:32px;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--secondary);white-space:nowrap}.btn:hover,.icon-btn:hover{background:var(--panel3);border-color:var(--strong);color:var(--text)}.btn.primary{background:var(--accent);color:var(--onaccent);border-color:var(--accent);font-weight:500}.btn.danger{color:var(--danger)}.icon-btn{width:32px;padding:0}.nav-open{display:none}
+.sidebar{grid-row:2;grid-column:1;background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;overflow:auto}.side-project{display:flex;align-items:center;gap:10px;padding:0 7px 18px}.side-project .project-icon{width:30px;height:30px;border:1px solid var(--line);background:var(--panel2);border-radius:9px;display:grid;place-items:center;color:var(--secondary)}.side-project b{font-size:calc(12px * var(--font-scale,1));font-weight:500}.side-project small{display:block;font-size:calc(11px * var(--font-scale,1));line-height:calc(16px * var(--font-scale,1));color:var(--muted)}
+.nav-list{display:grid;gap:5px}.nav-item{height:36px;width:100%;display:flex;align-items:center;gap:10px;text-align:left;padding:0 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--muted);font-weight:500}.nav-item svg{width:16px;height:16px}.nav-item .nav-label{flex:1;min-width:0}.nav-item:hover{background:var(--panel2);color:var(--text)}.nav-item.active{background:var(--accentbg);border-color:color-mix(in srgb,var(--accent) 18%,var(--line));color:var(--accent)}.nav-count{font:400 calc(10px * var(--font-scale,1))/calc(16px * var(--font-scale,1)) var(--mono);min-width:18px;text-align:center;border:1px solid var(--line);border-radius:4px;color:var(--muted)}
+.side-scope{display:block;width:100%;text-align:left;margin-top:26px;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}.side-scope-head{display:flex;align-items:center;gap:7px;font-size:calc(12px * var(--font-scale,1));color:var(--secondary)}.side-scope-path{display:block;margin:8px 0 0;font-size:calc(10px * var(--font-scale,1));color:var(--muted)}
+.workspace{grid-column:2;grid-row:2;min-width:0;overflow:auto;padding:22px 24px 36px;background:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--line) 50%,transparent) 1px,transparent 1.2px) 0 0/18px 18px,var(--bg)}
+.page{display:none;max-width:1180px;margin:auto}.page.active{display:block}.page-head{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:18px}.page-title{margin:0;font:400 calc(22px * var(--font-scale,1))/calc(32px * var(--font-scale,1)) var(--title);letter-spacing:0}.page-title.en{font-family:var(--ui);font-weight:500}.toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.panel{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);overflow:hidden;margin-bottom:12px}.panel-head{min-height:42px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line)}.panel-title{font-size:calc(13px * var(--font-scale,1));line-height:calc(20px * var(--font-scale,1));font-weight:500}.panel-head .btn{min-height:26px;padding:2px 8px;font-size:calc(11px * var(--font-scale,1))}.panel-body{padding:14px}.section-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:12px}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}.metric{border:1px solid var(--line);border-radius:10px;background:var(--panel2);padding:11px 13px;min-width:0}.metric-label{font-size:calc(11px * var(--font-scale,1));color:var(--muted);display:flex;align-items:center;gap:7px}.metric-label svg{width:14px;height:14px}.metric-value{display:flex;align-items:baseline;gap:8px;margin-top:6px;font-size:calc(18px * var(--font-scale,1));line-height:calc(26px * var(--font-scale,1));font-weight:500}.metric-value small{font-size:calc(11px * var(--font-scale,1));color:var(--muted);font-weight:400}
+.pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:1px 7px;background:var(--panel2);font-size:calc(11px * var(--font-scale,1));line-height:calc(18px * var(--font-scale,1));color:var(--muted);white-space:nowrap}.pill.good{background:var(--goodbg);border-color:transparent;color:var(--good)}.pill.warn{background:var(--warnbg);border-color:transparent;color:var(--warn)}.dot{width:5px;height:5px;background:currentColor;border-radius:50%;flex:none}
+.flow{display:grid;grid-template-columns:minmax(0,1fr) 32px minmax(0,1fr) 32px minmax(0,1fr);align-items:center;padding:7px 0 9px}.flow-node{min-width:0;min-height:142px;padding:13px;text-align:left;border:1px solid var(--line);border-radius:11px;background:var(--panel2);color:var(--text);font:calc(14px * var(--font-scale,1))/calc(22px * var(--font-scale,1)) var(--ui);display:flex;flex-direction:column;align-items:stretch;gap:11px}.flow-node:hover,.flow-node.selected{border-color:var(--accent)}.node-top{display:flex;align-items:center;gap:9px}.node-icon{width:32px;height:32px;display:grid;place-items:center;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--accent);flex:none}.node-type{font:400 calc(9px * var(--font-scale,1))/calc(14px * var(--font-scale,1)) var(--mono);letter-spacing:.06em;color:var(--muted)}.node-title{font-size:calc(13px * var(--font-scale,1));line-height:calc(20px * var(--font-scale,1));font-weight:500;overflow-wrap:anywhere}.node-footer{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:auto}.node-code{padding:5px 7px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font:400 calc(10px * var(--font-scale,1))/calc(16px * var(--font-scale,1)) var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary)}
+.edge{height:1px;background:var(--strong);position:relative}.edge:after{content:"";width:5px;height:5px;position:absolute;right:1px;top:-2px;border-top:1px solid var(--strong);border-right:1px solid var(--strong);transform:rotate(45deg)}.edge span{position:absolute;bottom:7px;left:50%;transform:translateX(-50%);font:400 calc(8px * var(--font-scale,1))/calc(12px * var(--font-scale,1)) var(--mono);color:var(--muted);white-space:nowrap}
+.list-row{width:100%;display:flex;align-items:center;gap:10px;min-height:56px;padding:9px 13px;border:0;border-bottom:1px solid var(--line);background:transparent;text-align:left;color:var(--text);font:calc(14px * var(--font-scale,1))/calc(22px * var(--font-scale,1)) var(--ui)}.list-row:last-child{border-bottom:0}.list-row:hover{background:var(--panel2)}.list-row .row-text{flex:1;min-width:0}.row-name{display:block;font-size:calc(13px * var(--font-scale,1));font-weight:500;overflow-wrap:anywhere}.row-meta{display:block;margin-top:2px;color:var(--muted);font:400 calc(10px * var(--font-scale,1))/calc(16px * var(--font-scale,1)) var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.folder-symbol{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--secondary)}
+.timeline{padding:7px 14px}.timeline-item{position:relative;display:flex;gap:11px;min-height:56px;width:100%;text-align:left;padding:9px 0;border:0;background:transparent;color:var(--text);font:calc(14px * var(--font-scale,1))/calc(22px * var(--font-scale,1)) var(--ui)}.timeline-item:before{content:"";position:absolute;left:4px;top:19px;bottom:-9px;width:1px;background:var(--line)}.timeline-item:last-child:before{display:none}.timeline-point{position:relative;z-index:1;display:block;width:9px;height:9px;border:2px solid var(--panel);border-radius:50%;background:var(--good);box-shadow:0 0 0 1px var(--good);margin-top:6px;flex:none}.timeline-item.warn .timeline-point{background:var(--warn);box-shadow:0 0 0 1px var(--warn)}.timeline-text{flex:1;min-width:0}.timeline-item:hover .row-name{color:var(--accent)}
+.data-table{width:100%;border-collapse:collapse;font-size:calc(12px * var(--font-scale,1));line-height:calc(20px * var(--font-scale,1))}.data-table th{text-align:left;background:var(--panel2);color:var(--muted);font-weight:400;padding:9px 13px;border-bottom:1px solid var(--line)}.data-table td{padding:10px 13px;border-bottom:1px solid var(--line);color:var(--secondary);overflow-wrap:anywhere}.data-table tr:last-child td{border-bottom:0}.data-table .mono{font-size:calc(10px * var(--font-scale,1))}.table-wrap{overflow:auto;max-width:100%}.table-event{border:0;background:none;padding:0;font:inherit;color:var(--text);text-align:left}.table-event:hover{color:var(--accent)}.activity-table{min-width:540px}.table-empty{text-align:center!important;padding:24px!important;color:var(--muted)!important}
+.input,.select{height:32px;min-width:0;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel2);padding:0 9px}.input{width:210px}.select{cursor:pointer}.empty{padding:23px 14px;color:var(--muted);font-size:calc(12px * var(--font-scale,1));text-align:center}
+.root-management-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--line)}.root-management-row:last-child{border-bottom:0}.root-select{border:0;background:none;color:inherit;text-align:left;display:flex;align-items:center;gap:10px;padding:0;min-width:0}.root-select .row-text{min-width:0}.root-select:hover .row-name{color:var(--accent)}.root-management-row .btn{min-height:28px;font-size:calc(11px * var(--font-scale,1));padding:3px 8px}
+.setting-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line);font-size:calc(13px * var(--font-scale,1))}.setting-row:last-child{border-bottom:0}.setting-row label{min-width:0}.setting-help{display:block;color:var(--muted);font-size:calc(11px * var(--font-scale,1));line-height:calc(17px * var(--font-scale,1));margin-top:3px}.setting-row input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent)}.setting-group{padding:0 14px}
+.backdrop{display:none;position:fixed;inset:var(--top) 0 0;z-index:10;background:#0005}.backdrop.show{display:block}.toast{position:fixed;bottom:18px;right:18px;max-width:calc(100vw - 28px);border:1px solid var(--strong);border-radius:9px;background:var(--panel);padding:9px 12px;color:var(--secondary);font-size:calc(12px * var(--font-scale,1));box-shadow:var(--shadow);z-index:30;display:none}.toast.show{display:block}
+dialog{width:min(440px,calc(100vw - 28px));max-height:calc(100dvh - 48px);overflow:auto;padding:20px;border:1px solid var(--strong);border-radius:12px;background:var(--panel);color:var(--text);box-shadow:var(--shadow)}dialog::backdrop{background:#0007}dialog h2{font:500 calc(16px * var(--font-scale,1))/calc(24px * var(--font-scale,1)) var(--ui);margin:0 0 16px}dialog label{display:block;margin:12px 0 5px;font-size:calc(12px * var(--font-scale,1));color:var(--secondary)}dialog .input{width:100%}dialog p{font-size:calc(12px * var(--font-scale,1));line-height:calc(20px * var(--font-scale,1));color:var(--muted)}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.json-dialog{width:min(650px,calc(100vw - 28px))}.json-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;font:400 calc(11px * var(--font-scale,1))/calc(18px * var(--font-scale,1)) var(--mono);background:var(--panel2);padding:13px;border-radius:8px;max-height:50vh;overflow:auto}.nav-choices{display:grid;gap:6px}
+
+.side-project{position:relative;padding-right:30px}.sidebar-toggle{position:absolute;right:0;top:0;width:25px;min-height:25px;font:calc(16px * var(--font-scale,1))/1 var(--mono)}.project-copy{min-width:0}
+.app.collapsed{--side:64px}.collapsed .sidebar{padding:16px 8px}.collapsed .side-project{padding:0;justify-content:center;height:38px;margin-bottom:12px}.collapsed .project-icon,.collapsed .project-copy,.collapsed .nav-label,.collapsed .nav-count,.collapsed .side-scope{display:none}.collapsed .sidebar-toggle{position:static}.collapsed .nav-item{justify-content:center;padding:0;height:40px}.collapsed .brand-name,.collapsed .brand-mark{display:none}.collapsed .brand{padding:0}.sidebar{transition:width .15s}.nav-item[title]{position:relative}
+.overview-layout{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:12px}.overview-layout>.panel{min-width:0}.control-fields{display:grid;gap:12px}.control-fields label{display:grid;gap:5px;font-size:calc(12px * var(--font-scale,1));color:var(--muted)}.control-fields .select{width:100%}.control-status{display:flex;justify-content:space-between;align-items:center;margin:15px 0}.saved-config{display:flex;align-items:center;gap:10px;margin-bottom:12px}.history-table{min-width:650px}.history-table .active td{background:var(--accentbg)}.history-name{display:block;color:var(--text);font-weight:500}.history-meta{font:calc(10px * var(--font-scale,1))/calc(16px * var(--font-scale,1)) var(--mono);color:var(--muted)}.history-actions{display:flex;align-items:center;gap:6px}.new-connection{display:flex;align-items:center;gap:14px;padding:18px}.new-connection .row-text{flex:1}.new-connection>.node-icon{width:42px;height:42px}
+.access-layout{display:grid;grid-template-columns:270px minmax(0,1fr);gap:12px;align-items:start}.access-layout>.panel{min-width:0}.file-tree{padding:8px;max-height:calc(100dvh - 200px);overflow:auto}.tree-section{margin-bottom:8px}.tree-group{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;color:var(--secondary);padding:8px;text-align:left;border-radius:7px;font-size:calc(12px * var(--font-scale,1))}.tree-group.active,.tree-entry.active{background:var(--accentbg);color:var(--accent)}.tree-group .nav-count{margin-left:auto}.tree-children{margin-left:15px;padding-left:12px;border-left:1px solid var(--line)}.tree-entry{display:flex;align-items:center;gap:8px;width:100%;min-height:33px;padding:5px 8px;border:0;border-radius:6px;background:none;color:var(--secondary);text-align:left;font-size:calc(12px * var(--font-scale,1))}.tree-entry svg{width:15px}.tree-entry .tree-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.tree-entry.paused{opacity:.6}.tree-empty{padding:6px 8px;font-size:calc(11px * var(--font-scale,1));color:var(--muted)}.root-management-row.selected{background:var(--accentbg)}.root-management-row .icon-btn{width:28px;min-height:28px}.mode-tabs{display:flex;align-items:center;gap:6px}.scope-tools{display:flex;align-items:center;gap:8px}.scope-tools .input{width:190px}.permission-strip{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}.permission-strip .muted{font-size:calc(12px * var(--font-scale,1))}
+.activity-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px}.activity-filters label{display:grid;gap:5px;font-size:calc(11px * var(--font-scale,1));color:var(--muted)}.activity-filters .input,.activity-filters .select{width:100%;min-width:0}.filter-bottom{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:0 14px 14px}.filter-bottom .input{flex:1}
+.settings-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.settings-grid>.panel{min-width:0}.about-brand{display:flex;align-items:center;gap:12px;margin-bottom:16px}.about-brand .brand-mark{width:40px;height:40px;font-size:calc(13px * var(--font-scale,1))}.about-brand strong{display:block}.about-brand small{font-size:calc(11px * var(--font-scale,1));color:var(--muted)}.health-items{display:grid;gap:9px;margin:14px 0;font-size:calc(12px * var(--font-scale,1))}.health-line{display:flex;align-items:center;justify-content:space-between}.inline-note{font-size:calc(11px * var(--font-scale,1));color:var(--muted);line-height:calc(18px * var(--font-scale,1));margin:10px 0 0}.path-picker{display:flex;gap:6px}.path-picker .input{flex:1}.dialog-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.dialog-columns .select{width:100%}.checkbox-row{display:flex;align-items:center;gap:8px}.checkbox-row input{accent-color:var(--accent)}.permission-dialog{width:min(530px,calc(100vw - 28px))}.dialog-note{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2)}.rule-list{display:grid;gap:8px;margin:12px 0}.rule-item{border:1px solid var(--line);background:var(--panel2);padding:10px;border-radius:8px}.rule-item label{margin:0;display:flex;align-items:center;gap:8px}.rule-item small{display:block;color:var(--muted);font-size:calc(11px * var(--font-scale,1));margin-left:24px}.root-select .row-text{flex:1}.root-management-row{grid-template-columns:minmax(0,1fr) auto auto}.toolbar .icon-btn.danger{color:var(--danger)}
+@media(max-width:1050px){.overview-layout{grid-template-columns:minmax(0,1fr)}.access-layout{grid-template-columns:230px minmax(0,1fr)}.settings-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:760px){:root{--side:64px}.app{grid-template-columns:64px minmax(0,1fr)}.sidebar{padding:16px 8px}.side-project{justify-content:center;padding:0;height:38px;margin-bottom:12px}.sidebar .project-copy,.sidebar .project-icon,.sidebar .nav-label,.sidebar .nav-count,.sidebar .side-scope{display:none}.sidebar-toggle{position:static}.nav-item{padding:0;justify-content:center;height:40px}.brand-name,.brand-mark{display:none}.brand{padding:0}.top-context{padding:0 10px}.sidebar.open{position:fixed;top:var(--top);left:0;bottom:0;width:232px;z-index:12;box-shadow:var(--shadow);padding:16px 12px}.sidebar.open .project-copy,.sidebar.open .nav-label,.sidebar.open .nav-count,.sidebar.open .side-scope{display:block}.sidebar.open .project-icon{display:grid}.sidebar.open .nav-item{justify-content:flex-start;padding:0 10px}.sidebar.open .side-project{justify-content:flex-start;padding-right:30px}.sidebar.open .sidebar-toggle{position:absolute;right:0;top:0}.sidebar.open .side-scope-head{display:flex}.workspace{padding:18px 16px}.access-layout,.section-grid{grid-template-columns:minmax(0,1fr)}.file-tree{max-height:260px}.flow{grid-template-columns:minmax(0,1fr);gap:0}.flow-node{min-height:0}.edge{width:1px;height:25px;justify-self:center}.edge:after{right:-2px;top:auto;bottom:1px;transform:rotate(135deg)}.edge span{left:10px;top:4px;bottom:auto;transform:none}.activity-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.page-head{flex-wrap:wrap}.new-connection{flex-wrap:wrap}.top-context .context-project,.top-context .slash{display:none}}
+@media(max-width:520px){.workspace{padding:16px 10px}.metrics{gap:6px}.metric{padding:8px}.metric-label svg{display:none}.metric-value{flex-wrap:wrap;font-size:calc(16px * var(--font-scale,1))}.metric-value small{font-size:calc(9px * var(--font-scale,1))}.top-actions{padding:0 6px;gap:4px}.top-actions .btn{font-size:calc(11px * var(--font-scale,1));padding:3px 7px}.scope-tools{flex-wrap:wrap}.scope-tools .input{width:130px}.root-management-row{grid-template-columns:minmax(0,1fr) auto}.root-management-row>.pill{display:none}.activity-filters{grid-template-columns:minmax(0,1fr)}.new-connection>.btn{width:100%}.top-context{font-size:calc(11px * var(--font-scale,1))}.dialog-columns{grid-template-columns:minmax(0,1fr)}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+
+.tree-header{display:flex;align-items:center;gap:2px}.tree-toggle{border:0;background:none;color:var(--muted);width:24px;min-height:30px;padding:0;display:grid;place-items:center;flex:none}.tree-toggle svg{width:14px;height:14px;transition:transform .12s}.tree-toggle[aria-expanded="true"] svg{transform:rotate(90deg)}.tree-header .tree-group{flex:1;min-width:0}.tree-branch{margin-bottom:4px}.tree-branch>.tree-header .tree-entry{flex:1;min-width:0}.tree-template{margin-left:27px;padding:4px 8px;width:calc(100% - 27px);color:var(--muted);font-size:calc(11px * var(--font-scale,1))}.tree-template svg{width:13px}.tree-template.locked{opacity:.7}.template-root-head{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel2);display:flex;align-items:center;gap:10px}.template-root-head .row-text{flex:1;min-width:0}.template-root-head .row-meta{white-space:normal}.template-root-head .btn{min-height:26px;padding:2px 8px}.developer-strip{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}.developer-strip .row-name{font-size:calc(12px * var(--font-scale,1))}.rule-row{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}.rule-row .row-text{flex:1;min-width:0}.rule-row .row-meta{white-space:normal}.rule-row:last-child{border-bottom:0}.rule-placeholder{padding:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--muted);font-size:calc(12px * var(--font-scale,1))}.health-report{display:grid;gap:0}.health-report .health-line{padding:10px 0;border-bottom:1px solid var(--line);font-size:calc(12px * var(--font-scale,1))}.health-report .health-line:last-child{border-bottom:0}.backup-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}.backup-summary .metric-value{margin-top:0}.sidebar .side-scope-head svg{color:var(--secondary)}
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+<header class="topbar">
+ <div class="brand"><span class="brand-name">Local-Probe</span></div>
+ <div class="top-context"><span id="crumb">概览</span></div>
+ <div class="top-actions"><button class="btn" id="localeBtn">中 / EN</button><button class="icon-btn" id="themeBtn" aria-label="主题"></button></div>
+</header>
+<aside class="sidebar" id="sidebar">
+ <div class="side-project"><span class="project-icon" id="projectIcon"></span><div class="project-copy"><b>Local-Probe</b><small id="workspaceLabel">本地工作区</small></div><button class="icon-btn sidebar-toggle" id="sidebarToggle" aria-label="收起侧栏" aria-expanded="true">&lt;</button></div>
+ <nav class="nav-list" id="pageNav" aria-label="页面导航"></nav>
+ <button class="side-scope btn" data-action="permissions"><span class="side-scope-head" id="scopeSummary"></span><span class="side-scope-path mono" id="scopeSummaryMeta"></span></button>
+</aside>
+<main class="workspace" id="workspace">
+<section class="page active" id="overview">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">概览</h1><button class="btn" data-page="access" id="manageButton"></button></div>
+ <div class="metrics" id="metrics"></div>
+ <div class="overview-layout">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="topologyHeading"></span><span class="pill mono" id="topologyTag"></span></div><div class="panel-body" id="overviewFlow"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="controlHeading"></span></div><div class="panel-body" id="connectionControls"></div></div>
+ </div>
+ <div class="section-grid">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="folderHeading"></span><button class="btn" data-page="access" id="allFolders"></button></div><div id="overviewRoots"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="recentHeading"></span><button class="btn" data-page="activity" id="allActivity"></button></div><div class="timeline" id="recentTimeline"></div></div>
+ </div>
+</section>
+<section class="page" id="connections">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">连接</h1></div>
+ <div class="panel"><div class="new-connection"><span class="node-icon" id="newConnectionIcon"></span><div class="row-text"><span class="row-name" id="newConnectionHeading"></span><span class="muted small" id="newConnectionDescription"></span></div><button class="btn primary" data-action="add-connection" id="addConnectionButton"></button></div></div>
+ <div class="panel"><div class="panel-head"><span class="panel-title" id="historyHeading"></span><span class="pill mono" id="historyCount"></span></div><div class="table-wrap" id="connectionHistory"></div></div>
+</section>
+<section class="page" id="access">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">访问范围</h1><div class="toolbar"><button class="btn" data-action="permissions" id="permissionsButton"></button><button class="btn primary" data-action="add-root" id="addRootButton"></button></div></div>
+ <div class="access-layout">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="scopeHeading"></span></div><div class="file-tree" id="scopeTree"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="directoryHeading"></span><div class="scope-tools"><input class="input" id="rootSearch"><button class="icon-btn" data-action="scope-all" id="scopeAll"></button></div></div><div id="rootList"></div></div>
+ </div>
+</section>
+<section class="page" id="activity">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">活动</h1><button class="btn" data-action="export" id="exportButton"></button></div>
+ <div class="panel"><div class="activity-filters">
+  <label><span id="workspaceFilterLabel"></span><select class="select" id="logWorkspace"></select></label>
+  <label><span id="transportFilterLabel"></span><select class="select" id="logTransport"></select></label>
+  <label><span id="resultFilterLabel"></span><select class="select" id="logFilter"></select></label>
+  <label><span id="fromFilterLabel"></span><input class="input" type="datetime-local" id="logFrom"></label>
+  <label><span id="untilFilterLabel"></span><input class="input" type="datetime-local" id="logUntil"></label>
+  <label><span id="categoryFilterLabel"></span><select class="select" id="logCategory"></select></label>
+ </div><div class="filter-bottom"><input class="input" id="logSearch"><button class="btn" data-action="reset-filters" id="resetFilters"></button></div></div>
+ <div class="panel"><div class="panel-head"><span class="panel-title" id="sequenceHeading"></span><span class="pill mono" id="eventCount"></span></div><div class="timeline" id="activityTimeline"></div></div>
+ <div class="panel"><div class="panel-head"><span class="panel-title" id="recordHeading"></span></div><div class="table-wrap" id="logTable"></div></div>
+</section>
+<section class="page" id="settings">
+ <div class="page-head"><h1 class="page-title" tabindex="-1">设置</h1></div>
+ <div class="settings-grid">
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="appearanceHeading"></span></div><div class="setting-group" id="appearanceSettings"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="aboutHeading"></span></div><div class="panel-body" id="aboutSettings"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="healthHeading"></span></div><div class="panel-body" id="healthSettings"></div></div>
+  <div class="panel"><div class="panel-head"><span class="panel-title" id="backupHeading"></span></div><div class="panel-body" id="backupSettings"></div></div>
+ </div>
+</section>
+</main>
+</div>
+<div class="backdrop" id="backdrop"></div><div class="toast" id="toast" role="status"></div>
+<dialog id="editDialog" aria-labelledby="editTitle"><form id="editForm">
+ <h2 id="editTitle"></h2><label for="itemName" id="nameLabel"></label><input class="input" id="itemName" maxlength="60" required>
+ <div id="rootFields"><label for="itemPath" id="pathLabel"></label><div class="path-picker"><input class="input" id="itemPath" maxlength="260"><button class="btn" type="button" data-action="browse" id="browseButton"></button></div><p id="browseNote" class="inline-note" hidden></p><button class="btn" type="button" id="configImportButton" disabled title="后续只读导入用户选定配置文件中的工作目录">从 config.toml 导入</button><input type="file" id="folderPicker" webkitdirectory multiple hidden></div>
+ <div id="connectionFields"><label for="itemTransport" id="itemTransportLabel"></label><select class="select" id="itemTransport" style="width:100%"><option value="openai">OpenAI Secure Tunnel</option><option value="cloudflare">Cloudflare Named Tunnel</option></select><div class="dialog-columns"><div><label for="itemPort" id="itemPortLabel"></label><input class="input" id="itemPort" type="number" min="1024" max="65535" value="8787"></div><div><label for="itemProfile" id="itemProfileLabel"></label><input class="input" id="itemProfile" maxlength="60" value="local-profile"></div></div></div>
+ <div class="dialog-actions"><button type="button" class="btn" data-action="close-dialog" id="editCancel"></button><button class="btn primary" type="submit" id="editSubmit"></button></div>
+</form></dialog>
+<dialog id="confirmDialog" aria-labelledby="confirmTitle"><h2 id="confirmTitle"></h2><p id="confirmCopy"></p><div class="dialog-actions"><button class="btn" data-action="close-dialog" id="confirmCancel"></button><button class="btn danger" id="confirmRemove"></button></div></dialog>
+<dialog id="navDialog" aria-labelledby="navTitle"><h2 id="navTitle" tabindex="-1"></h2><div class="nav-choices" id="quickNav"></div></dialog>
+<dialog class="json-dialog" id="exportDialog" aria-labelledby="exportTitle"><h2 id="exportTitle"></h2><pre id="exportBody"></pre><div class="dialog-actions"><button class="btn" data-action="close-dialog" id="exportClose"></button></div></dialog>
+<dialog class="permission-dialog" id="permissionDialog" aria-labelledby="permissionTitle"><form id="permissionForm"><h2 id="permissionTitle"></h2><p class="dialog-note" id="permissionNote"></p><label class="checkbox-row"><input type="checkbox" id="developerMode"><span id="developerModeLabel"></span></label><label for="permissionRoot" id="permissionRootLabel"></label><select class="select" id="permissionRoot" style="width:100%"></select><div class="rule-list" id="permissionRules"></div><label for="customPattern" id="customPatternLabel"></label><input class="input mono" id="customPattern" maxlength="100" placeholder="src/**/*.go"><p class="inline-note" id="permissionHelp"></p><div class="dialog-actions"><button type="button" class="btn" data-action="close-dialog" id="permissionCancel"></button><button type="submit" class="btn primary" id="permissionSave"></button></div></form></dialog>
+<dialog id="maintenanceDialog" aria-labelledby="maintenanceTitle"><h2 id="maintenanceTitle"></h2><div id="maintenanceBody"></div><div class="dialog-actions"><button class="btn" data-action="close-dialog" id="maintenanceClose"></button><button class="btn primary" id="maintenanceConfirm" hidden></button></div></dialog>
+<script>
+'use strict';
+const ICONS={
+ grid:'<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>',
+ link:'<path d="m10 13 4-4M8 15l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 9l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 1) scale(.9)"/>',
+ folder:'<path d="M3 7h7l2 2h9v10H3zM3 7V4h6l2 3h8v2"/>',
+ clock:'<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
+ gear:'<path d="m10 3-1 3-2 1-3-1-2 4 2 2v2l-2 2 2 4 3-1 2 1 1 3h4l1-3 2-1 3 1 2-4-2-2v-2l2-2-2-4-3 1-2-1-1-3z" transform="translate(0 -1)"/><circle cx="12" cy="12" r="3"/>',
+ server:'<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.1M7 16.5h.1M11 7.5h6M11 16.5h6"/>',
+ cloud:'<path d="M6 19h12a4 4 0 0 0 .6-8 7 7 0 0 0-13.3-1A4.5 4.5 0 0 0 6 19z"/>',
+ shield:'<path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6zM8 12l3 3 5-6"/>',
+ sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
+ moon:'<path d="M20 15A8 8 0 0 1 9 4a8 8 0 1 0 11 11z"/>',
+ menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
+ close:'<path d="m6 6 12 12M18 6 6 18"/>',
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ pause:'<path d="M8 5v14M16 5v14"/>',
+ play:'<path d="m8 4 12 8-12 8z"/>',
+ trash:'<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>',
+ key:'<circle cx="8" cy="8" r="4"/><path d="m11 11 9 9M15 15l3-3M18 18l3-3"/>',
+ terminal:'<path d="m5 6 6 6-6 6M13 18h6"/>',
+ sliders:'<path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/>',
+ chevron:'<path d="m9 5 7 7-7 7"/>',
+ refresh:'<path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 3M19 16A8 8 0 0 1 6 19l-2-3"/>',
+ arrow:'<path d="M5 12h14m-5-5 5 5-5 5"/>'
+};
+const NAV=[{page:'overview',icon:'grid'},{page:'connections',icon:'link'},{page:'access',icon:'folder'},{page:'activity',icon:'clock'},{page:'settings',icon:'gear'}];
+const COPY={
+ zh:{overview:'概览',connections:'连接',access:'访问范围',activity:'活动',settings:'设置',workspace:'本地工作区',scope:'只读授权',topology:'连接拓扑',local:'本机服务',ready:'就绪',stopped:'已停止',online:'在线',offline:'未连接',remote:'未验证',enabled:'已启用',paused:'已暂停',manage:'管理目录',reconnect:'重新连接',connect:'连接',disconnect:'断开',all:'查看全部',folders:'已授权目录',recent:'最近活动',controls:'连接控制',addConnection:'新建连接',addRoot:'添加目录',scopeMap:'授权关系',directoryList:'目录列表',searchRoots:'搜索名称或路径',searchLogs:'搜索事件或对象',sequence:'事件时间线',records:'活动记录',export:'导出预览',diagnostics:'诊断预览',appearance:'外观',theme:'主题',dark:'深色',light:'浅色',language:'语言',name:'名称',path:'路径',status:'状态',transport:'传输方式',profile:'授权配置',mode:'访问模式',readOnly:'只读',pause:'暂停',resume:'恢复',remove:'移除',cancel:'取消',add:'添加',confirm:'确认移除',removeCopy:'只移除当前预览中的条目，不删除磁盘文件或修改真实授权。',close:'关闭',time:'时间',category:'类别',event:'事件',target:'对象',result:'结果',success:'完成',pending:'待验收',allEvents:'全部事件',empty:'没有匹配项目',noConnections:'尚无连接',nav:'前往页面',connection:'连接',directory:'目录',activityCount:'条记录',port:'本机端口',lastEvent:'最近事件',connectionCount:'个连接',scopeCount:'个目录',remoteCaption:'需单独验收',connectionEvent:'连接场景已更新',folderEvent:'访问范围已更新'},
+ en:{overview:'Overview',connections:'Connections',access:'Access scope',activity:'Activity',settings:'Settings',workspace:'Local workspace',scope:'Read-only access',topology:'Connection topology',local:'Local service',ready:'Ready',stopped:'Stopped',online:'Online',offline:'Offline',remote:'Unverified',enabled:'Enabled',paused:'Paused',manage:'Manage folders',reconnect:'Reconnect',connect:'Connect',disconnect:'Disconnect',all:'View all',folders:'Authorized folders',recent:'Recent activity',controls:'Connection controls',addConnection:'New connection',addRoot:'Add folder',scopeMap:'Access relationships',directoryList:'Folders',searchRoots:'Search names or paths',searchLogs:'Search events or targets',sequence:'Event timeline',records:'Activity records',export:'Preview export',diagnostics:'Preview diagnostics',appearance:'Appearance',theme:'Theme',dark:'Dark',light:'Light',language:'Language',name:'Name',path:'Path',status:'Status',transport:'Transport',profile:'Access profile',mode:'Access mode',readOnly:'Read only',pause:'Pause',resume:'Resume',remove:'Remove',cancel:'Cancel',add:'Add',confirm:'Confirm removal',removeCopy:'Only removes the preview item. No disk files or real permissions are changed.',close:'Close',time:'Time',category:'Category',event:'Event',target:'Target',result:'Result',success:'Complete',pending:'Needs verification',allEvents:'All events',empty:'No matching items',noConnections:'No connections',nav:'Go to page',connection:'Connection',directory:'Folder',activityCount:'events',port:'Local port',lastEvent:'Latest event',connectionCount:'connections',scopeCount:'folders',remoteCaption:'Separate verification required',connectionEvent:'Connection scenario updated',folderEvent:'Access scope updated'}
+};
+
+Object.assign(COPY.zh,{
+ scope:'权限管理',scopeMap:'文件空间',history:'历史连接',newConnectionHeading:'新建连接配置',newConnectionDescription:'保存传输方式、端口和授权配置，之后可从历史连接复用。',save:'保存',use:'使用',edit:'编辑',saved:'已保存',lastUsed:'最近使用',never:'尚未使用',chooseConnection:'选择连接',permissions:'开发者授权',readonlyGroup:'只读文件',commandGroup:'命令运行',customGroup:'高级自定义',allSpaces:'全部空间',allTransports:'全部连接方式',allResults:'全部结果',allCategories:'全部类别',from:'开始时间',until:'结束时间',reset:'清除筛选',about:'关于',fontSize:'字体大小',health:'程序健康',backup:'备份与恢复',checkUpdate:'检查更新',checkHealth:'检测健康',createBackup:'创建备份',restoreBackup:'恢复备份',noBackup:'尚无备份',browse:'浏览',developerMode:'开发者高级模式',grantRoot:'授权工作空间',customPattern:'自定义只读文件规则',permissionNote:'本页只演示授权流程，不运行命令、不更改真实权限。',permissionHelp:'命令限定为预设模板；文件规则只影响此页面的只读分区。',notChecked:'未检测',notConnected:'未接入',backupCreated:'已创建页面备份',backupRestore:'恢复当前页面配置？',backupWarning:'仅还原本页保存的连接、目录和授权设置，不恢复磁盘文件；刷新后备份消失。',run:'运行',locked:'未授权',authorized:'已授权',disabled:'未启用',rule:'规则',grant:'配置授权',onlySelected:'显示全部',healthHelp:'本机运行时与后台服务尚未接入，不能由此页面判断健康状态。',updateHelp:'未连接更新服务，无法核对最新版本。',browseHelp:'已选目录：',browsePathHelp:'浏览器不提供绝对路径，请补全本机目录路径。',invalidPath:'请填写绝对路径（例如 D:\\Work\\Project）。',confirmRun:'确认一次命令操作',runWarning:'仅演示一次性确认；不会启动进程或发送命令。',commandUnexecuted:'流程已确认，命令未执行。',aboutNote:'HTML 交互样稿，未接入正式服务。',workspaceEvent:'页面配置已更新',permissionEvent:'授权配置已更新',commandEvent:'命令确认流程',reusedEvent:'使用历史连接',profile:'授权配置',export:'导出记录',remoteCaption:'账号未验证',diagnostics:'检测详情'
+});
+Object.assign(COPY.en,{
+ scope:'Permissions',scopeMap:'File spaces',history:'Connection history',newConnectionHeading:'New connection configuration',newConnectionDescription:'Save transport, port and access profile for later reuse.',save:'Save',use:'Use',edit:'Edit',saved:'Saved',lastUsed:'Last used',never:'Not used',chooseConnection:'Select connection',permissions:'Developer permissions',readonlyGroup:'Read-only files',commandGroup:'Commands',customGroup:'Advanced file rules',allSpaces:'All spaces',allTransports:'All transports',allResults:'All results',allCategories:'All categories',from:'Start time',until:'End time',reset:'Clear filters',about:'About',fontSize:'Font size',health:'Program health',backup:'Backup and restore',checkUpdate:'Check for updates',checkHealth:'Check health',createBackup:'Create backup',restoreBackup:'Restore backup',noBackup:'No backup',browse:'Browse',developerMode:'Advanced developer mode',grantRoot:'Authorized workspace',customPattern:'Custom read-only file rule',permissionNote:'This page demonstrates permissions only. No commands run or real permissions change.',permissionHelp:'Commands use fixed templates. File patterns only affect the read-only preview.',notChecked:'Not checked',notConnected:'Not connected',backupCreated:'Page backup created',backupRestore:'Restore this page configuration?',backupWarning:'Restores saved connections, folders and permissions in this page only, not disk files. Reload clears the backup.',run:'Run',locked:'Unauthorized',authorized:'Authorized',disabled:'Disabled',rule:'Rule',grant:'Configure permissions',onlySelected:'Show all',healthHelp:'Runtime and backend are not connected. This page cannot determine their health.',updateHelp:'Update service is not connected; the latest version cannot be verified.',browseHelp:'Selected folder: ',browsePathHelp:'The browser does not supply an absolute path. Enter the local folder path.',invalidPath:'Enter an absolute folder path.',confirmRun:'Confirm one command operation',runWarning:'Demonstrates one-time confirmation only; no process or command is started.',commandUnexecuted:'Confirmation completed. Command not executed.',aboutNote:'Interactive HTML sample; not connected to production services.',workspaceEvent:'Page configuration updated',permissionEvent:'Permissions updated',commandEvent:'Command confirmation flow',reusedEvent:'Historical connection reused',profile:'Access profile',export:'Export records',remoteCaption:'Account unverified',diagnostics:'Check details'
+});
+Object.assign(COPY.zh,{expand:'展开',collapse:'收起',selectedFolder:'已选目录',resolvePath:'补全路径',browsePathHelp:'已选中，可直接加入。完整本机路径仍待确认。',template:'预设命令',addRule:'添加规则',noCustom:'尚无自定义文件规则',healthReport:'检测报告',uiStructure:'页面配置',uiConnections:'连接参数',uiRules:'授权关联',passed:'正常',failed:'异常',programRuntime:'本机运行时',tunnelHealth:'Tunnel 服务',report:'查看报告',backupContents:'备份内容',updateResult:'更新检查',chooseWorkspace:'选择工作空间',noSpaces:'请先添加工作空间'});
+Object.assign(COPY.en,{expand:'Expand',collapse:'Collapse',selectedFolder:'Folder selected',resolvePath:'Complete path',browsePathHelp:'Selected; ready to add. The full local path is still unconfirmed.',template:'Command template',addRule:'Add rule',noCustom:'No custom file rules',healthReport:'Check report',uiStructure:'Page configuration',uiConnections:'Connection parameters',uiRules:'Permission bindings',passed:'Valid',failed:'Invalid',programRuntime:'Local runtime',tunnelHealth:'Tunnel service',report:'View report',backupContents:'Backup contents',updateResult:'Update check',chooseWorkspace:'Choose workspace',noSpaces:'Add a workspace first'});
+const COMMANDS=[{id:'tool-version',label:'tool_version',description:'固定工具版本 / Fixed tool version'},{id:'tool-exists',label:'tool_exists',description:'工具存在性 / Tool availability'}];
+
+const state={
+ page:'overview',locale:'zh',theme:'dark',collapsed:false,fontSize:14,scopeGroup:'readonly',rootFocus:'',treeOpen:{readonly:true,command:false,custom:false},branchesExpanded:{},pendingFolder:null,editRootId:'',
+ developer:false,commandRules:[],customRules:[],nextRule:1,backup:null,healthChecked:false,healthReport:null,updateChecked:false,editConnectionId:'',maintenance:null,
+ nextRoot:4,nextConnection:3,nextEvent:5,activeConnectionId:'demo-connection-01',
+ roots:[{id:'demo-root-01',name:'Local-Probe',path:'D:\\Demo\\Local-Probe',enabled:true},{id:'demo-root-02',name:'Research',path:'D:\\Demo\\Research',enabled:true},{id:'demo-root-03',name:'Archive',path:'D:\\Demo\\Archive',enabled:false}],
+ connections:[{id:'demo-connection-01',name:'OpenAI Secure Tunnel',tunnelId:'demo-tunnel-openai',transport:'openai',stage:'ready',previewStatus:'',port:8787,profile:'local-profile',lastUsed:''},{id:'demo-connection-02',name:'Cloudflare Named Tunnel',tunnelId:'demo-tunnel-cloudflare',transport:'cloudflare',stage:'stopped',previewStatus:'',port:8788,profile:'local-profile',lastUsed:''}],
+ logs:[{id:'demo-event-04',time:'14:21:08',key:'connectionEvent',category:'connection',target:'demo-connection-01',result:'success'},{id:'demo-event-03',time:'14:07:43',key:'folderEvent',category:'directory',target:'demo-root-02',result:'success'},{id:'demo-event-02',time:'13:58:44',key:'remoteCaption',category:'connection',target:'ChatGPT',result:'pending'},{id:'demo-event-01',time:'13:42:20',key:'folderEvent',category:'directory',target:'demo-root-03',result:'success'}],
+ selection:{type:'workspace',id:'demo-profile-local'},editType:'root',pendingRemoval:null,dialogReturn:new Map()
+};
+const $=id=>document.getElementById(id);
+const tr=key=>COPY[state.locale][key]||key;
+const esc=value=>String(value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
+const svg=name=>'<svg viewBox="0 0 24 24" aria-hidden="true">'+(ICONS[name]||ICONS.grid)+'</svg>';
+const pill=(label,tone)=>'<span class="pill '+(tone||'')+'">'+(tone?'<span class="dot"></span>':'')+esc(label)+'</span>';
+const activeConnection=()=>state.connections.find(c=>c.id===state.activeConnectionId)||state.connections[0]||null;
+const transportName=c=>c.transport==='cloudflare'?'Cloudflare Named Tunnel':'OpenAI Secure Tunnel';
+const endpoint=c=>'127.0.0.1:'+c.port;
+const chosen=(type,id)=>state.selection.type===type&&state.selection.id===id?' selected':'';
+const eventName=item=>item.name||tr(item.key);
+function record(key,category,target,result){
+ const c=state.connections.find(x=>x.id===target)||activeConnection(),root=state.roots.find(x=>x.id===target);
+ state.logs.unshift({id:'demo-event-'+String(state.nextEvent++).padStart(2,'0'),createdAt:new Date().toISOString(),time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),key,category,target,result:result||'success',workspaceId:root?.id||'',workspaceName:root?.name||'',transport:c?.transport||'',connectionId:c?.id||''});
+ state.logs=state.logs.slice(0,100);
+}
+
+function navigate(page){
+ if(!NAV.some(n=>n.page===page))return;
+ state.page=page;renderAll();closeDrawers();
+}
+
+function addRoot(name,path,options={}){
+ const resolved=options.pathResolved!==false;
+ const item={id:'demo-root-'+String(state.nextRoot++).padStart(2,'0'),name:name||'New folder',path:resolved?(path||'D:\\Demo\\New-Folder'):(options.folderName||name),enabled:resolved,pathResolved:resolved,source:options.source||'manual'};
+ state.roots.push(item);state.scopeGroup='readonly';state.rootFocus='';state.selection={type:'root',id:item.id};record('folderEvent','directory',item.id);renderAll();return item.id;
+}
+function editRoot(id,name,path,options={}){
+ const root=state.roots.find(x=>x.id===id);if(!root)return false;
+ Object.assign(root,{name,path:options.pathResolved===false?(options.folderName||name):path,pathResolved:options.pathResolved!==false,source:options.source||'manual',enabled:options.pathResolved!==false});
+ record('folderEvent','directory',id);renderAll();return true;
+}
+function rootStatus(root){return root.pathResolved===false?tr('selectedFolder'):tr(root.enabled?'enabled':'paused');}
+function rootTone(root){return root.pathResolved===false?'warn':root.enabled?'good':'';}
+
+
+function addConnection(name,config={}){
+ const transport=config.transport==='cloudflare'?'cloudflare':'openai',port=Number(config.port|| (transport==='cloudflare'?8788:8787));
+ if(!Number.isInteger(port)||port<1024||port>65535)return false;
+ const number=state.nextConnection++,id='demo-connection-'+String(number).padStart(2,'0');
+ const item={id,name:name||'New connection',tunnelId:'demo-tunnel-'+number,transport,port,profile:config.profile||'local-profile',stage:'stopped',previewStatus:'',lastUsed:''};
+ state.connections.push(item);state.activeConnectionId=id;state.selection={type:'connection',id};record('connectionEvent','connection',id);renderAll();return id;
+}
+
+function toggleRoot(id){
+ const item=state.roots.find(r=>r.id===id);if(!item||item.pathResolved===false)return false;
+ item.enabled=!item.enabled;record('folderEvent','directory',id);renderAll();return item.enabled;
+}
+function previewConnection(id,action,key='connectionEvent'){
+ const item=state.connections.find(c=>c.id===id);
+ if(!item||!['connect','reconnect','disconnect','cancel'].includes(action))return false;
+ item.previewStatus=action==='cancel'?'':action;item.stage=['connect','reconnect'].includes(action)?'ready':'stopped';
+ if(item.stage==='ready')item.lastUsed=new Date().toISOString();
+ state.activeConnectionId=id;record(key,'connection',id);renderAll();return true;
+}
+function useConnection(id){
+ const item=state.connections.find(c=>c.id===id);if(!item)return false;
+ state.activeConnectionId=id;previewConnection(id,'connect','reusedEvent');navigate('overview');return true;
+}
+function editConnection(id,name,config){
+ const c=state.connections.find(x=>x.id===id),port=Number(config.port);
+ if(!c||!Number.isInteger(port)||port<1024||port>65535||!['openai','cloudflare'].includes(config.transport))return false;
+ Object.assign(c,{name,port,profile:config.profile||'local-profile',transport:config.transport,stage:'stopped'});
+ record('connectionEvent','connection',id);renderAll();return true;
+}
+
+function removeItem(type,id){
+ const key=type==='root'?'roots':type==='connection'?'connections':null;if(!key)return false;
+ if(!state[key].some(item=>item.id===id))return false;
+ record(type==='root'?'folderEvent':'connectionEvent',type==='root'?'directory':'connection',id);
+ state[key]=state[key].filter(item=>item.id!==id);
+ if(type==='root'){state.commandRules=state.commandRules.filter(x=>x.rootId!==id);state.customRules=state.customRules.filter(x=>x.rootId!==id);if(state.rootFocus===id)state.rootFocus='';}
+ if(state.activeConnectionId===id)state.activeConnectionId=state.connections[0]?.id||'';
+ if(state.selection.id===id)state.selection={type:'workspace',id:'demo-profile-local'};
+ renderAll();return true;
+}
+
+function filterRoots(query){const q=String(query||'').toLowerCase();return state.roots.filter(r=>(r.name+' '+r.path+' '+r.id).toLowerCase().includes(q));}
+function filterLogs(query,result,filters={}){
+ const q=String(query||'').toLowerCase(),from=filters.from?new Date(filters.from).getTime():-Infinity,until=filters.until?new Date(filters.until).getTime():Infinity;
+ return state.logs.filter(x=>(!result||x.result===result)&&(!filters.workspace||x.workspaceId===filters.workspace)&&(!filters.transport||x.transport===filters.transport)&&(!filters.category||x.category===filters.category)&&new Date(x.createdAt).getTime()>=from&&new Date(x.createdAt).getTime()<=until&&(eventName(x)+' '+x.target+' '+x.time+' '+x.id+' '+x.workspaceName).toLowerCase().includes(q));
+}
+function toggleSidebar(){
+ if(window.matchMedia('(max-width:760px)').matches){const sidebar=$('sidebar');sidebar.classList.toggle('open');$('backdrop').classList.toggle('show',sidebar.classList.contains('open'));renderSidebar();return;}
+ state.collapsed=!state.collapsed;renderSidebar();
+}
+function renderSidebar(){
+ $('app').classList.toggle('collapsed',state.collapsed);
+ const expanded=window.matchMedia('(max-width:760px)').matches?$('sidebar').classList.contains('open'):!state.collapsed;
+ $('sidebarToggle').textContent=expanded?'<':'>';$('sidebarToggle').setAttribute('aria-expanded',String(expanded));$('sidebarToggle').setAttribute('aria-label',state.locale==='zh'?(expanded?'收起侧栏':'展开侧栏'):(expanded?'Collapse sidebar':'Expand sidebar'));
+}
+function setFontSize(value){const n=Number(value);if(![12,14,16,18].includes(n))return false;state.fontSize=n;document.documentElement.style.setProperty('--body-size',n+'px');document.documentElement.style.setProperty('--font-scale',n/14);renderAll();return true;}
+
+
+function setLocale(locale){state.locale=locale==='en'?'en':'zh';document.documentElement.lang=state.locale==='zh'?'zh-CN':'en';document.documentElement.dataset.locale=state.locale;renderAll();}
+function toggleTheme(){state.theme=state.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=state.theme;renderAll();}
+function setTheme(theme){state.theme=theme==='light'?'light':'dark';document.documentElement.dataset.theme=state.theme;renderAll();}
+
+function navMarkup(){
+ return NAV.map(n=>'<button class="nav-item'+(state.page===n.page?' active':'')+'" data-page="'+n.page+'" title="'+esc(tr(n.page))+'"'+(state.page===n.page?' aria-current="page"':'')+' aria-label="'+esc(tr(n.page))+'">'+svg(n.icon)+'<span class="nav-label">'+esc(tr(n.page))+'</span>'+(n.page==='connections'?'<span class="nav-count">'+state.connections.length+'</span>':n.page==='access'?'<span class="nav-count">'+state.roots.length+'</span>':'')+'</button>').join('');
+}
+function renderFlow(connection){
+ if(!connection)return '<div class="empty">'+esc(tr('noConnections'))+'</div>';
+ const ready=connection.stage==='ready';
+ const node=function(type,icon,title,code,status,tone,kind){
+  return '<button class="flow-node'+chosen(type,connection.id)+'" data-select="'+type+'" data-id="'+esc(connection.id)+'"><div class="node-top"><span class="node-icon">'+svg(icon)+'</span><div><div class="node-type">'+kind+'</div><div class="node-title">'+esc(title)+'</div></div></div><div class="node-code">'+esc(code)+'</div><div class="node-footer">'+pill(status,tone)+'</div></button>';
+ };
+ return '<div class="flow">'+node('mcp','server',tr('local'),endpoint(connection),tr(ready?'ready':'stopped'),ready?'good':'','LOCAL MCP')+'<div class="edge" aria-hidden="true"><span>MCP</span></div>'+node('tunnel','link',transportName(connection),connection.tunnelId,tr(ready?'online':'offline'),ready?'good':'','TRANSPORT')+'<div class="edge" aria-hidden="true"><span>APP</span></div>'+node('remote','cloud','ChatGPT','workspace: demo',tr('remote'),'warn','CHATGPT')+'</div>';
+}
+function rootListMarkup(roots){
+ return roots.length?roots.map(r=>'<button class="list-row" data-select="root" data-id="'+esc(r.id)+'"><span class="folder-symbol">'+svg('folder')+'</span><span class="row-text"><span class="row-name">'+esc(r.name)+'</span><span class="row-meta">'+esc(r.path)+'</span></span>'+pill(rootStatus(r),rootTone(r))+'</button>').join(''):'<div class="empty">'+esc(tr('empty'))+'</div>';
+}
+function timelineMarkup(logs){
+ return logs.length?logs.map(x=>'<button class="timeline-item'+(x.result==='pending'?' warn':'')+'" data-select="event" data-id="'+esc(x.id)+'"><span class="timeline-point"></span><span class="timeline-text"><span class="row-name">'+esc(eventName(x))+'</span><span class="row-meta">'+esc(x.time)+' · '+esc(x.target)+'</span></span>'+pill(tr(x.result==='pending'?'pending':'success'),x.result==='pending'?'warn':'')+'</button>').join(''):'<div class="empty">'+esc(tr('empty'))+'</div>';
+}
+function renderOverview(){
+ const enabled=state.roots.filter(r=>r.enabled).length,c=activeConnection();
+ $('metrics').innerHTML='<div class="metric"><div class="metric-label">'+svg('link')+esc(tr('connections'))+'</div><div class="metric-value mono">'+state.connections.length+'<small>'+esc(tr('connectionCount'))+'</small></div></div><div class="metric"><div class="metric-label">'+svg('folder')+esc(tr('access'))+'</div><div class="metric-value mono">'+enabled+' / '+state.roots.length+'<small>'+esc(tr('enabled'))+'</small></div></div><div class="metric"><div class="metric-label">'+svg('cloud')+'ChatGPT</div><div class="metric-value">'+pill(tr('remote'),'warn')+'</div></div>';
+ $('overviewFlow').innerHTML=renderFlow(c);$('topologyTag').textContent=c?.name||tr('noConnections');
+ $('overviewRoots').innerHTML=rootListMarkup(state.roots.slice(0,3));$('recentTimeline').innerHTML=timelineMarkup(state.logs.slice(0,3));
+ $('connectionControls').innerHTML=c?'<div class="control-fields"><label>'+esc(tr('chooseConnection'))+'<select class="select" id="activeConnectionSelect">'+state.connections.map(x=>'<option value="'+esc(x.id)+'"'+(x.id===c.id?' selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label></div><div class="control-status"><span class="mono">'+esc(endpoint(c))+'</span>'+pill(tr(c.stage==='ready'?'online':'offline'),c.stage==='ready'?'good':'')+'</div><div class="toolbar"><button class="btn primary" data-action="connect" data-id="'+esc(c.id)+'">'+esc(tr('connect'))+'</button><button class="icon-btn" data-action="reconnect" data-id="'+esc(c.id)+'" title="'+esc(tr('reconnect'))+'" aria-label="'+esc(tr('reconnect'))+'">'+svg('refresh')+'</button><button class="btn" data-action="disconnect" data-id="'+esc(c.id)+'">'+esc(tr('disconnect'))+'</button></div><p class="inline-note">'+esc(transportName(c))+' · '+esc(c.profile)+'</p>':'<div class="empty">'+esc(tr('noConnections'))+'</div><button class="btn" data-page="connections">'+esc(tr('addConnection'))+'</button>';
+}
+
+function renderConnections(){
+ $('historyCount').textContent=String(state.connections.length);
+ $('connectionHistory').innerHTML='<table class="data-table history-table"><thead><tr>'+['name','transport','port','profile','lastUsed','status'].map(k=>'<th scope="col">'+esc(tr(k))+'</th>').join('')+'<th scope="col"></th></tr></thead><tbody>'+(state.connections.length?state.connections.map(c=>'<tr class="'+(c.id===state.activeConnectionId?'active':'')+'"><td><span class="history-name">'+esc(c.name)+'</span><span class="history-meta">'+esc(c.id)+'</span></td><td>'+esc(transportName(c))+'</td><td class="mono">'+esc(endpoint(c))+'</td><td class="mono">'+esc(c.profile)+'</td><td class="mono">'+esc(c.lastUsed?new Date(c.lastUsed).toLocaleString(state.locale==='zh'?'zh-CN':'en-US'):tr('never'))+'</td><td>'+pill(tr(c.stage==='ready'?'online':'offline'),c.stage==='ready'?'good':'')+'</td><td><div class="history-actions"><button class="btn" data-action="use-connection" data-id="'+esc(c.id)+'">'+esc(tr('use'))+'</button><button class="icon-btn" data-action="edit-connection" data-id="'+esc(c.id)+'" title="'+esc(tr('edit'))+'" aria-label="'+esc(tr('edit'))+'">'+svg('sliders')+'</button><button class="icon-btn" data-action="remove-connection" data-id="'+esc(c.id)+'" title="'+esc(tr('remove'))+'" aria-label="'+esc(tr('remove'))+'">'+svg('trash')+'</button></div></td></tr>').join(''):'<tr><td colspan="7" class="table-empty">'+esc(tr('noConnections'))+'</td></tr>')+'</tbody></table>';
+}
+
+function scopeMarkup(){
+ const groups=[['readonly','folder','readonlyGroup'],['command','terminal','commandGroup'],['custom','sliders','customGroup']];
+ return groups.map(([group,icon,key])=>{
+  const entries=group==='readonly'?state.roots:group==='command'?state.commandRules:state.customRules,open=state.treeOpen[group];
+  const children=state.roots.map(root=>{
+   const selected=state.rootFocus===root.id&&state.scopeGroup===group;
+   const rootButton='<button class="tree-entry'+(!root.enabled?' paused':'')+(selected?' active':'')+'" data-scope-root="'+group+'" data-id="'+esc(root.id)+'" title="'+esc(root.path)+'">'+svg('folder')+'<span class="tree-name">'+esc(root.name)+'</span><span class="dot" style="color:var(--'+(root.pathResolved===false?'warn':root.enabled?'good':'muted')+')"></span></button>';
+   if(group==='readonly')return rootButton.replace('data-scope-root','data-tree');
+   const branchKey=group+':'+root.id,branchOpen=Boolean(state.branchesExpanded[branchKey]),rules=entries.filter(r=>r.rootId===root.id);
+   const leafMarkup=group==='command'?COMMANDS.map(c=>{
+    const granted=rules.find(r=>r.command===c.label);
+    return '<button class="tree-entry tree-template'+(!granted?' locked':'')+'" data-scope-root="command" data-id="'+esc(root.id)+'" title="'+esc(tr(granted?'authorized':'locked'))+'">'+svg('terminal')+'<span class="tree-name mono">'+esc(c.label)+'</span>'+(!granted?svg('key'):'')+'</button>';
+   }).join(''):(rules.length?rules.map(rule=>'<button class="tree-entry tree-template" data-tree="custom" data-id="'+esc(rule.id)+'">'+svg('sliders')+'<span class="tree-name mono">'+esc(rule.pattern)+'</span></button>').join(''):'<button class="tree-entry tree-template" data-action="permissions-root" data-id="'+esc(root.id)+'">'+svg('plus')+'<span>'+esc(tr('addRule'))+'</span></button>');
+   return '<div class="tree-branch"><div class="tree-header"><button class="tree-toggle" data-action="toggle-branch" data-id="'+esc(branchKey)+'" aria-expanded="'+branchOpen+'" aria-label="'+esc(tr(branchOpen?'collapse':'expand')+' '+root.name)+'">'+svg('chevron')+'</button>'+rootButton+'</div><div'+(!branchOpen?' hidden':'')+'>'+leafMarkup+'</div></div>';
+  }).join('');
+  return '<div class="tree-section"><div class="tree-header"><button class="tree-toggle" data-action="toggle-group" data-id="'+group+'" aria-expanded="'+open+'" aria-label="'+esc(tr(open?'collapse':'expand')+' '+tr(key))+'">'+svg('chevron')+'</button><button class="tree-group'+(state.scopeGroup===group?' active':'')+'" data-group="'+group+'">'+svg(icon)+'<span>'+esc(tr(key))+'</span><span class="nav-count">'+entries.length+'</span></button></div><div class="tree-children"'+(!open?' hidden':'')+'>'+(children||'<div class="tree-empty">'+esc(tr('noSpaces'))+'</div>')+'</div></div>';
+ }).join('');
+}
+function toggleTreeGroup(group){if(!['readonly','command','custom'].includes(group))return false;state.treeOpen[group]=!state.treeOpen[group];renderRoots();document.querySelector('[data-action="toggle-group"][data-id="'+group+'"]')?.focus();return true;}
+function toggleTreeBranch(key){const [group,rootId]=key.split(':');if(!['command','custom'].includes(group)||!state.roots.some(r=>r.id===rootId))return false;state.branchesExpanded[key]=!state.branchesExpanded[key];renderRoots();document.querySelector('[data-action="toggle-branch"][data-id="'+key+'"]')?.focus();return true;}
+function selectScopeRoot(group,id){
+ if(!['readonly','command','custom'].includes(group)||!state.roots.some(r=>r.id===id))return false;
+ state.scopeGroup=group;state.rootFocus=id;state.selection={type:'root',id};state.treeOpen[group]=true;state.branchesExpanded[group+':'+id]=true;renderRoots();return true;
+}
+
+function renderRoots(){
+ $('scopeTree').innerHTML=scopeMarkup();$('directoryHeading').textContent=tr(state.scopeGroup==='readonly'?'directoryList':state.scopeGroup==='command'?'commandGroup':'customGroup');
+ const roots=filterRoots($('rootSearch').value).filter(r=>!state.rootFocus||r.id===state.rootFocus);
+ if(state.scopeGroup==='readonly'){
+  $('rootList').innerHTML=roots.length?roots.map(r=>'<div class="root-management-row'+(state.selection.id===r.id?' selected':'')+'"><button class="root-select" data-tree="readonly" data-id="'+esc(r.id)+'"><span class="folder-symbol">'+svg('folder')+'</span><span class="row-text"><span class="row-name">'+esc(r.name)+'</span><span class="row-meta">'+esc(r.path)+'</span></span></button>'+pill(rootStatus(r),rootTone(r))+'<div class="toolbar">'+(r.pathResolved===false?'<button class="icon-btn" data-action="resolve-root" data-id="'+esc(r.id)+'" aria-label="'+esc(tr('resolvePath'))+'" title="'+esc(tr('resolvePath'))+'">'+svg('sliders')+'</button>':'<button class="icon-btn" data-action="toggle-root" data-id="'+esc(r.id)+'" aria-label="'+esc(tr(r.enabled?'pause':'resume'))+'" title="'+esc(tr(r.enabled?'pause':'resume'))+'">'+svg(r.enabled?'pause':'play')+'</button>')+'<button class="icon-btn danger" data-action="remove-root" data-id="'+esc(r.id)+'" aria-label="'+esc(tr('remove'))+'" title="'+esc(tr('remove'))+'">'+svg('trash')+'</button></div></div>').join(''):'<div class="empty">'+esc(tr('empty'))+'</div>';return;
+ }
+ const command=state.scopeGroup==='command';
+ const strip='<div class="developer-strip"><span class="row-name">'+esc(tr('developerMode'))+'</span><button class="btn" data-action="permissions">'+svg('key')+esc(tr(state.developer?'authorized':'grant'))+'</button></div>';
+ $('rootList').innerHTML=strip+(roots.length?roots.map(root=>{
+  const rules=(command?state.commandRules:state.customRules).filter(r=>r.rootId===root.id);
+  const header='<div class="template-root-head"><span class="folder-symbol">'+svg('folder')+'</span><span class="row-text"><span class="row-name">'+esc(root.name)+'</span><span class="row-meta">'+esc(root.path)+'</span></span><button class="btn" data-action="permissions-root" data-id="'+esc(root.id)+'">'+svg('key')+esc(tr('grant'))+'</button></div>';
+  const rows=command?COMMANDS.map(template=>{
+   const rule=rules.find(r=>r.command===template.label),canRun=state.developer&&root.enabled&&root.pathResolved!==false&&rule;
+   return '<div class="rule-row"><span class="node-icon">'+svg('terminal')+'</span><span class="row-text"><span class="row-name mono">'+esc(template.label)+'</span><span class="row-meta">'+esc(template.description)+'</span></span>'+pill(tr(canRun?'authorized':'locked'),canRun?'good':'')+'<button class="icon-btn" data-action="'+(canRun?'run-command':'permissions-root')+'" data-id="'+esc(canRun?rule.id:root.id)+'" title="'+esc(tr(canRun?'run':'grant'))+'" aria-label="'+esc(tr(canRun?'run':'grant'))+'">'+svg(canRun?'play':'key')+'</button></div>';
+  }).join(''):(rules.length?rules.map(rule=>'<div class="rule-row"><span class="node-icon">'+svg('sliders')+'</span><span class="row-text"><span class="row-name mono">'+esc(rule.pattern)+'</span><span class="row-meta">'+esc(tr('readOnly'))+'</span></span><button class="icon-btn" data-action="permissions-root" data-id="'+esc(root.id)+'" title="'+esc(tr('edit'))+'" aria-label="'+esc(tr('edit'))+'">'+svg('sliders')+'</button><button class="icon-btn danger" data-action="remove-rule" data-id="'+esc(rule.id)+'" title="'+esc(tr('remove'))+'" aria-label="'+esc(tr('remove'))+'">'+svg('trash')+'</button></div>').join(''):'<div class="rule-placeholder"><span>'+esc(tr('noCustom'))+'</span><button class="btn" data-action="permissions-root" data-id="'+esc(root.id)+'">'+svg('plus')+esc(tr('addRule'))+'</button></div>');
+  return header+rows;
+ }).join(''):'<div class="empty">'+esc(tr('empty'))+'</div>');
+}
+
+function currentLogFilters(){return {workspace:$('logWorkspace').value,transport:$('logTransport').value,category:$('logCategory').value,from:$('logFrom').value,until:$('logUntil').value};}
+function renderLogs(){
+ const logs=filterLogs($('logSearch').value,$('logFilter').value,currentLogFilters());
+ $('activityTimeline').innerHTML=timelineMarkup(logs.slice(0,3));$('eventCount').textContent=logs.length+' '+tr('activityCount');
+ $('logTable').innerHTML='<table class="data-table activity-table"><thead><tr>'+['time','directory','transport','event','target','result'].map(k=>'<th scope="col">'+esc(tr(k))+'</th>').join('')+'</tr></thead><tbody>'+(logs.length?logs.map(x=>'<tr><td class="mono">'+esc(new Date(x.createdAt).toLocaleString(state.locale==='zh'?'zh-CN':'en-US'))+'</td><td>'+esc(x.workspaceName||'—')+'</td><td>'+esc(x.transport?transportName(x):'—')+'</td><td><button class="table-event" data-select="event" data-id="'+esc(x.id)+'">'+esc(eventName(x))+'</button></td><td class="mono">'+esc(x.target)+'</td><td>'+pill(tr(x.result==='pending'?'pending':'success'),x.result==='pending'?'warn':'good')+'</td></tr>').join(''):'<tr><td class="table-empty" colspan="6">'+esc(tr('empty'))+'</td></tr>')+'</tbody></table>';
+}
+function fillSelect(id,options){
+ const n=$(id),old=n.value;n.innerHTML=options.map(([value,label])=>'<option value="'+esc(value)+'">'+esc(label)+'</option>').join('');n.value=options.some(x=>x[0]===old)?old:(options[0]?.[0]||'');
+}
+function renderLogFilters(){
+ const spaces=new Map(state.logs.filter(x=>x.workspaceId).map(x=>[x.workspaceId,x.workspaceName||x.workspaceId]));state.roots.forEach(r=>spaces.set(r.id,r.name));
+ fillSelect('logWorkspace',[['',tr('allSpaces')],...spaces]);
+ fillSelect('logTransport',[['',tr('allTransports')],['openai','OpenAI Secure Tunnel'],['cloudflare','Cloudflare Named Tunnel']]);
+ fillSelect('logFilter',[['',tr('allResults')],['success',tr('success')],['pending',tr('pending')]]);
+ fillSelect('logCategory',[['',tr('allCategories')],['connection',tr('connection')],['directory',tr('directory')],['command',tr('commandGroup')],['settings',tr('settings')]]);
+}
+
+function renderSettings(){
+ $('appearanceSettings').innerHTML='<div class="setting-row"><label for="themeSelect">'+esc(tr('theme'))+'</label><select class="select" id="themeSelect"><option value="dark"'+(state.theme==='dark'?' selected':'')+'>'+esc(tr('dark'))+'</option><option value="light"'+(state.theme==='light'?' selected':'')+'>'+esc(tr('light'))+'</option></select></div><div class="setting-row"><label for="languageSelect">'+esc(tr('language'))+'</label><select class="select" id="languageSelect"><option value="zh"'+(state.locale==='zh'?' selected':'')+'>简体中文</option><option value="en"'+(state.locale==='en'?' selected':'')+'>English</option></select></div><div class="setting-row"><label for="fontSizeSelect">'+esc(tr('fontSize'))+'</label><select class="select" id="fontSizeSelect">'+[12,14,16,18].map(n=>'<option value="'+n+'"'+(n===state.fontSize?' selected':'')+'>'+n+' px</option>').join('')+'</select></div>';
+ $('aboutSettings').innerHTML='<div class="about-brand"><span class="brand-mark">LP</span><div><strong>Local-Probe</strong><small>界面样稿 · 修订 5</small></div></div><p class="inline-note">'+esc(tr('aboutNote'))+'</p><div class="setting-row"><span>'+esc(tr('checkUpdate'))+'</span><button class="btn" data-action="check-update">'+esc(tr('checkUpdate'))+'</button></div>'+(state.updateChecked?'<p class="inline-note">'+esc(tr('updateHelp'))+'</p>':'');
+ $('healthSettings').innerHTML=state.healthChecked?healthMarkup()+'<div class="toolbar"><button class="btn" data-action="check-health">'+esc(tr('checkHealth'))+'</button><button class="btn" data-action="health-report">'+esc(tr('report'))+'</button></div>':'<div class="health-items"><div class="health-line"><span>'+esc(tr('programRuntime'))+'</span>'+pill(tr('notChecked'))+'</div></div><button class="btn" data-action="check-health">'+esc(tr('checkHealth'))+'</button>';
+ $('backupSettings').innerHTML=(state.backup?'<div class="backup-summary">'+[['connections',state.backup.data.connections.length],['directory',state.backup.data.roots.length],['rule',state.backup.data.commandRules.length+state.backup.data.customRules.length]].map(([key,n])=>'<div class="metric"><div class="metric-label">'+esc(tr(key))+'</div><div class="metric-value mono">'+n+'</div></div>').join('')+'</div>':'')+'<div class="saved-config">'+svg('folder')+'<span class="mono muted">'+esc(state.backup?new Date(state.backup.createdAt).toLocaleString(state.locale==='zh'?'zh-CN':'en-US'):tr('noBackup'))+'</span></div><div class="toolbar"><button class="btn" data-action="create-backup">'+esc(tr('createBackup'))+'</button><button class="btn" data-action="restore-backup"'+(!state.backup?' disabled':'')+'>'+esc(tr('restoreBackup'))+'</button></div>';
+}
+
+function renderAll(){
+ if(!document.querySelector('.app'))return;
+ const labels={crumb:state.page,workspaceLabel:'workspace',topologyHeading:'topology',folderHeading:'folders',recentHeading:'recent',allFolders:'all',allActivity:'all',controlHeading:'controls',scopeHeading:'scopeMap',directoryHeading:'directoryList',sequenceHeading:'sequence',recordHeading:'records',appearanceHeading:'appearance',aboutHeading:'about',healthHeading:'health',backupHeading:'backup',manageButton:'manage',addConnectionButton:'addConnection',addRootButton:'addRoot',exportButton:'export',navTitle:'nav',editCancel:'cancel',confirmCancel:'cancel',confirmRemove:'remove',exportClose:'close',newConnectionHeading:'newConnectionHeading',newConnectionDescription:'newConnectionDescription',historyHeading:'history',permissionsButton:'permissions',workspaceFilterLabel:'directory',transportFilterLabel:'transport',resultFilterLabel:'result',fromFilterLabel:'from',untilFilterLabel:'until',categoryFilterLabel:'category',resetFilters:'reset',browseButton:'browse',itemTransportLabel:'transport',itemPortLabel:'port',itemProfileLabel:'profile',permissionTitle:'permissions',permissionNote:'permissionNote',developerModeLabel:'developerMode',permissionRootLabel:'grantRoot',customPatternLabel:'customPattern',permissionHelp:'permissionHelp',permissionCancel:'cancel',permissionSave:'save',maintenanceClose:'close'};
+ Object.entries(labels).forEach(([id,key])=>$(id).textContent=tr(key));
+ $('pageNav').innerHTML=navMarkup();$('quickNav').innerHTML=navMarkup();
+ $('projectIcon').innerHTML=svg('folder');$('newConnectionIcon').innerHTML=svg('plus');$('scopeSummary').innerHTML=svg('key')+'<span>'+esc(tr('scope'))+'</span>';$('scopeSummaryMeta').textContent=tr('readonlyGroup')+' / '+tr('commandGroup');
+ $('scopeAll').innerHTML=svg('grid');$('scopeAll').setAttribute('title',tr('onlySelected'));$('scopeAll').setAttribute('aria-label',tr('onlySelected'));
+ $('themeBtn').innerHTML=svg(state.theme==='dark'?'sun':'moon');$('themeBtn').setAttribute('aria-label',tr('theme'));$('localeBtn').textContent=state.locale==='zh'?'中 / EN':'EN / 中';
+ document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===state.page));document.querySelectorAll('.page-title').forEach(h=>{h.textContent=tr(h.closest('.page').id);h.classList.toggle('en',state.locale==='en');});
+ $('rootSearch').placeholder=tr('searchRoots');$('rootSearch').setAttribute('aria-label',tr('searchRoots'));$('logSearch').placeholder=tr('searchLogs');$('logSearch').setAttribute('aria-label',tr('searchLogs'));
+ renderSidebar();renderLogFilters();renderOverview();renderConnections();renderRoots();renderLogs();renderSettings();
+}
+
+function selectObject(type,id){
+ state.selection={type,id};
+ if(['connection','mcp','tunnel','remote'].includes(type)&&state.connections.some(c=>c.id===id))state.activeConnectionId=id;
+ if(type==='root'){state.scopeGroup='readonly';state.rootFocus=id;navigate('access');return;}
+ if(type==='event'){const x=state.logs.find(y=>y.id===id);if(x)showJSON(tr('event'),x);return;}
+ renderAll();
+}
+function selectTree(group,id){
+ if(!['readonly','command','custom'].includes(group))return;
+ const root=state.roots.find(r=>r.id===id);if(root){selectScopeRoot(group,id);return;}
+ const rule=(group==='command'?state.commandRules:state.customRules).find(r=>r.id===id);
+ state.scopeGroup=group;state.rootFocus=rule?.rootId||'';state.selection={type:group,id:id||''};state.treeOpen[group]=true;renderRoots();
+}
+
+function toast(message){const node=$('toast');if(!node)return;node.textContent=message;node.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>node.classList.remove('show'),1800);}
+function closeDrawers(){$('sidebar')?.classList.remove('open');$('backdrop')?.classList.remove('show');renderSidebar();}
+
+function openDialog(id,focusId){const dialog=$(id);state.dialogReturn.set(dialog,document.activeElement);dialog.showModal();requestAnimationFrame(()=>$(focusId)?.focus());}
+function closeDialog(dialog){if(dialog?.open)dialog.close();}
+function openEdit(type,id=''){
+ state.editType=type;state.editConnectionId=type==='connection'?id:'';state.editRootId=type==='root'?id:'';
+ const item=(type==='root'?state.roots:state.connections).find(x=>x.id===id);
+ state.pendingFolder=type==='root'&&item?.pathResolved===false?{name:item.path}:null;
+ $('editTitle').textContent=tr(item?'edit':type==='root'?'addRoot':'addConnection');$('nameLabel').textContent=tr('name');$('pathLabel').textContent=tr('path');
+ $('rootFields').hidden=type!=='root';$('connectionFields').hidden=type!=='connection';$('itemPath').required=type==='root'&&!state.pendingFolder;$('itemPort').required=type==='connection';$('itemPort').disabled=type!=='connection';$('itemTransport').disabled=type!=='connection';$('itemProfile').disabled=type!=='connection';
+ $('itemName').value=item?.name||'';$('itemPath').value=type==='root'&&item?.pathResolved!==false?(item?.path||''):'';$('itemPath').setCustomValidity('');$('itemPath').placeholder=state.pendingFolder?tr('resolvePath'):'D:\\Work\\Project';$('browseNote').hidden=!state.pendingFolder;
+ if(state.pendingFolder)$('browseNote').textContent=tr('browseHelp')+state.pendingFolder.name+' · '+tr('browsePathHelp');
+ $('itemTransport').value=item?.transport||'openai';$('itemPort').value=item?.port||8787;$('itemProfile').value=item?.profile||'local-profile';$('editSubmit').textContent=tr('save');openDialog('editDialog','itemName');
+}
+
+function folderPicked(files){
+ const relative=files?.[0]?.webkitRelativePath||'',name=relative.split('/')[0];if(!name)return false;
+ state.pendingFolder={name};$('itemName').value=name;$('itemPath').value='';$('itemPath').required=false;$('itemPath').setCustomValidity('');$('itemPath').placeholder=tr('resolvePath');
+ $('browseNote').textContent=tr('browseHelp')+name+' · '+tr('browsePathHelp');$('browseNote').hidden=false;$('editSubmit').focus();return true;
+}
+function saveRootForm(name,path){
+ const selected=state.pendingFolder,unresolved=!path&&selected;
+ if(!unresolved&&!isAbsolutePath(path)){$('itemPath').setCustomValidity(tr('invalidPath'));$('itemPath').reportValidity();return false;}
+ const options={source:selected?'folder-picker':'manual',pathResolved:!unresolved,folderName:selected?.name};
+ const id=state.editRootId?editRoot(state.editRootId,name,path,options):addRoot(name,path,options);
+ if(id)state.pendingFolder=null;return Boolean(id);
+}
+
+function isAbsolutePath(path){return /^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+|\/)/.test(path);}
+
+
+function openRemove(type,id){
+ const item=state[type==='root'?'roots':'connections'].find(x=>x.id===id);if(!item)return;
+ state.pendingRemoval={type:type,id:id};$('confirmTitle').textContent=tr('confirm')+' · '+item.name;$('confirmCopy').textContent=tr('removeCopy');openDialog('confirmDialog','confirmCancel');
+}
+function showJSON(title,data){$('exportTitle').textContent=title;$('exportBody').textContent=JSON.stringify(data,null,2);openDialog('exportDialog','exportClose');}
+function showExport(){showJSON(tr('export'),{source:'html-preview',events:filterLogs($('logSearch').value,$('logFilter').value,currentLogFilters())});}
+function openPermissions(rootId){
+ $('developerMode').checked=state.developer;fillSelect('permissionRoot',state.roots.map(r=>[r.id,r.name]));
+ const selected=rootId||state.rootFocus;if(state.roots.some(r=>r.id===selected))$('permissionRoot').value=selected;
+ $('permissionSave').disabled=state.roots.length===0;renderPermissionRules();openDialog('permissionDialog',state.scopeGroup==='custom'?'customPattern':'developerMode');
+}
+
+function renderPermissionRules(){
+ const rootId=$('permissionRoot').value;
+ $('permissionRules').innerHTML=COMMANDS.map(c=>'<div class="rule-item"><label><input type="checkbox" name="commandRule" value="'+c.id+'"'+(state.commandRules.some(x=>x.rootId===rootId&&x.command===c.label)?' checked':'')+'>'+svg('terminal')+'<span class="mono">'+esc(c.label)+'</span></label><small>'+esc(c.description)+'</small></div>').join('');
+ $('customPattern').value=state.customRules.find(x=>x.rootId===rootId)?.pattern||'';
+}
+function savePermissions(developer,rootId,commandIds,pattern){
+ if(!state.roots.some(r=>r.id===rootId))return false;
+ const allowed=COMMANDS.filter(c=>commandIds.includes(c.id));
+ state.developer=Boolean(developer);state.commandRules=state.commandRules.filter(x=>x.rootId!==rootId);state.customRules=state.customRules.filter(x=>x.rootId!==rootId);
+ if(state.developer)allowed.forEach(c=>state.commandRules.push({id:'rule-'+state.nextRule++,rootId,command:c.label}));
+ if(pattern.trim())state.customRules.push({id:'rule-'+state.nextRule++,rootId,pattern:pattern.trim()});
+ record('permissionEvent','directory',rootId);renderAll();return true;
+}
+function runCommand(id){
+ const rule=state.commandRules.find(x=>x.id===id),root=state.roots.find(r=>r.id===rule?.rootId);
+ if(!state.developer||!rule||!root?.enabled||root.pathResolved===false)return false;
+ state.maintenance={type:'command',id};$('maintenanceTitle').textContent=tr('confirmRun');$('maintenanceBody').innerHTML='<p class="mono">'+esc(rule.command)+' · '+esc(root.name)+'</p><p>'+esc(tr('runWarning'))+'</p>';$('maintenanceConfirm').hidden=false;$('maintenanceConfirm').textContent=tr('confirmRun');openDialog('maintenanceDialog','maintenanceClose');return true;
+}
+function confirmCommand(id){
+ const rule=state.commandRules.find(x=>x.id===id),root=state.roots.find(r=>r.id===rule?.rootId);
+ if(!state.developer||!root?.enabled||root.pathResolved===false||state.maintenance?.type!=='command'||state.maintenance.id!==id)return false;
+ state.maintenance=null;record('commandEvent','command',root.id,'pending');renderAll();closeDialog($('maintenanceDialog'));toast(tr('commandUnexecuted'));return true;
+}
+function showMaintenance(title,body){state.maintenance=null;$('maintenanceTitle').textContent=title;$('maintenanceBody').innerHTML=body;$('maintenanceConfirm').hidden=true;openDialog('maintenanceDialog','maintenanceClose');}
+function healthChecks(){
+ const ids=state.roots.map(r=>r.id);
+ return [{key:'uiStructure',ok:new Set(ids).size===ids.length},{key:'uiConnections',ok:state.connections.every(c=>Number.isInteger(c.port)&&c.port>=1024&&c.port<=65535&&['openai','cloudflare'].includes(c.transport))},{key:'uiRules',ok:[...state.commandRules,...state.customRules].every(r=>ids.includes(r.rootId))}];
+}
+function healthMarkup(){return '<div class="health-report">'+(state.healthReport||healthChecks()).map(x=>'<div class="health-line"><span>'+esc(tr(x.key))+'</span>'+pill(tr(x.ok?'passed':'failed'),x.ok?'good':'warn')+'</div>').join('')+['programRuntime','tunnelHealth'].map(k=>'<div class="health-line"><span>'+esc(tr(k))+'</span>'+pill(tr('notConnected'))+'</div>').join('')+'</div><p class="inline-note">'+esc(tr('healthHelp'))+'</p>';}
+function createBackup(){
+ state.backup={createdAt:new Date().toISOString(),data:JSON.parse(JSON.stringify({connections:state.connections,roots:state.roots,developer:state.developer,commandRules:state.commandRules,customRules:state.customRules,activeConnectionId:state.activeConnectionId}))};
+ record('workspaceEvent','settings','backup');renderAll();return true;
+}
+function restoreBackup(){
+ if(!state.backup||state.maintenance?.type!=='restore')return false;
+ const data=JSON.parse(JSON.stringify(state.backup.data));data.connections.forEach(c=>{c.stage='stopped';c.previewStatus='';});Object.assign(state,data);
+ state.rootFocus='';state.selection={type:'workspace',id:'demo-profile-local'};state.scopeGroup='readonly';state.maintenance=null;record('workspaceEvent','settings','restore');renderAll();return true;
+}
+
+
+function act(action,id){
+ if(action==='add-root'||action==='add-connection'){openEdit(action==='add-root'?'root':'connection');return;}
+ if(action==='edit-connection'){openEdit('connection',id);return;}
+ if(action==='use-connection'){useConnection(id);return;}
+ if(action==='browse'){$('folderPicker').value='';$('folderPicker').click();return;}
+ if(action==='permissions'){openPermissions();return;}
+ if(action==='permissions-root'){openPermissions(id);return;}
+ if(action==='resolve-root'){openEdit('root',id);return;}
+ if(action==='toggle-group'){toggleTreeGroup(id);return;}
+ if(action==='toggle-branch'){toggleTreeBranch(id);return;}
+ if(action==='run-command'){runCommand(id);return;}
+ if(action==='toggle-root'){toggleRoot(id);return;}
+ if(action==='remove-root'||action==='remove-connection'){openRemove(action==='remove-root'?'root':'connection',id);return;}
+ if(action==='remove-rule'){state.commandRules=state.commandRules.filter(x=>x.id!==id);state.customRules=state.customRules.filter(x=>x.id!==id);record('permissionEvent','directory',state.rootFocus);renderAll();return;}
+ if(action==='scope-all'){state.rootFocus='';state.selection={type:'workspace',id:''};$('rootSearch').value='';renderRoots();return;}
+ if(['connect','reconnect','disconnect'].includes(action)){previewConnection(id,action);return;}
+ if(action==='export'){showExport();return;}
+ if(action==='reset-filters'){['logWorkspace','logTransport','logCategory','logFrom','logUntil','logSearch','logFilter'].forEach(id=>$(id).value='');renderLogs();return;}
+ if(action==='check-update'){state.updateChecked=true;renderSettings();showMaintenance(tr('updateResult'),'<p>'+esc(tr('updateHelp'))+'</p>');return;}
+ if(action==='check-health'){state.healthChecked=true;state.healthReport=healthChecks();renderSettings();showMaintenance(tr('healthReport'),healthMarkup());return;}
+ if(action==='health-report'){showMaintenance(tr('healthReport'),healthMarkup());return;}
+ if(action==='create-backup'){createBackup();toast(tr('backupCreated'));return;}
+ if(action==='restore-backup'&&state.backup){state.maintenance={type:'restore'};$('maintenanceTitle').textContent=tr('backupRestore');$('maintenanceBody').innerHTML='<p>'+esc(tr('backupWarning'))+'</p>';$('maintenanceConfirm').hidden=false;$('maintenanceConfirm').textContent=tr('restoreBackup');openDialog('maintenanceDialog','maintenanceClose');}
+}
+
+function bindUI(){
+ document.addEventListener('click',event=>{
+  const action=event.target.closest('[data-action]');if(action){if(action.dataset.action==='close-dialog')closeDialog(action.closest('dialog'));else act(action.dataset.action,action.dataset.id);return;}
+  const page=event.target.closest('[data-page]');if(page){closeDialog($('navDialog'));navigate(page.dataset.page);return;}
+  const group=event.target.closest('[data-group]');if(group){selectTree(group.dataset.group,'');return;}
+  const scopeRoot=event.target.closest('[data-scope-root]');if(scopeRoot){selectScopeRoot(scopeRoot.dataset.scopeRoot,scopeRoot.dataset.id);return;}
+  const tree=event.target.closest('[data-tree]');if(tree){selectTree(tree.dataset.tree,tree.dataset.id);return;}
+  const selected=event.target.closest('[data-select]');if(selected)selectObject(selected.dataset.select,selected.dataset.id);
+ });
+ $('sidebarToggle').addEventListener('click',toggleSidebar);$('backdrop').addEventListener('click',closeDrawers);$('themeBtn').addEventListener('click',toggleTheme);$('localeBtn').addEventListener('click',()=>setLocale(state.locale==='zh'?'en':'zh'));
+ $('rootSearch').addEventListener('input',renderRoots);$('logSearch').addEventListener('input',renderLogs);
+ ['logWorkspace','logTransport','logFilter','logFrom','logUntil','logCategory'].forEach(id=>$(id).addEventListener('change',renderLogs));
+ $('folderPicker').addEventListener('change',event=>folderPicked(event.target.files));
+ document.addEventListener('change',event=>{
+  const el=event.target;if(el.id==='themeSelect')setTheme(el.value);if(el.id==='languageSelect')setLocale(el.value);if(el.id==='fontSizeSelect')setFontSize(el.value);
+  if(el.id==='activeConnectionSelect'){state.activeConnectionId=el.value;renderOverview();}
+  if(el.id==='itemTransport'&&!state.editConnectionId)$('itemPort').value=el.value==='cloudflare'?8788:8787;
+  if(el.id==='permissionRoot')renderPermissionRules();
+ });
+ $('editForm').addEventListener('submit',event=>{
+  event.preventDefault();const name=$('itemName').value.trim();if(!name)return;
+  if(state.editType==='root'){if(!saveRootForm(name,$('itemPath').value.trim()))return;}
+  else{const config={transport:$('itemTransport').value,port:$('itemPort').value,profile:$('itemProfile').value.trim()};if(state.editConnectionId){if(!editConnection(state.editConnectionId,name,config))return;}else if(!addConnection(name,config))return;}
+  closeDialog($('editDialog'));navigate(state.editType==='root'?'access':'connections');
+ });
+ $('itemPath').addEventListener('input',()=> $('itemPath').setCustomValidity(''));
+ $('confirmRemove').addEventListener('click',()=>{const item=state.pendingRemoval;if(item)removeItem(item.type,item.id);state.pendingRemoval=null;closeDialog($('confirmDialog'));});
+ $('permissionForm').addEventListener('submit',event=>{event.preventDefault();const ids=[...document.querySelectorAll('input[name="commandRule"]:checked')].map(el=>el.value);if(savePermissions($('developerMode').checked,$('permissionRoot').value,ids,$('customPattern').value))closeDialog($('permissionDialog'));});
+ $('maintenanceConfirm').addEventListener('click',()=>{if(state.maintenance?.type==='command'){confirmCommand(state.maintenance.id);return;}if(state.maintenance?.type==='restore'&&restoreBackup())closeDialog($('maintenanceDialog'));});
+ document.querySelectorAll('dialog').forEach(dialog=>{
+  dialog.addEventListener('close',()=>{if(dialog.id==='confirmDialog')state.pendingRemoval=null;if(dialog.id==='maintenanceDialog')state.maintenance=null;const old=state.dialogReturn.get(dialog);state.dialogReturn.delete(dialog);requestAnimationFrame(()=>{if(old?.isConnected)old.focus();else document.querySelector('.page.active .page-title')?.focus();});});
+ });
+ document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();if(!document.querySelector('dialog[open]'))openDialog('navDialog','navTitle');}if(event.key==='Escape'&&!document.querySelector('dialog[open]'))closeDrawers();});
+ window.addEventListener('resize',()=>{closeDrawers();});
+}
+
+function boot(){if(!document.querySelector('.app'))return;bindUI();renderAll();}
+state.logs.forEach((x,index)=>{
+ const date=new Date();const parts=x.time.split(':').map(Number);date.setHours(parts[0],parts[1],parts[2],0);x.createdAt=date.toISOString();
+ const root=state.roots.find(r=>r.id===x.target);x.workspaceId=root?.id||'';x.workspaceName=root?.name||'';x.transport=index===3?'cloudflare':'openai';x.connectionId=index===3?'demo-connection-02':'demo-connection-01';
+});
+boot();
+</script>
+</body>
+</html>
