@@ -1,5 +1,14 @@
 # 实际实施状态与验证记录
 
+## 2026-10-07 补充：源码整合与 MIT Preview 发布准备
+
+- 用户授权整理有效源码合并 main 并推送，选择自有代码 MIT；新增根 LICENSE，保留 WebView2 fork/Microsoft SDK 和模块许可证。README 改为 R11.3 Desktop 入口，更新官方 Tunnel 本机控制说明，不将配置意图宣传为命令执行、写文件或多连接同时运行。
+- 按 use-system-ssh-git 使用系统 Git 与既有 SSH 密钥，认证成功。提交使用 GitHub noreply 邮箱；不读取/打印认证令牌，不改全局 Git/系统策略。现有公共 Git 历史不重写，第三方版权声明不删改。忽略本机 Serena/GSD 新草稿、运行配置、备份、日志与构建目录；已跟踪历史保留。当前工作树中的个人安装/机器路径已改为环境参数、相对路径或标明脱敏的证据字段。
+- Gitleaks 8.30.1 官方 Windows 下载经官方 checksum 核验；本地历史（新增整合提交后 69 commits）、index 快照与首轮包源码扫描均未发现密钥/令牌。使用全量脱敏日志；扫描不能保证识别所有隐私。本机 `.runtime`/`.secrets` 不作为上传或测试输入。
+- 源码提交 `cd2a20cf6535c95082256b3b3c388c057602f2a4` 的干净本地 clone：全项目 test/race/vet/build、fork edge test/race、前端 24 VM 场景、两个 5s fuzz、旧 Preview 打包契约以及新版 ZIP 排除/许可/哈希/干净解包重建检查通过。包含 17 个 Go 模块许可记录。未启动用户 MCP/Tunnel、未停止正在运行的 GUI，不覆盖其 EXE。
+- 首次非 Quick acceptance FAIL：只有 tracked safety policy 将两个上游 `COREWEBVIEW2_*KEY*` 键盘枚举 `.go` 文件误报为 secret-like；其它本地自动检查全部通过。修复仅豁免这两个确切上游路径，不豁免目录、任意源码或 `.runtime` 下同名文件；生产 predicate 的 11 项回归 PASS。修正后的完整预检及最终合并/资产结果在发布准备时继续核验，不预填成功。
+- `docs/RELEASE_NOTES_R11.3.zh-CN.md` 为拟议 `v0.11.3-preview.1` 的说明草稿。新增 CI Desktop 干净打包入口，入口存在不等于远端 CI 已通过。不创建稳定发布或自动公开 Release；生产 `release_ready=false` 与执行硬门保持不变。
+
 ## 2026-10-07 补充：R11.3 原生主题确认与重试
 
 - 用户反馈浅色切换后原生区域曾保持深色，随后反馈已自行恢复。本轮未复现该用户窗口的间歇故障，不能将下列代码缺陷断言为其唯一触发原因：旧同步器发出请求即缓存成功、失败不重试，并依赖后台 snapshot 成功才同步；原生错误诊断代码未进入日志 allowlist。

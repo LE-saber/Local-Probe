@@ -37,6 +37,7 @@ jobs:
         continue-on-error: false
         run: |
           $reportPath = Join-Path $env:RUNNER_TEMP 'local-probe-r9-acceptance.json'
+          & ./scripts/Test-LocalProbeAcceptancePaths.ps1
           & pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
             -File .\scripts\acceptance.ps1 -Json *> $reportPath
           $acceptanceExit = $LASTEXITCODE

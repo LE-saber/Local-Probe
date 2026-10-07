@@ -33,6 +33,19 @@ function Get-FullPath([string]$Path) {
     return [IO.Path]::GetFullPath($Path)
 }
 
+function Test-TrackedCredentialPath([string]$NormalizedPath) {
+    # These exact upstream Go declarations describe keyboard events, not keys
+    # used for authentication. Do not exempt a directory or all *.go files.
+    if ($NormalizedPath -ieq 'third_party/go-webview2/pkg/edge/COREWEBVIEW2_KEY_EVENT_KIND.go' -or
+        $NormalizedPath -ieq 'third_party/go-webview2/pkg/edge/COREWEBVIEW2_PHYSICAL_KEY_STATUS.go') {
+        return $false
+    }
+    $leaf = [IO.Path]::GetFileName($NormalizedPath)
+    return ($NormalizedPath -match '(?i)(^|/)\.runtime(/|$)' -or
+        $leaf -match '(?i)(^|[-_.])(key|token|secret)([-_.]|$)' -or
+        $leaf -match '(?i)\.(key|token|secret)(\.[^/]*)?$')
+}
+
 function Add-Check(
     [System.Collections.Generic.List[object]]$Checks,
     [string]$Name,
@@ -437,9 +450,7 @@ try {
             foreach ($trackedPath in @($trackedInfo.lines)) {
                 $normalized = $trackedPath.Replace('\', '/')
                 $leaf = [IO.Path]::GetFileName($normalized)
-                if ($normalized -match '(?i)(^|/)\.runtime(/|$)' -or
-                    $leaf -match '(?i)(^|[-_.])(key|token|secret)([-_.]|$)' -or
-                    $leaf -match '(?i)\.(key|token|secret)(\.[^/]*)?$') {
+                if (Test-TrackedCredentialPath $normalized) {
                     $secretPathCount++
                 }
                 $isFixture = $normalized -match '(?i)(^|/)(testdata|fixtures?|manual-test-targets|benchmark)(/|$)' -or
