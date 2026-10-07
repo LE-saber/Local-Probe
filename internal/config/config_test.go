@@ -70,6 +70,76 @@ func TestParseStrictAndReferences(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRootMetadataIsProfileScopedAndLegacyConfigRemainsActive(t *testing.T) {
+	legacy, err := Parse([]byte(validJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, _ := legacy.Profile("read-project")
+	if !reflect.DeepEqual(profile.RootIDs(), []string{"project"}) || profile.WorkspaceRoots() != nil {
+		t.Fatalf("legacy root scope changed: roots=%v metadata=%v", profile.RootIDs(), profile.WorkspaceRoots())
+	}
+	encodedLegacy, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encodedLegacy, []byte(`"workspace_roots"`)) {
+		t.Fatalf("legacy config unexpectedly gained metadata: %s", encodedLegacy)
+	}
+
+	active, err := NewWorkspaceRootMetadata("project", "Project", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := NewWorkspaceRootMetadata("private", "Private", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, err := NewProfileWithWorkspaceRoots("read-project", []string{"project"}, []string{"read_file"}, nil, nil, []WorkspaceRootMetadata{active, paused})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := legacy.Profiles()
+	profiles[0] = profileA
+	next, err := NewWithCommandProfiles(legacy.SchemaVersion(), legacy.Roots(), profiles, legacy.Connections(), legacy.Credentials(), legacy.EnvironmentTools(), legacy.DeveloperMode(), legacy.CommandProfiles())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := next.Profiles()[0].RootIDs(); !reflect.DeepEqual(got, []string{"project"}) {
+		t.Fatalf("paused profile scope = %v, want only project", got)
+	}
+	if got := next.Profiles()[1].RootIDs(); !reflect.DeepEqual(got, []string{"private"}) {
+		t.Fatalf("other profile scope changed = %v", got)
+	}
+	data, err := json.Marshal(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedA, _ := parsed.Profile("read-project")
+	if len(parsedA.WorkspaceRoots()) != 2 || parsedA.WorkspaceRoots()[1].Enabled() {
+		t.Fatalf("paused metadata did not round trip: %+v", parsedA.WorkspaceRoots())
+	}
+}
+
+func TestInvalidWorkspaceRootMetadataFailsClosed(t *testing.T) {
+	invalid := []string{
+		strings.Replace(validJSON, `{"id": "read-project", "roots": ["project"],`, `{"id": "read-project", "roots": ["project"], "workspace_roots": [{"root_id":"project","display_name":"bad/name","enabled":true}],`, 1),
+		strings.Replace(validJSON, `{"id": "read-project", "roots": ["project"],`, `{"id": "read-project", "roots": ["project"], "workspace_roots": [{"root_id":"project","display_name":"","enabled":true}],`, 1),
+		strings.Replace(validJSON, `{"id": "read-project", "roots": ["project"],`, `{"id": "read-project", "roots": ["project"], "workspace_roots": [{"root_id":"project","enabled":false}],`, 1),
+		strings.Replace(validJSON, `{"id": "read-project", "roots": ["project"],`, `{"id": "read-project", "roots": ["project"], "workspace_roots": [{"root_id":"project","enabled":true},{"root_id":"project","enabled":true}],`, 1),
+		strings.Replace(validJSON, `{"id": "read-project", "roots": ["project"],`, `{"id": "read-project", "roots": ["project"], "workspace_roots": [],`, 1),
+	}
+	for i, input := range invalid {
+		if _, err := Parse([]byte(input)); err == nil || !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid metadata case %d accepted or returned wrong error: %v", i, err)
+		}
+	}
+}
+
 func TestEnvironmentToolsValidationAndLegacyCompatibility(t *testing.T) {
 	base, err := Parse([]byte(validJSON))
 	if err != nil {

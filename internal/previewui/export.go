@@ -57,6 +57,7 @@ var safeExportKeys = map[string]struct{}{
 	"available": {}, "allowed_connection_ids": {}, "rules": {}, "id": {}, "kind": {}, "variant_ids": {}, "slot_kinds": {}, "reason": {},
 	"records": {}, "dropped": {}, "corrupt": {},
 	"timestamp": {}, "component": {}, "event_type": {}, "severity": {}, "outcome": {}, "duration_ms": {},
+	"management_events": {}, "root_ids": {},
 	"build": {}, "version": {}, "goos": {}, "goarch": {}, "health": {}, "omissions": {}, "corrupt_records": {},
 }
 
@@ -116,7 +117,7 @@ func validExportString(key, value string) bool {
 		return sanitizeLabel(value) != ""
 	case "config_revision":
 		return sanitizeRevision(value) != ""
-	case "connection_id", "profile_id", "id", "variant_ids", "allowed_connection_ids":
+	case "connection_id", "profile_id", "id", "variant_ids", "allowed_connection_ids", "root_ids":
 		return sanitizeIdentifier(value) != "omitted"
 	case "transport":
 		return sanitizeTransport(value) != "unknown"

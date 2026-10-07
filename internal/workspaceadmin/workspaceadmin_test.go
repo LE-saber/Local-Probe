@@ -122,6 +122,127 @@ func TestListRequiresExplicitConnectionAndNeverProjectsOtherProfiles(t *testing.
 	}
 }
 
+func TestProfileReferenceCountDetectsSharedConnectionProfile(t *testing.T) {
+	env := newTestWorkspace(t, false)
+	initial, err := env.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := initial.Config()
+	connections := append(cfg.Connections(), config.NewConnection("second-local", "Second", "profile-a", "cred-a", true))
+	next, err := config.NewWithCommandProfiles(cfg.SchemaVersion(), cfg.Roots(), cfg.Profiles(), connections, cfg.Credentials(), cfg.EnvironmentTools(), cfg.DeveloperMode(), cfg.CommandProfiles())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.store.SaveIfRevision(initial.Revision(), next); err != nil {
+		t.Fatal(err)
+	}
+	revision, references, err := env.manager.ProfileReferenceCount(context.Background(), DefaultConnectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if references != 2 {
+		t.Fatalf("profile reference count = %d, want 2", references)
+	}
+	if current, err := env.store.Load(); err != nil || current.Revision() != revision {
+		t.Fatalf("reference count revision = %q, current=%q, err=%v", revision, current.Revision(), err)
+	}
+}
+
+func TestUpdatePauseAndResumeAreProfileScoped(t *testing.T) {
+	env := newTestWorkspace(t, true)
+	pausedValue := false
+	paused, err := env.manager.Update(context.Background(), DefaultConnectionID, env.initial.Revision(), "shared", RootUpdate{Enabled: &pausedValue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared WorkspaceRoot
+	for _, root := range paused.Roots {
+		if root.ID == "shared" {
+			shared = root
+		}
+	}
+	if shared.ID == "" || shared.Enabled {
+		t.Fatalf("paused workspace projection = %+v", paused.Roots)
+	}
+	stored, err := env.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, _ := stored.Config().Profile("profile-a")
+	profileB, _ := stored.Config().Profile("profile-b")
+	if reflect.DeepEqual(profileA.RootIDs(), []string{"project", "shared"}) || !reflect.DeepEqual(profileB.RootIDs(), []string{"shared"}) {
+		t.Fatalf("profile scopes after pause: A=%v B=%v", profileA.RootIDs(), profileB.RootIDs())
+	}
+	if _, ok := stored.Config().Root("shared"); !ok {
+		t.Fatal("pausing profile A deleted its shared root entity")
+	}
+	other, err := env.manager.List(context.Background(), "other-connection")
+	if err != nil || len(other.Roots) != 1 || !other.Roots[0].Enabled {
+		t.Fatalf("pause in profile A affected profile B: roots=%+v err=%v", other.Roots, err)
+	}
+
+	resumedValue := true
+	resumed, err := env.manager.Update(context.Background(), DefaultConnectionID, paused.Revision, "shared", RootUpdate{Enabled: &resumedValue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, _ = mustLoadConfig(t, env.store).Profile("profile-a")
+	if !reflect.DeepEqual(profileA.RootIDs(), []string{"project", "shared"}) {
+		t.Fatalf("profile A did not resume: %v (revision %s)", profileA.RootIDs(), resumed.Revision)
+	}
+}
+
+func TestRemovingPausedRegistrationPreservesOtherProfileRootReference(t *testing.T) {
+	env := newTestWorkspace(t, true)
+	pausedValue := false
+	paused, err := env.manager.Update(context.Background(), DefaultConnectionID, env.initial.Revision(), "shared", RootUpdate{Enabled: &pausedValue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := env.manager.Remove(context.Background(), DefaultConnectionID, paused.Revision, []string{"shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := mustLoadConfig(t, env.store)
+	if _, ok := stored.Root("shared"); !ok {
+		t.Fatal("removing paused registration deleted a root still authorized by another profile")
+	}
+	last, err := env.manager.Remove(context.Background(), "other-connection", removed.Revision, []string{"shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored = mustLoadConfig(t, env.store)
+	if _, ok := stored.Root("shared"); ok {
+		t.Fatal("root entity remained after every profile and command reference was removed")
+	}
+	if len(last.Roots) != 0 {
+		t.Fatalf("last profile still lists removed root: %+v", last.Roots)
+	}
+}
+
+func TestUpdateDisplayNameDoesNotChangeEffectiveAuthorization(t *testing.T) {
+	env := newTestWorkspace(t, false)
+	name := "Codebase"
+	updated, err := env.manager.Update(context.Background(), DefaultConnectionID, env.initial.Revision(), "project", RootUpdate{DisplayName: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, _ := mustLoadConfig(t, env.store).Profile("profile-a")
+	if !reflect.DeepEqual(profile.RootIDs(), []string{"project"}) || len(updated.Roots) != 1 || updated.Roots[0].DisplayName != name {
+		t.Fatalf("label update changed authorization or projection: profile=%v roots=%+v", profile.RootIDs(), updated.Roots)
+	}
+}
+
+func mustLoadConfig(t *testing.T, store *config.FileStore) config.Config {
+	t.Helper()
+	snapshot, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot.Config()
+}
+
 func TestAddMultipleFoldersIsIdempotentAndScopedToOneConnection(t *testing.T) {
 	env := newTestWorkspace(t, false)
 	result, err := env.manager.Add(context.Background(), DefaultConnectionID, env.initial.Revision(), []string{env.second, env.third, env.second})

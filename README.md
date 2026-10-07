@@ -1,6 +1,27 @@
 # Local-Probe
 
-Local-Probe 是一个面向 Windows 的只读 MCP Preview：让 ChatGPT 在明确授权的本地工作空间内进行目录发现、文件检索、范围读取、有限环境探查和审计查看。当前交付是可构建的 Preview 源码，不是生产级 supervisor、安装器或签名发布包。
+Local-Probe 是面向 Windows 的本地 MCP 工具与桌面 GUI：让 ChatGPT 在明确授权的工作空间内发现、搜索和读取文件。当前版本为 **R11.3 Desktop Preview**，自有源码采用 [MIT](LICENSE)；它不是生产级 supervisor、安装器或签名稳定版。
+
+## 桌面 GUI（推荐）
+
+要求 Windows x64、WebView2 Runtime、PowerShell 7；从源码构建还需要 Go 1.25+（本机验证 Go 1.26.0）。官方 `cloudflared` / `tunnel-client` 需按所选通道自行准备，不随包分发。
+
+```powershell
+git clone --branch main git@github.com:LE-saber/Local-Probe.git
+Set-Location .\Local-Probe
+pwsh -NoLogo -NoProfile -File .\scripts\Build-LocalProbeDesktop.ps1
+pwsh -NoLogo -NoProfile -File .\scripts\Start-LocalProbeDesktop.ps1
+```
+
+缺少配置时 GUI 仍可打开，不会自动授权磁盘或生成凭据。首次配置、两条通道和验证顺序见 [Desktop 操作说明](docs/DESKTOP_PREVIEW.zh-CN.md) 与 [部署说明](docs/DEPLOYMENT_PREVIEW.zh-CN.md)。现有配置保存在本机，切换 GUI 版本前从托盘退出旧实例，不只是关闭窗口。
+
+- 概览与连接：结构化链路状态、新建/编辑/复用历史连接；当前 GUI 管理一个选定连接，不声称已支持多连接同时运行。
+- 访问范围：文件树分区、目录浏览导入、授权暂停/移除、连接与目录级 deny/ignore 规则预览及离线保存。
+- 活动与设置：按目录/连接方式/时间筛选；诊断导出、原生备份保存/恢复、主题/语言/字号和健康状态。
+- 原生界面：PMv2 DPI 适配，页面/标题栏/右键菜单同步深浅主题；保留文本选择、复制及刷新。
+- 开发者页仅提供配置与命令模板管理；**实际命令、脚本、构建执行及写文件未开放**，`execution_available=false`。完整后端任务进度见 [R11 记录](docs/R11_BACKEND_PROGRESS.zh-CN.md)。
+
+Release 目前处于准备阶段，范围与已知限制见 [发布说明草稿](docs/RELEASE_NOTES_R11.3.zh-CN.md)。源码合并、可下载 Preview 与 production-ready 是不同状态。
 
 ## 5 分钟开始（Windows Preview）
 
@@ -9,16 +30,16 @@ Local-Probe 是一个面向 Windows 的只读 MCP Preview：让 ChatGPT 在明�
 | 方式 | 本地端口 | 身份 | GUI 一键连接 |
 | --- | ---: | --- | --- |
 | Cloudflare Preview（推荐） | `127.0.0.1:8788` | Cloudflare Access JWT | 支持 |
-| OpenAI Secure MCP Tunnel | `127.0.0.1:8787` | 本地 hop token + Platform Tunnel | 不支持，使用独立脚本 |
+| OpenAI Secure MCP Tunnel | `127.0.0.1:8787` | 本地 hop token + Platform Tunnel | 支持；需先完成独立凭据初始化 |
 
 新用户建议先阅读 [Windows Preview 部署](docs/DEPLOYMENT_PREVIEW.zh-CN.md)，它包含依赖、配置文件、Cloudflare route、工作空间、故障处理和两条链路的完整顺序。
 
 ### 克隆和检查
 
-如果当前 Preview 仍在功能分支：
+旧原生 Preview 的独立构建入口也保留在 main：
 
 ```powershell
-git clone --branch feat/cloudflare-mcp-ingress https://github.com/LE-saber/Local-Probe.git
+git clone --branch main git@github.com:LE-saber/Local-Probe.git
 Set-Location .\Local-Probe
 ```
 
@@ -37,9 +58,12 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
 推荐使用统一初始化入口：
 
 ```powershell
+$authorizedRoot = (Resolve-Path 'C:\replace-with-folder-you-authorize').Path
+
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\Setup-LocalProbePreview.ps1 `
-  -RepoRoot (Get-Location).Path
+  -RepoRoot (Get-Location).Path `
+  -AuthorizedRoot $authorizedRoot
 
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\Build-LocalProbePreview.ps1 `
@@ -76,13 +100,15 @@ GPT 能访问什么，取决于 profile 的 roots、tools、deny/ignore 和只�
 
 ## 重要边界
 
-Preview 的“一键连接”只覆盖 Cloudflare 8788 链路。OpenAI Secure MCP Tunnel 是另一条 8787 链路，需使用 [OpenAI Tunnel 部署说明](docs/TUNNEL_SETUP.zh-CN.md) 的 `Initialize-TunnelClient.ps1`、`Start-LocalProbeMcp.ps1` 和 `Start-TunnelClient.ps1`；不要同时启动两条链路。
+Preview 的“一键连接”支持 Cloudflare 8788 或 OpenAI 8787 链路。OpenAI Secure MCP Tunnel 需先按 [OpenAI Tunnel 部署说明](docs/TUNNEL_SETUP.zh-CN.md) 完成外部凭据初始化；之后可交给 GUI 管理，或使用独立脚本。不要让两套启动方式同时管理相同的 origin/端口。本机 ready 不等于 ChatGPT Workspace/真实调用验收成功。
 
 当前尚未完成或未声明：生产级 supervisor/service、真实 WFP/broker、代码签名、安装器、自动更新、Linux/macOS GUI、任意命令执行、写入工具、默认大规模索引、百万文件端到端证据和独立安全审查。`release_ready` 仍为 false。
 
 ## 文档索引
 
 - [Windows Preview 部署](docs/DEPLOYMENT_PREVIEW.zh-CN.md)：陌生用户的完整部署和故障排查入口；
+- [Desktop GUI 操作说明](docs/DESKTOP_PREVIEW.zh-CN.md)：新版界面、备份、规则与验证边界；
+- [R11.3 发布说明草稿](docs/RELEASE_NOTES_R11.3.zh-CN.md)：预发布范围与未交付功能；
 - [Preview 使用说明](docs/PREVIEW.zh-CN.md)：GUI、托盘、工作空间和诊断真实能力；
 - [开发指南](docs/DEVELOPMENT.zh-CN.md)：代码地图、测试、提交和安全边界；
 - [架构说明](docs/ARCHITECTURE.zh-CN.md)：MCP、两种 ingress、rootfs、Preview 和审计数据流；
@@ -124,4 +150,4 @@ ZIP 是便于人工测试的未签名 Preview 包，不代表 `release_ready=tru
 
 发布前还需要环境检查、Preview packaging 检查、非 Quick acceptance、干净目录构建和实际 Windows/Tunnel/ChatGPT 分层验收。脚本存在或 CI workflow 存在不等于对应外部链路已经通过。
 
-总体计划仍保存在 [MASTER_PLAN.zh-CN.md](docs/MASTER_PLAN.zh-CN.md)，但它是维护和决策记录，不是新用户的首要部署入口。仓库目前尚未选择对外发布许可证；正式发布前必须补充许可证和第三方通知审查。
+总体计划仍保存在 [MASTER_PLAN.zh-CN.md](docs/MASTER_PLAN.zh-CN.md)，但它是维护和决策记录，不是新用户的首要部署入口。自有代码使用 MIT，第三方许可证单独保留并随 Desktop 包提供 NOTICE；发布前仍需复核。

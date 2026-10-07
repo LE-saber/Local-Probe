@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/LE-saber/Local-Probe/internal/config"
 	"github.com/LE-saber/Local-Probe/internal/previewapp"
 	"github.com/LE-saber/Local-Probe/internal/previewconnect"
 	"github.com/LE-saber/Local-Probe/internal/previewui"
@@ -17,6 +18,7 @@ func main() {
 	defaultAudit := defaultAuditPath()
 	configPath := flag.String("config", defaultConfig, "local-probe config path")
 	auditDir := flag.String("audit-dir", defaultAudit, "local-probe audit directory")
+	transport := flag.String("transport", string(config.TransportCloudflareNamed), "connection transport: cloudflare_named or openai_runtime")
 	showVersion := flag.Bool("version", false, "show Preview version")
 	flag.Parse()
 	if *showVersion {
@@ -30,7 +32,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer app.Close()
-	controller, err := previewconnect.New(previewconnect.DefaultOptions(defaultRepoRoot()))
+	controllerOptions := previewconnect.DefaultOptions(defaultRepoRoot())
+	controllerOptions.Transport = config.ConnectionTransport(*transport)
+	controller, err := previewconnect.New(controllerOptions)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "preview_connector_invalid")
 		os.Exit(1)

@@ -1,6 +1,6 @@
 # ChatGPT App / OpenAI Tunnel 本机准备
 
-本文只描述 OpenAI Secure MCP Tunnel 的 8787 独立路径。它不是 Windows Preview GUI 的一键连接方式；Preview 使用 Cloudflare Access + cloudflared 的 8788 路径。两者请二选一，完整选择和首次部署顺序见 [Windows Preview 部署](DEPLOYMENT_PREVIEW.zh-CN.md)。
+本文描述 OpenAI Secure MCP Tunnel 的 8787 路径。完成这里的客户端与外部凭据初始化后，既可使用独立 PowerShell 脚本，也可用 `Start-LocalProbePreview.ps1 -Transport openai_runtime` 让 Windows Preview 管理它本次启动的 MCP 与 tunnel-client。它与 Cloudflare Access + cloudflared 的 8788 路径二选一，完整选择和首次部署顺序见 [Windows Preview 部署](DEPLOYMENT_PREVIEW.zh-CN.md)。
 
 本文只覆盖 Windows 本机的官方 `tunnel-client` 准备和真实账户联调入口。
 它不把本地预检写成已经完成的 P01/P05 真实调用证据；只有目标账户实际完成

@@ -69,6 +69,7 @@ func (r Root) clone() Root {
 type Profile struct {
 	id             string
 	rootIDs        []string
+	workspaceRoots []WorkspaceRootMetadata
 	tools          []string
 	denyPatterns   []string
 	ignorePatterns []string
@@ -78,6 +79,13 @@ type Profile struct {
 func (p Profile) ID() string { return p.id }
 
 func (p Profile) RootIDs() []string { return append([]string(nil), p.rootIDs...) }
+
+// WorkspaceRoots returns profile-scoped display and enablement metadata. A
+// disabled entry is retained here but must not appear in RootIDs, which is
+// the effective authorization scope consumed by runtime code.
+func (p Profile) WorkspaceRoots() []WorkspaceRootMetadata {
+	return cloneWorkspaceRootMetadata(p.workspaceRoots)
+}
 
 func (p Profile) Tools() []string { return append([]string(nil), p.tools...) }
 
@@ -91,24 +99,57 @@ func (p Profile) ReadOnly() bool { return p.readOnly }
 
 func (p Profile) clone() Profile {
 	p.rootIDs = append([]string(nil), p.rootIDs...)
+	p.workspaceRoots = cloneWorkspaceRootMetadata(p.workspaceRoots)
 	p.tools = append([]string(nil), p.tools...)
 	p.denyPatterns = append([]string(nil), p.denyPatterns...)
 	p.ignorePatterns = append([]string(nil), p.ignorePatterns...)
 	return p
 }
 
+// WorkspaceRootMetadata is local UI metadata scoped to one access profile.
+// It is never a global root enable flag: a shared root may remain enabled for
+// another profile while paused in this one.
+type WorkspaceRootMetadata struct {
+	rootID      string
+	displayName string
+	enabled     bool
+}
+
+func NewWorkspaceRootMetadata(rootID, displayName string, enabled bool) (WorkspaceRootMetadata, error) {
+	metadata := WorkspaceRootMetadata{rootID: rootID, displayName: displayName, enabled: enabled}
+	if err := validateWorkspaceRootMetadata(metadata, "workspace_roots"); err != nil {
+		return WorkspaceRootMetadata{}, err
+	}
+	return metadata, nil
+}
+
+func (m WorkspaceRootMetadata) RootID() string      { return m.rootID }
+func (m WorkspaceRootMetadata) DisplayName() string { return m.displayName }
+func (m WorkspaceRootMetadata) Enabled() bool       { return m.enabled }
+
+func cloneWorkspaceRootMetadata(values []WorkspaceRootMetadata) []WorkspaceRootMetadata {
+	if values == nil {
+		return nil
+	}
+	copyOfValues := make([]WorkspaceRootMetadata, len(values))
+	copy(copyOfValues, values)
+	return copyOfValues
+}
+
 // Connection binds one authenticated ingress to one profile and one
 // credential reference. The reference is not a secret and is never resolved
 // by this package.
 type Connection struct {
-	id            string
-	label         string
-	profileID     string
-	credentialRef string
-	enabled       bool
-	transport     ConnectionTransport
-	tunnelID      string
-	tunnelAlias   string
+	id               string
+	label            string
+	profileID        string
+	credentialRef    string
+	enabled          bool
+	transport        ConnectionTransport
+	tunnelID         string
+	tunnelAlias      string
+	desktopTransport ConnectionTransport
+	desktopPort      int
 }
 
 func (c Connection) ID() string { return c.id }
@@ -135,6 +176,15 @@ func (c Connection) TunnelAlias() string { return c.tunnelAlias }
 
 func (c Connection) clone() Connection { return c }
 
+// Desktop launch preferences are non-secret local UI metadata, not an
+// authenticated ingress or a grant. Existing transport validation is unchanged.
+func (c Connection) DesktopTransport() ConnectionTransport { return c.desktopTransport }
+func (c Connection) DesktopPort() int                      { return c.desktopPort }
+func (c Connection) WithDesktop(label string, transport ConnectionTransport, port int) Connection {
+	c.label, c.desktopTransport, c.desktopPort = label, transport, port
+	return c
+}
+
 // CredentialRef identifies protected credential material held elsewhere.
 type CredentialRef struct {
 	id   string
@@ -148,14 +198,15 @@ func (r CredentialRef) Kind() string { return r.kind }
 // Config is an immutable validated configuration value. Callers can inspect
 // it through the accessors below, but cannot mutate the backing slices.
 type Config struct {
-	schemaVersion    string
-	roots            []Root
-	profiles         []Profile
-	connections      []Connection
-	credentials      []CredentialRef
-	environmentTools []EnvironmentTool
-	developerMode    commandprofile.DeveloperMode
-	commandProfiles  []commandprofile.Profile
+	schemaVersion       string
+	roots               []Root
+	profiles            []Profile
+	connections         []Connection
+	credentials         []CredentialRef
+	environmentTools    []EnvironmentTool
+	developerMode       commandprofile.DeveloperMode
+	commandProfiles     []commandprofile.Profile
+	desktopConnectionID string
 }
 
 func NewRoot(id, rootPath string, denyPatterns []string) (Root, error) {
@@ -179,9 +230,16 @@ func NewProfile(id string, rootIDs, tools, denyPatterns []string) (Profile, erro
 // NewProfileWithIgnore creates a read-only profile with separate explicit
 // deny and discovery ignore patterns.
 func NewProfileWithIgnore(id string, rootIDs, tools, denyPatterns, ignorePatterns []string) (Profile, error) {
+	return NewProfileWithWorkspaceRoots(id, rootIDs, tools, denyPatterns, ignorePatterns, nil)
+}
+
+// NewProfileWithWorkspaceRoots creates a read-only profile with explicit
+// profile-scoped workspace display and enablement metadata.
+func NewProfileWithWorkspaceRoots(id string, rootIDs, tools, denyPatterns, ignorePatterns []string, workspaceRoots []WorkspaceRootMetadata) (Profile, error) {
 	p := Profile{
 		id:             id,
 		rootIDs:        append([]string(nil), rootIDs...),
+		workspaceRoots: cloneWorkspaceRootMetadata(workspaceRoots),
 		tools:          append([]string(nil), tools...),
 		denyPatterns:   append([]string(nil), denyPatterns...),
 		ignorePatterns: append([]string(nil), ignorePatterns...),
@@ -251,6 +309,13 @@ func NewWithCommandProfiles(schemaVersion string, roots []Root, profiles []Profi
 }
 
 func (c Config) SchemaVersion() string { return c.schemaVersion }
+
+func (c Config) DesktopConnectionID() string { return c.desktopConnectionID }
+func (c Config) WithDesktopConnectionID(id string) (Config, error) {
+	c = c.Clone()
+	c.desktopConnectionID = id
+	return c, c.validate()
+}
 
 func (c Config) Roots() []Root {
 	return cloneRoots(c.roots)
@@ -323,14 +388,15 @@ func (c Config) Credential(id string) (CredentialRef, bool) {
 
 func (c Config) Clone() Config {
 	return Config{
-		schemaVersion:    c.schemaVersion,
-		roots:            cloneRoots(c.roots),
-		profiles:         cloneProfiles(c.profiles),
-		connections:      cloneConnections(c.connections),
-		credentials:      append([]CredentialRef(nil), c.credentials...),
-		environmentTools: cloneEnvironmentTools(c.environmentTools),
-		developerMode:    c.developerMode.Clone(),
-		commandProfiles:  cloneCommandProfiles(c.commandProfiles),
+		schemaVersion:       c.schemaVersion,
+		roots:               cloneRoots(c.roots),
+		profiles:            cloneProfiles(c.profiles),
+		connections:         cloneConnections(c.connections),
+		credentials:         append([]CredentialRef(nil), c.credentials...),
+		environmentTools:    cloneEnvironmentTools(c.environmentTools),
+		developerMode:       c.developerMode.Clone(),
+		commandProfiles:     cloneCommandProfiles(c.commandProfiles),
+		desktopConnectionID: c.desktopConnectionID,
 	}
 }
 
@@ -405,6 +471,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 			Tools:          append([]string(nil), profile.tools...),
 			DenyPatterns:   append([]string(nil), profile.denyPatterns...),
 			IgnorePatterns: append([]string(nil), profile.ignorePatterns...),
+			WorkspaceRoots: marshalWorkspaceRootMetadata(profile.workspaceRoots),
 			ReadOnly:       &profileReadOnly,
 		}
 	}
@@ -412,14 +479,16 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		enabled := connection.enabled
 		transport := string(connection.Transport())
 		raw.Connections[i] = rawConnection{
-			ID:            connection.id,
-			Label:         connection.label,
-			ProfileID:     connection.profileID,
-			CredentialRef: connection.credentialRef,
-			Enabled:       &enabled,
-			Transport:     &transport,
-			TunnelID:      connection.tunnelID,
-			TunnelAlias:   connection.tunnelAlias,
+			ID:               connection.id,
+			Label:            connection.label,
+			ProfileID:        connection.profileID,
+			CredentialRef:    connection.credentialRef,
+			Enabled:          &enabled,
+			Transport:        &transport,
+			TunnelID:         connection.tunnelID,
+			TunnelAlias:      connection.tunnelAlias,
+			DesktopTransport: connection.desktopTransport,
+			DesktopPort:      connection.desktopPort,
 		}
 	}
 	for i, credential := range c.credentials {
@@ -432,6 +501,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 			CandidateDirs:  append([]string(nil), tool.candidateDirs...),
 		}
 	}
+	raw.DesktopConnectionID = c.desktopConnectionID
 	return json.Marshal(raw)
 }
 
@@ -523,14 +593,15 @@ func (s *Store) replace(expected string, next Config, checkExpected bool) (Snaps
 func revisionString(generation uint64) string { return fmt.Sprintf("r%d", generation) }
 
 type rawConfig struct {
-	SchemaVersion    string               `json:"schema_version"`
-	Roots            []rawRoot            `json:"roots"`
-	Profiles         []rawProfile         `json:"profiles"`
-	Connections      []rawConnection      `json:"connections"`
-	Credentials      []rawCredential      `json:"credentials"`
-	EnvironmentTools []rawEnvironmentTool `json:"environment_tools,omitempty"`
-	DeveloperMode    *rawDeveloperMode    `json:"developer_mode,omitempty"`
-	CommandProfiles  []rawCommandProfile  `json:"command_profiles,omitempty"`
+	DesktopConnectionID string               `json:"desktop_connection_id,omitempty"`
+	SchemaVersion       string               `json:"schema_version"`
+	Roots               []rawRoot            `json:"roots"`
+	Profiles            []rawProfile         `json:"profiles"`
+	Connections         []rawConnection      `json:"connections"`
+	Credentials         []rawCredential      `json:"credentials"`
+	EnvironmentTools    []rawEnvironmentTool `json:"environment_tools,omitempty"`
+	DeveloperMode       *rawDeveloperMode    `json:"developer_mode,omitempty"`
+	CommandProfiles     []rawCommandProfile  `json:"command_profiles,omitempty"`
 }
 
 type rawRoot struct {
@@ -541,23 +612,62 @@ type rawRoot struct {
 }
 
 type rawProfile struct {
-	ID             string   `json:"id"`
-	Roots          []string `json:"roots"`
-	Tools          []string `json:"tools"`
-	DenyPatterns   []string `json:"deny_patterns"`
-	IgnorePatterns []string `json:"ignore_patterns"`
-	ReadOnly       *bool    `json:"read_only"`
+	ID             string                     `json:"id"`
+	Roots          []string                   `json:"roots"`
+	Tools          []string                   `json:"tools"`
+	DenyPatterns   []string                   `json:"deny_patterns"`
+	IgnorePatterns []string                   `json:"ignore_patterns"`
+	ReadOnly       *bool                      `json:"read_only"`
+	WorkspaceRoots []rawWorkspaceRootMetadata `json:"workspace_roots,omitempty"`
+}
+
+type rawWorkspaceRootMetadata struct {
+	RootID      string `json:"root_id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Enabled     *bool  `json:"enabled"`
+}
+
+func marshalWorkspaceRootMetadata(values []WorkspaceRootMetadata) []rawWorkspaceRootMetadata {
+	if len(values) == 0 {
+		return nil
+	}
+	raw := make([]rawWorkspaceRootMetadata, len(values))
+	for i, value := range values {
+		enabled := value.enabled
+		raw[i] = rawWorkspaceRootMetadata{RootID: value.rootID, DisplayName: value.displayName, Enabled: &enabled}
+	}
+	return raw
+}
+
+func parseWorkspaceRootMetadata(values []rawWorkspaceRootMetadata) ([]WorkspaceRootMetadata, error) {
+	if values == nil {
+		return nil, nil
+	}
+	metadata := make([]WorkspaceRootMetadata, len(values))
+	for i, value := range values {
+		if value.Enabled == nil {
+			return nil, ErrInvalid
+		}
+		item, err := NewWorkspaceRootMetadata(value.RootID, value.DisplayName, *value.Enabled)
+		if err != nil {
+			return nil, err
+		}
+		metadata[i] = item
+	}
+	return metadata, nil
 }
 
 type rawConnection struct {
-	ID            string  `json:"id"`
-	Label         string  `json:"label"`
-	ProfileID     string  `json:"profile_id"`
-	CredentialRef string  `json:"credential_ref"`
-	Enabled       *bool   `json:"enabled"`
-	Transport     *string `json:"transport,omitempty"`
-	TunnelID      string  `json:"tunnel_id,omitempty"`
-	TunnelAlias   string  `json:"tunnel_alias,omitempty"`
+	DesktopTransport ConnectionTransport `json:"desktop_transport,omitempty"`
+	DesktopPort      int                 `json:"desktop_port,omitempty"`
+	ID               string              `json:"id"`
+	Label            string              `json:"label"`
+	ProfileID        string              `json:"profile_id"`
+	CredentialRef    string              `json:"credential_ref"`
+	Enabled          *bool               `json:"enabled"`
+	Transport        *string             `json:"transport,omitempty"`
+	TunnelID         string              `json:"tunnel_id,omitempty"`
+	TunnelAlias      string              `json:"tunnel_alias,omitempty"`
 }
 
 type rawCredential struct {
@@ -566,7 +676,7 @@ type rawCredential struct {
 }
 
 func fromRaw(raw rawConfig) (Config, error) {
-	c := Config{schemaVersion: raw.SchemaVersion}
+	c := Config{schemaVersion: raw.SchemaVersion, desktopConnectionID: raw.DesktopConnectionID}
 	c.developerMode = commandprofile.DefaultDeveloperMode()
 	if raw.DeveloperMode != nil {
 		mode, err := parseDeveloperMode(*raw.DeveloperMode)
@@ -585,9 +695,14 @@ func fromRaw(raw rawConfig) (Config, error) {
 		if profile.ReadOnly != nil {
 			readOnly = *profile.ReadOnly
 		}
+		workspaceRoots, err := parseWorkspaceRootMetadata(profile.WorkspaceRoots)
+		if err != nil {
+			return Config{}, fmt.Errorf("%w: profiles[%d].workspace_roots: invalid metadata", ErrInvalid, i)
+		}
 		c.profiles[i] = Profile{
 			id:             profile.ID,
 			rootIDs:        append([]string(nil), profile.Roots...),
+			workspaceRoots: workspaceRoots,
 			tools:          append([]string(nil), profile.Tools...),
 			denyPatterns:   append([]string(nil), profile.DenyPatterns...),
 			ignorePatterns: append([]string(nil), profile.IgnorePatterns...),
@@ -608,14 +723,16 @@ func fromRaw(raw rawConfig) (Config, error) {
 			transport = ConnectionTransport(*connection.Transport)
 		}
 		c.connections[i] = Connection{
-			id:            connection.ID,
-			label:         connection.Label,
-			profileID:     connection.ProfileID,
-			credentialRef: connection.CredentialRef,
-			enabled:       enabled,
-			transport:     transport,
-			tunnelID:      connection.TunnelID,
-			tunnelAlias:   connection.TunnelAlias,
+			id:               connection.ID,
+			label:            connection.Label,
+			profileID:        connection.ProfileID,
+			credentialRef:    connection.CredentialRef,
+			enabled:          enabled,
+			transport:        transport,
+			tunnelID:         connection.TunnelID,
+			tunnelAlias:      connection.TunnelAlias,
+			desktopTransport: connection.DesktopTransport,
+			desktopPort:      connection.DesktopPort,
 		}
 	}
 	c.credentials = make([]CredentialRef, len(raw.Credentials))
@@ -686,10 +803,21 @@ func (c Config) validate() error {
 				return invalid(field+".roots", "unknown root reference")
 			}
 		}
+		for metadataIndex, metadata := range profile.workspaceRoots {
+			if _, ok := rootIDs[metadata.rootID]; !ok {
+				return invalid(fmt.Sprintf("%s.workspace_roots[%d].root_id", field, metadataIndex), "unknown root reference")
+			}
+		}
 	}
 	connectionIDs := make(map[string]struct{}, len(c.connections))
 	for i, connection := range c.connections {
 		field := fmt.Sprintf("connections[%d]", i)
+		if connection.desktopTransport != "" && connection.desktopTransport != TransportOpenAIRuntime && connection.desktopTransport != TransportCloudflareNamed {
+			return invalid(field+".desktop_transport", "unsupported desktop transport")
+		}
+		if connection.desktopPort != 0 && (connection.desktopPort < 1024 || connection.desktopPort > 65535) {
+			return invalid(field+".desktop_port", "invalid loopback port")
+		}
 		if !validIdentifier(connection.id) || connection.profileID == "" || connection.credentialRef == "" {
 			return invalid(field, "invalid id or required reference")
 		}
@@ -727,6 +855,11 @@ func (c Config) validate() error {
 			}
 		}
 	}
+	if c.desktopConnectionID != "" {
+		if _, ok := connectionIDs[c.desktopConnectionID]; !ok {
+			return invalid("desktop_connection_id", "unknown connection")
+		}
+	}
 	return validateDeveloperModeConnections(c.developerMode, connectionIDs)
 }
 
@@ -753,6 +886,31 @@ func validateProfile(profile Profile, field string) error {
 	if err := validateIDList(profile.rootIDs, field+".roots"); err != nil {
 		return err
 	}
+	if profile.workspaceRoots != nil {
+		active := make(map[string]struct{}, len(profile.rootIDs))
+		for _, id := range profile.rootIDs {
+			active[id] = struct{}{}
+		}
+		seen := make(map[string]struct{}, len(profile.workspaceRoots))
+		for i, metadata := range profile.workspaceRoots {
+			metadataField := fmt.Sprintf("%s.workspace_roots[%d]", field, i)
+			if err := validateWorkspaceRootMetadata(metadata, metadataField); err != nil {
+				return err
+			}
+			if !addUnique(seen, metadata.rootID) {
+				return invalid(metadataField+".root_id", "duplicate id")
+			}
+			_, isActive := active[metadata.rootID]
+			if metadata.enabled != isActive {
+				return invalid(metadataField+".enabled", "must match effective profile roots")
+			}
+		}
+		for id := range active {
+			if _, ok := seen[id]; !ok {
+				return invalid(field+".workspace_roots", "must describe every active root")
+			}
+		}
+	}
 	if err := validateIDList(profile.tools, field+".tools"); err != nil {
 		return err
 	}
@@ -760,6 +918,22 @@ func validateProfile(profile Profile, field string) error {
 		return err
 	}
 	return validatePatterns(profile.ignorePatterns, field+".ignore_patterns")
+}
+
+func validateWorkspaceRootMetadata(metadata WorkspaceRootMetadata, field string) error {
+	if !validIdentifier(metadata.rootID) {
+		return invalid(field+".root_id", "invalid id")
+	}
+	name := metadata.displayName
+	if name == "" || !utf8.ValidString(name) || len(name) > 128 || strings.TrimSpace(name) != name || strings.ContainsAny(name, `/\\:`) {
+		return invalid(field+".display_name", "invalid display name")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return invalid(field+".display_name", "invalid display name")
+		}
+	}
+	return nil
 }
 
 func validateIDList(values []string, field string) error {

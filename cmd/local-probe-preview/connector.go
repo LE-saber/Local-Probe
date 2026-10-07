@@ -46,6 +46,7 @@ func connectionResult(status previewconnect.Status) previewui.ConnectionResult {
 	return previewui.ConnectionResult{
 		Phase:           connectionPhase(status.Stage),
 		Code:            connectionCode(status.Code),
+		Transport:       string(status.Transport),
 		PublicHost:      status.PublicHost,
 		TokenConfigured: status.TokenConfigured,
 	}
@@ -56,6 +57,7 @@ func connectionProgress(status previewconnect.Status) previewui.ConnectionProgre
 	return previewui.ConnectionProgress{
 		Phase:           result.Phase,
 		Code:            result.Code,
+		Transport:       result.Transport,
 		PublicHost:      result.PublicHost,
 		TokenConfigured: result.TokenConfigured,
 	}
@@ -94,6 +96,32 @@ func connectionCode(code previewconnect.Code) previewui.ConnectionCode {
 		return previewui.ConnectionTokenRejected
 	case previewconnect.CodeCloudflaredMissing:
 		return previewui.ConnectionCloudflaredMissing
+	case previewconnect.CodeOpenAIClientMissing:
+		return previewui.ConnectionOpenAIClientMissing
+	case previewconnect.CodeOpenAIKeyMissing:
+		return previewui.ConnectionOpenAIKeyMissing
+	case previewconnect.CodeOpenAIKeyInvalid:
+		return previewui.ConnectionOpenAIKeyInvalid
+	case previewconnect.CodeOpenAIMCPTokenMissing:
+		return previewui.ConnectionOpenAIMCPTokenMissing
+	case previewconnect.CodeOpenAIMCPTokenEmpty:
+		return previewui.ConnectionOpenAIMCPTokenEmpty
+	case previewconnect.CodeOpenAIMCPTokenInvalid:
+		return previewui.ConnectionOpenAIMCPTokenInvalid
+	case previewconnect.CodeOpenAITunnelMissing:
+		return previewui.ConnectionOpenAITunnelMissing
+	case previewconnect.CodeOpenAITunnelInvalid:
+		return previewui.ConnectionOpenAITunnelInvalid
+	case previewconnect.CodeOpenAITunnelStartFailed:
+		return previewui.ConnectionOpenAITunnelStartFailed
+	case previewconnect.CodeOpenAITunnelNotReady:
+		return previewui.ConnectionOpenAITunnelNotReady
+	case previewconnect.CodeOpenAIProfileInvalid:
+		return previewui.ConnectionOpenAIProfileInvalid
+	case previewconnect.CodeOpenAIAuthRejected:
+		return previewui.ConnectionOpenAIAuthRejected
+	case previewconnect.CodeOpenAIHealthURLInvalid:
+		return previewui.ConnectionOpenAIHealthInvalid
 	case previewconnect.CodeMCPBinaryMissing:
 		return previewui.ConnectionMCPMissing
 	case previewconnect.CodeConfigMissing:

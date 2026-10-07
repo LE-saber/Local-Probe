@@ -27,7 +27,7 @@ ChatGPT / MCP 客户端
 
 | 入口 | 监听 | 认证 | 适配器 |
 | --- | ---: | --- | --- |
-| `local-token` | 默认 `127.0.0.1:8787` | 外部文件中的本地 hop token | OpenAI `tunnel-client` 脚本 |
+| `local-token` | 默认 `127.0.0.1:8787` | 外部文件中的本地 hop token | Preview controller 或 OpenAI `tunnel-client` 独立脚本 |
 | `cloudflare-access` | Preview 默认 `127.0.0.1:8788` | 精确 Host + `Cf-Access-Jwt-Assertion` + JWKS/issuer/audience/sub 映射 | Preview controller + `cloudflared` |
 
 Tunnel 只提供传输通道，不等于 Local-Probe 的授权。请求必须在 MCP server 中重新绑定到有效 connection、profile、root 和 tool；请求参数不能自行声明身份。
@@ -69,10 +69,10 @@ Git ignored / local:
 cmd/local-probe-preview
  ├─ previewapp       配置/日志/diagnostic 的只读模型
  ├─ previewui        原生窗口、字号、托盘、工作空间和导出
- └─ previewconnect   固定 local-probe-mcp.exe + cloudflared.exe 生命周期
+ └─ previewconnect   固定 local-probe-mcp.exe + 所选 Tunnel 客户端生命周期
 ```
 
-Preview controller 只启动仓库 `bin/local-probe-mcp.exe` 和固定位置的 `cloudflared.exe`，不会接受模型传入的 executable、argv、env、cwd 或任意命令。它按 MCP 8788 → metrics `/ready` → HA connection 的阶段报告状态；失败时只返回稳定错误类别和解决建议。
+Preview controller 只启动仓库 `bin/local-probe-mcp.exe` 与固定位置的 `cloudflared.exe` 或官方 `tunnel-client.exe`，不会接受模型传入的 executable、argv、env、cwd 或任意命令。Cloudflare 路径按 MCP 8788 → metrics `/ready` → HA connection 报告状态；OpenAI 路径按带 hop token 的 MCP 8787 探针 → 受控 profile → tunnel-client loopback `/readyz` 报告状态。失败时只返回稳定错误类别和解决建议。
 
 Preview 的窗口关闭是隐藏到托盘；退出只停止本次 Preview 自己拥有的子进程。它不会接管手工启动的 MCP/Tunnel，也没有生产 supervisor、服务安装、崩溃无限重试或跨用户 ownership。
 

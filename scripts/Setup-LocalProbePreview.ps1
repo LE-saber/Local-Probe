@@ -40,14 +40,14 @@ $RepoRoot = Get-FullPath $RepoRoot
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'go.mod') -PathType Leaf)) {
     throw "RepoRoot is not a Local-Probe checkout: $RepoRoot"
 }
+if ([string]::IsNullOrWhiteSpace($AuthorizedRoot)) {
+    throw 'AuthorizedRoot is required. Choose the existing directory Local-Probe may read; no default workspace is authorized.'
+}
 if ([string]::IsNullOrWhiteSpace($SecretRoot)) {
     $SecretRoot = Join-Path (Split-Path -Parent $RepoRoot) '.secrets'
 }
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
     $RuntimeRoot = Join-Path $RepoRoot '.runtime'
-}
-if ([string]::IsNullOrWhiteSpace($AuthorizedRoot)) {
-    $AuthorizedRoot = $RepoRoot
 }
 $SecretRoot = Get-FullPath $SecretRoot
 $RuntimeRoot = Get-FullPath $RuntimeRoot

@@ -9,9 +9,9 @@
 | 方案 | 本地端口 | 身份方式 | Preview 的“一键连接” | 适用场景 |
 | --- | ---: | --- | --- | --- |
 | Cloudflare Preview | `127.0.0.1:8788` | Cloudflare Access JWT | 支持；GUI 管理本次启动的 MCP 与 `cloudflared` | 当前推荐的网页 ChatGPT/公开 HTTPS MCP 路径 |
-| OpenAI Secure MCP Tunnel | `127.0.0.1:8787` | 本地 hop token + OpenAI Platform Tunnel | 不支持；使用独立脚本 | 已有 OpenAI Platform Tunnel、需要官方 tunnel-client 的路径 |
+| OpenAI Secure MCP Tunnel | `127.0.0.1:8787` | 本地 hop token + OpenAI Platform Tunnel | 支持；以 `-Transport openai_runtime` 启动 Preview，也保留独立脚本 | 已有 OpenAI Platform Tunnel、需要官方 tunnel-client 的路径 |
 
-下文首先说明 Cloudflare Preview；OpenAI Tunnel 的步骤在文末。不要在选择 Cloudflare Preview 后再运行 `Start-CloudflareTunnel.ps1`，也不要在选择 OpenAI Tunnel 后点击 Preview 的 Cloudflare 一键连接按钮。
+下文首先说明 Cloudflare Preview；OpenAI Tunnel 的步骤在文末。一次只选择一条路径，不要同时启动占用对应 origin 的独立脚本与 Preview 管理流程。
 
 ## 1. 环境要求
 
@@ -47,12 +47,15 @@ Set-Location .\Local-Probe
 推荐使用统一初始化入口。它创建被 Git 忽略的 `.runtime`、只读 Local-Probe/Cloudflare 配置和一个仓库外的 Cloudflare token 文件；不会创建 OpenAI Tunnel 的 API key、Tunnel ID 或 local hop token，也不会登录 Cloudflare、创建 Tunnel、修改 DNS、上传文件或把秘密写进仓库：
 
 ```powershell
+$authorizedRoot = (Resolve-Path 'C:\replace-with-folder-you-authorize').Path
+
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\Setup-LocalProbePreview.ps1 `
-  -RepoRoot (Get-Location).Path
+  -RepoRoot (Get-Location).Path `
+  -AuthorizedRoot $authorizedRoot
 ```
 
-如需让 GPT 访问指定目录，使用脚本的 `-AuthorizedRoot` 参数；如需设置公网 hostname，使用 `-PublicHost` 参数。先运行：
+`-AuthorizedRoot` 必须是你明确选择的已存在目录；脚本不会默认授权仓库或便携包目录。如需设置公网 hostname，使用 `-PublicHost` 参数。先运行：
 
 ```powershell
 Get-Help .\scripts\Setup-LocalProbePreview.ps1 -Full
@@ -83,6 +86,7 @@ Preview 不会自动下载或执行未知来源的程序。将经过来源和 SH
 ```powershell
 .\scripts\Setup-LocalProbePreview.ps1 `
   -RepoRoot (Get-Location).Path `
+  -AuthorizedRoot $authorizedRoot `
   -CloudflaredPath C:\path\to\cloudflared.exe `
   -CopyCloudflared
 ```
@@ -131,7 +135,7 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
 
 ## 6. OpenAI Secure MCP Tunnel 方案（替代路径）
 
-这条路径不使用 Cloudflare Access，也不使用 Preview GUI 的一键连接。完整说明见 [`TUNNEL_SETUP.zh-CN.md`](TUNNEL_SETUP.zh-CN.md)。最小步骤如下：
+这条路径不使用 Cloudflare Access。完整说明见 [`TUNNEL_SETUP.zh-CN.md`](TUNNEL_SETUP.zh-CN.md)。最小步骤如下：
 
 ```powershell
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
@@ -155,7 +159,16 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -RepoRoot (Get-Location).Path
 ```
 
-该路径监听 `127.0.0.1:8787`，ChatGPT 连接的是 Platform Tunnel 关联的 Tunnel ID；不要同时运行 Cloudflare Preview 的 8788 origin。
+初始化完成后，可继续使用上面的独立脚本；也可构建 Preview 并运行：
+
+```powershell
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Start-LocalProbePreview.ps1 `
+  -RepoRoot (Get-Location).Path `
+  -Transport openai_runtime
+```
+
+此时 Connections 的一键连接会管理本次启动的 8787 MCP 与官方 `tunnel-client`。该路径监听 `127.0.0.1:8787`，ChatGPT 连接的是 Platform Tunnel 关联的 Tunnel ID。GUI 显示“本机已就绪”不代表目标 ChatGPT workspace 已关联或工具已经完成真实调用，仍需在开发者模式 App 中手动验收。
 
 ## 7. 常见故障
 

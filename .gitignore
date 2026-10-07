@@ -27,3 +27,11 @@ logs/
 *.test
 *.exe
 .DS_Store
+
+# Machine-specific assistant state and local planning drafts (tracked history stays).
+/.serena/
+/.planning/
+*.lpbackup
+*.desktop-events.json
+*.desktop-backup.json
+*.desktop-backup.json.bak

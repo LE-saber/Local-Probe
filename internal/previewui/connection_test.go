@@ -99,6 +99,21 @@ func TestConnectionDisplayMapsStopFailure(t *testing.T) {
 	}
 }
 
+func TestConnectionDisplayDistinguishesOpenAITunnel(t *testing.T) {
+	ready := (ConnectionControlState{Result: ConnectionResult{
+		Phase: ConnectionReady, Code: ConnectionOK, Transport: "openai_runtime", TokenConfigured: true,
+	}}).Display()
+	if ready.Title != "官方 Tunnel 本机已就绪" || !strings.Contains(ready.Remediation, "ChatGPT workspace") {
+		t.Fatalf("OpenAI ready display = %+v", ready)
+	}
+	failed := (ConnectionControlState{Result: ConnectionResult{
+		Phase: ConnectionFailed, Code: ConnectionOpenAIKeyMissing, Transport: "openai_runtime",
+	}}).Display()
+	if !strings.Contains(failed.Title, "Runtime API key") || strings.Contains(failed.Detail, "Cloudflare") {
+		t.Fatalf("OpenAI failure display = %+v", failed)
+	}
+}
+
 type fakeConnector struct{}
 
 func (fakeConnector) Connect(context.Context) ConnectionResult {

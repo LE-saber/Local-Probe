@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -15,6 +16,7 @@ import (
 )
 
 type mutationLocker interface {
+	// The release function must be called by the acquiring goroutine.
 	acquire(context.Context) (func(), error)
 }
 
@@ -36,6 +38,16 @@ func (l *windowsMutationLocker) acquire(ctx context.Context) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A Win32 mutex is owned by an OS thread, not by a Go goroutine. Pin the
+	// acquiring goroutine until ReleaseMutex; otherwise a migration can fail
+	// release or let a different goroutine re-enter the same thread's mutex.
+	runtime.LockOSThread()
+	owned := false
+	defer func() {
+		if !owned {
+			runtime.UnlockOSThread()
+		}
+	}()
 	name, err := windows.UTF16PtrFromString(l.name)
 	if err != nil {
 		return nil, errors.New("workspace mutex name is invalid")
@@ -62,11 +74,13 @@ func (l *windowsMutationLocker) acquire(ctx context.Context) (func(), error) {
 		}
 		switch status {
 		case windows.WAIT_OBJECT_0, windows.WAIT_ABANDONED:
+			owned = true
 			var once sync.Once
 			return func() {
 				once.Do(func() {
 					_ = windows.ReleaseMutex(handle)
 					closeHandle()
+					runtime.UnlockOSThread()
 				})
 			}, nil
 		case uint32(windows.WAIT_TIMEOUT):

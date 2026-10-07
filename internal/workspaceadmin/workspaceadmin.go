@@ -126,8 +126,18 @@ func Remediation(err error) string {
 // Path is intentionally available because this is a local management UI
 // projection, not an MCP/model-facing result.
 type WorkspaceRoot struct {
-	ID   string `json:"id"`
-	Path string `json:"path"`
+	ID          string `json:"id"`
+	Path        string `json:"path"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// RootUpdate is a partial update to one profile-scoped workspace entry.
+// Enablement changes the effective Profile.RootIDs authorization; renaming
+// changes only local display metadata.
+type RootUpdate struct {
+	DisplayName *string
+	Enabled     *bool
 }
 
 // Workspace is the selected connection/profile projection. Roots from any
@@ -177,11 +187,44 @@ func (m *Manager) List(ctx context.Context, connectionID string) (Workspace, err
 	return workspaceFromConfig(snapshot.Revision(), connection, profile, cfg)
 }
 
+// ProfileReferenceCount returns the number of configured connections that
+// share connectionID's profile. The revision lets a caller reject a stale
+// ownership check before coordinating a permission change.
+func (m *Manager) ProfileReferenceCount(ctx context.Context, connectionID string) (string, int, error) {
+	if err := checkContext(ctx); err != nil {
+		return "", 0, err
+	}
+	snapshot, cfg, _, profile, err := m.loadTarget(connectionID)
+	if err != nil {
+		return "", 0, err
+	}
+	count := 0
+	for _, connection := range cfg.Connections() {
+		if connection.ProfileID() == profile.ID() {
+			count++
+		}
+	}
+	return snapshot.Revision(), count, nil
+}
+
 // Add validates and authorizes one or more existing ordinary local
 // directories for connectionID's current profile. Duplicate paths are
 // idempotent, both within paths and against already configured roots.
 // expectedRevision is mandatory and is checked again atomically by FileStore.
 func (m *Manager) Add(ctx context.Context, connectionID, expectedRevision string, paths []string) (Change, error) {
+	return m.add(ctx, connectionID, expectedRevision, paths, "")
+}
+
+// AddWithDisplayName uses the same single CAS as authorization. A display name
+// may be supplied only for one selected folder, never a second implicit write.
+func (m *Manager) AddWithDisplayName(ctx context.Context, connectionID, expectedRevision string, paths []string, displayName string) (Change, error) {
+	if displayName != "" && len(paths) != 1 {
+		return Change{}, problem(CodeInvalidSelection, "命名时只选择一个目录。", ErrInvalidRootSelection)
+	}
+	return m.add(ctx, connectionID, expectedRevision, paths, displayName)
+}
+
+func (m *Manager) add(ctx context.Context, connectionID, expectedRevision string, paths []string, displayName string) (Change, error) {
 	if err := checkContext(ctx); err != nil {
 		return Change{}, err
 	}
@@ -236,6 +279,14 @@ func (m *Manager) Add(ctx context.Context, connectionID, expectedRevision string
 	for _, id := range rootIDs {
 		rootSet[id] = struct{}{}
 	}
+	metadata, err := workspaceRootMetadata(profile, cfg)
+	if err != nil {
+		return Change{}, problem(CodeConfigInvalid, "工作空间配置无效，请修复配置后重试。", err)
+	}
+	metadataIndex := make(map[string]int, len(metadata))
+	for i, item := range metadata {
+		metadataIndex[item.RootID()] = i
+	}
 	changed := make([]WorkspaceRoot, 0, len(validated))
 	for _, candidate := range validated {
 		rootIndex := findRootByPath(roots, candidate.key)
@@ -259,8 +310,25 @@ func (m *Manager) Add(ctx context.Context, connectionID, expectedRevision string
 		}
 		rootIDs = append(rootIDs, root.ID())
 		rootSet[root.ID()] = struct{}{}
-		changed = append(changed, WorkspaceRoot{ID: root.ID(), Path: root.Path()})
-		_ = rootIndex
+		if index, registered := metadataIndex[root.ID()]; registered {
+			previous := metadata[index]
+			metadata[index], err = config.NewWorkspaceRootMetadata(root.ID(), previous.DisplayName(), true)
+		} else {
+			name := defaultWorkspaceDisplayName(root.Path())
+			if displayName != "" {
+				name = strings.TrimSpace(displayName)
+			}
+			metadataItem, metadataErr := config.NewWorkspaceRootMetadata(root.ID(), name, true)
+			if metadataErr != nil {
+				return Change{}, problem(CodeConfigInvalid, "工作空间显示名称无效，请重试。", metadataErr)
+			}
+			metadataIndex[root.ID()] = len(metadata)
+			metadata = append(metadata, metadataItem)
+		}
+		if err != nil {
+			return Change{}, problem(CodeConfigInvalid, "工作空间授权配置无法生成，请检查当前配置。", err)
+		}
+		changed = append(changed, WorkspaceRoot{ID: root.ID(), Path: root.Path(), DisplayName: metadata[metadataIndex[root.ID()]].DisplayName(), Enabled: true})
 	}
 
 	if len(changed) == 0 {
@@ -271,7 +339,7 @@ func (m *Manager) Add(ctx context.Context, connectionID, expectedRevision string
 		return Change{Workspace: workspace}, nil
 	}
 
-	updatedProfile, err := cloneProfileWithRoots(profile, rootIDs)
+	updatedProfile, err := cloneProfileWithWorkspaceRoots(profile, rootIDs, metadata)
 	if err != nil {
 		return Change{}, problem(CodeConfigInvalid, "工作空间授权配置无法生成，请检查当前配置。", err)
 	}
@@ -291,6 +359,107 @@ func (m *Manager) Add(ctx context.Context, connectionID, expectedRevision string
 		return Change{}, err
 	}
 	return Change{Workspace: workspace, Changed: changed}, nil
+}
+
+// Update renames or pauses/resumes one workspace entry in the selected
+// profile. The revision is mandatory. Paused roots remain in profile metadata
+// for the local UI but are removed from the effective Profile.RootIDs list.
+func (m *Manager) Update(ctx context.Context, connectionID, expectedRevision, rootID string, update RootUpdate) (Change, error) {
+	if err := checkContext(ctx); err != nil {
+		return Change{}, err
+	}
+	if expectedRevision == "" {
+		return Change{}, problem(CodeRevisionRequired, "先刷新工作空间列表，再使用当前 revision 保存。", ErrRevisionRequired)
+	}
+	if !validSelectionID(rootID) || update.DisplayName == nil && update.Enabled == nil {
+		return Change{}, problem(CodeInvalidSelection, "选择有效的工作空间并提供需要修改的字段。", ErrInvalidRootSelection)
+	}
+	release, err := m.acquireMutation(ctx)
+	if err != nil {
+		return Change{}, err
+	}
+	defer release()
+	snapshot, cfg, connection, profile, err := m.loadTarget(connectionID)
+	if err != nil {
+		return Change{}, err
+	}
+	if snapshot.Revision() != expectedRevision {
+		return Change{}, problem(CodeRevisionConflict, "配置已被其他窗口修改，请刷新后重试。", config.ErrRevisionConflict)
+	}
+	metadata, err := workspaceRootMetadata(profile, cfg)
+	if err != nil {
+		return Change{}, problem(CodeConfigInvalid, "工作空间配置无效，请修复配置后重试。", err)
+	}
+	index := -1
+	for i, item := range metadata {
+		if item.RootID() == rootID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return Change{}, problem(CodeRootMissing, "只能修改当前 connection 已登记的文件夹。", ErrRootMissing)
+	}
+	root, ok := cfg.Root(rootID)
+	if !ok {
+		return Change{}, problem(CodeConfigInvalid, "当前 profile 引用了不存在的 root，请修复配置后重试。", ErrRootMissing)
+	}
+	old := metadata[index]
+	displayName := old.DisplayName()
+	enabled := old.Enabled()
+	if update.DisplayName != nil {
+		displayName = strings.TrimSpace(*update.DisplayName)
+		if displayName == "" {
+			displayName = defaultWorkspaceDisplayName(root.Path())
+		}
+	}
+	if update.Enabled != nil {
+		enabled = *update.Enabled
+	}
+	if enabled && !old.Enabled() {
+		if _, _, err := validateWorkspacePath(root.Path()); err != nil {
+			return Change{}, err
+		}
+	}
+	if displayName == old.DisplayName() && enabled == old.Enabled() {
+		workspace, err := workspaceFromConfig(snapshot.Revision(), connection, profile, cfg)
+		if err != nil {
+			return Change{}, err
+		}
+		return Change{Workspace: workspace}, nil
+	}
+	metadata[index], err = config.NewWorkspaceRootMetadata(rootID, displayName, enabled)
+	if err != nil {
+		return Change{}, problem(CodeInvalidPath, "工作空间名称无效，请使用不含路径的简短名称。", err)
+	}
+	rootIDs := make([]string, 0, len(metadata))
+	for _, item := range metadata {
+		if item.Enabled() {
+			rootIDs = append(rootIDs, item.RootID())
+		}
+	}
+	updatedProfile, err := cloneProfileWithWorkspaceRoots(profile, rootIDs, metadata)
+	if err != nil {
+		return Change{}, problem(CodeConfigInvalid, "工作空间授权配置无法生成，请检查当前配置。", err)
+	}
+	profiles := cfg.Profiles()
+	profiles[profileIndex(profiles, profile.ID())] = updatedProfile
+	next, err := rebuildConfig(cfg, cfg.Roots(), profiles)
+	if err != nil {
+		return Change{}, problem(CodeConfigInvalid, "工作空间授权配置无法保存，请检查当前配置。", err)
+	}
+	saved, err := m.store.SaveIfRevision(expectedRevision, next)
+	if err != nil {
+		return Change{}, mapStoreError(err)
+	}
+	savedConfig := saved.Config()
+	updatedConnection, _ := savedConfig.Connection(connection.ID())
+	updatedProfile, _ = savedConfig.Profile(profile.ID())
+	workspace, err := workspaceFromConfig(saved.Revision(), updatedConnection, updatedProfile, savedConfig)
+	if err != nil {
+		return Change{}, err
+	}
+	return Change{Workspace: workspace, Changed: []WorkspaceRoot{{ID: root.ID(), Path: root.Path(), DisplayName: displayName, Enabled: enabled}}}, nil
 }
 
 // Remove detaches one or more root IDs from only connectionID's profile.
@@ -330,30 +499,39 @@ func (m *Manager) Remove(ctx context.Context, connectionID, expectedRevision str
 		}
 		selected[id] = struct{}{}
 	}
-	currentIDs := profile.RootIDs()
-	currentSet := make(map[string]struct{}, len(currentIDs))
-	for _, id := range currentIDs {
-		currentSet[id] = struct{}{}
+	metadata, err := workspaceRootMetadata(profile, cfg)
+	if err != nil {
+		return Change{}, problem(CodeConfigInvalid, "工作空间配置无效，请修复配置后重试。", err)
+	}
+	currentSet := make(map[string]config.WorkspaceRootMetadata, len(metadata))
+	for _, item := range metadata {
+		currentSet[item.RootID()] = item
 	}
 	removed := make([]WorkspaceRoot, 0, len(selected))
 	for id := range selected {
-		if _, ok := currentSet[id]; !ok {
+		item, ok := currentSet[id]
+		if !ok {
 			return Change{}, problem(CodeRootMissing, "只能删除当前 connection 已授权的文件夹。", ErrRootMissing)
 		}
 		root, ok := cfg.Root(id)
 		if !ok {
 			return Change{}, problem(CodeConfigInvalid, "当前配置引用了不存在的文件夹。", ErrRootMissing)
 		}
-		removed = append(removed, WorkspaceRoot{ID: root.ID(), Path: root.Path()})
+		removed = append(removed, WorkspaceRoot{ID: root.ID(), Path: root.Path(), DisplayName: item.DisplayName(), Enabled: item.Enabled()})
 	}
 
-	remainingIDs := make([]string, 0, len(currentIDs)-len(selected))
-	for _, id := range currentIDs {
-		if _, remove := selected[id]; !remove {
-			remainingIDs = append(remainingIDs, id)
+	remainingMetadata := make([]config.WorkspaceRootMetadata, 0, len(metadata)-len(selected))
+	remainingIDs := make([]string, 0, len(profile.RootIDs()))
+	for _, item := range metadata {
+		if _, remove := selected[item.RootID()]; remove {
+			continue
+		}
+		remainingMetadata = append(remainingMetadata, item)
+		if item.Enabled() {
+			remainingIDs = append(remainingIDs, item.RootID())
 		}
 	}
-	updatedProfile, err := cloneProfileWithRoots(profile, remainingIDs)
+	updatedProfile, err := cloneProfileWithWorkspaceRoots(profile, remainingIDs, remainingMetadata)
 	if err != nil {
 		return Change{}, problem(CodeConfigInvalid, "工作空间授权配置无法生成，请检查当前配置。", err)
 	}
@@ -453,13 +631,17 @@ func (m *Manager) acquireMutation(ctx context.Context) (func(), error) {
 }
 
 func workspaceFromConfig(revision string, connection config.Connection, profile config.Profile, cfg config.Config) (Workspace, error) {
-	workspace := Workspace{ConnectionID: connection.ID(), ProfileID: profile.ID(), Revision: revision, Roots: make([]WorkspaceRoot, 0, len(profile.RootIDs()))}
-	for _, id := range profile.RootIDs() {
-		root, ok := cfg.Root(id)
+	metadata, err := workspaceRootMetadata(profile, cfg)
+	if err != nil {
+		return Workspace{}, err
+	}
+	workspace := Workspace{ConnectionID: connection.ID(), ProfileID: profile.ID(), Revision: revision, Roots: make([]WorkspaceRoot, 0, len(metadata))}
+	for _, item := range metadata {
+		root, ok := cfg.Root(item.RootID())
 		if !ok {
 			return Workspace{}, problem(CodeConfigInvalid, "当前 profile 引用了不存在的 root，请修复配置后重试。", ErrProfileMissing)
 		}
-		workspace.Roots = append(workspace.Roots, WorkspaceRoot{ID: root.ID(), Path: root.Path()})
+		workspace.Roots = append(workspace.Roots, WorkspaceRoot{ID: root.ID(), Path: root.Path(), DisplayName: item.DisplayName(), Enabled: item.Enabled()})
 	}
 	return workspace, nil
 }
@@ -473,15 +655,47 @@ func profileIndex(profiles []config.Profile, id string) int {
 	return -1
 }
 
-func cloneProfileWithRoots(profile config.Profile, rootIDs []string) (config.Profile, error) {
-	return config.NewProfileWithIgnore(profile.ID(), rootIDs, profile.Tools(), profile.DenyPatterns(), profile.IgnorePatterns())
+func cloneProfileWithWorkspaceRoots(profile config.Profile, rootIDs []string, workspaceRoots []config.WorkspaceRootMetadata) (config.Profile, error) {
+	return config.NewProfileWithWorkspaceRoots(profile.ID(), rootIDs, profile.Tools(), profile.DenyPatterns(), profile.IgnorePatterns(), workspaceRoots)
+}
+
+func workspaceRootMetadata(profile config.Profile, cfg config.Config) ([]config.WorkspaceRootMetadata, error) {
+	metadata := profile.WorkspaceRoots()
+	if len(metadata) > 0 {
+		return metadata, nil
+	}
+	metadata = make([]config.WorkspaceRootMetadata, 0, len(profile.RootIDs()))
+	for _, id := range profile.RootIDs() {
+		root, ok := cfg.Root(id)
+		if !ok {
+			return nil, problem(CodeConfigInvalid, "当前 profile 引用了不存在的 root，请修复配置后重试。", ErrProfileMissing)
+		}
+		item, err := config.NewWorkspaceRootMetadata(id, defaultWorkspaceDisplayName(root.Path()), true)
+		if err != nil {
+			return nil, err
+		}
+		metadata = append(metadata, item)
+	}
+	return metadata, nil
+}
+
+func defaultWorkspaceDisplayName(rootPath string) string {
+	name := filepath.Base(filepath.FromSlash(strings.ReplaceAll(rootPath, `\`, "/")))
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		return "Workspace"
+	}
+	return name
 }
 
 func rebuildConfig(cfg config.Config, roots []config.Root, profiles []config.Profile) (config.Config, error) {
-	return config.NewWithCommandProfiles(
+	next, err := config.NewWithCommandProfiles(
 		cfg.SchemaVersion(), roots, profiles, cfg.Connections(), cfg.Credentials(),
 		cfg.EnvironmentTools(), cfg.DeveloperMode(), cfg.CommandProfiles(),
 	)
+	if err != nil {
+		return config.Config{}, err
+	}
+	return next.WithDesktopConnectionID(cfg.DesktopConnectionID())
 }
 
 func findRootByPath(roots []config.Root, key string) int {
@@ -554,6 +768,9 @@ func profileRootReferences(profiles []config.Profile) map[string]struct{} {
 	for _, profile := range profiles {
 		for _, id := range profile.RootIDs() {
 			refs[id] = struct{}{}
+		}
+		for _, metadata := range profile.WorkspaceRoots() {
+			refs[metadata.RootID()] = struct{}{}
 		}
 	}
 	return refs

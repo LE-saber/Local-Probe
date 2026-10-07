@@ -1812,6 +1812,7 @@ func (a *previewWindow) connectAsync() {
 	previous := NormalizeConnectionResult(a.connectionState.Result)
 	initial := ConnectionResult{
 		Phase:           ConnectionPreflight,
+		Transport:       previous.Transport,
 		PublicHost:      previous.PublicHost,
 		TokenConfigured: previous.TokenConfigured,
 	}
@@ -1826,7 +1827,7 @@ func (a *previewWindow) connectAsync() {
 	a.render()
 	if connector == nil {
 		a.mu.Lock()
-		a.pendingConnect = ConnectionResult{Phase: ConnectionFailed, Code: ConnectionConnectorMissing, PublicHost: previous.PublicHost, TokenConfigured: previous.TokenConfigured}
+		a.pendingConnect = ConnectionResult{Phase: ConnectionFailed, Code: ConnectionConnectorMissing, Transport: previous.Transport, PublicHost: previous.PublicHost, TokenConfigured: previous.TokenConfigured}
 		a.mu.Unlock()
 		postWindowMessage(a.hwnd, wmAppConnectDone, 0, 0)
 		return
@@ -1865,7 +1866,7 @@ func (a *previewWindow) connectAsync() {
 
 func (a *previewWindow) queueConnectProgress(progress ConnectionProgress) {
 	next := NormalizeConnectionResult(ConnectionResult{
-		Phase: progress.Phase, Code: progress.Code, PublicHost: progress.PublicHost, TokenConfigured: progress.TokenConfigured,
+		Phase: progress.Phase, Code: progress.Code, Transport: progress.Transport, PublicHost: progress.PublicHost, TokenConfigured: progress.TokenConfigured,
 	})
 	a.mu.Lock()
 	if a.exiting || !a.connectionState.Busy {

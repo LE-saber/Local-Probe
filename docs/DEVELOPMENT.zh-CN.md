@@ -38,7 +38,7 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
 | `internal/rootfs`、`internal/readcore` | 只读 rootfs、路径边界和有界范围读取 |
 | `internal/search`、`internal/catalog` | 有界目录发现、查找、literal 搜索、tree 和候选 catalog |
 | `internal/mcpserver`、`internal/cfaccess` | MCP 工具契约、本地 bearer 和 Cloudflare Access JWT ingress |
-| `internal/previewconnect` | Preview 固定的 MCP 8788 + cloudflared 生命周期控制器 |
+| `internal/previewconnect` | Preview 固定的 MCP + Cloudflare/OpenAI Tunnel 生命周期控制器 |
 | `internal/previewapp`、`internal/previewui` | Preview 数据模型、Windows GUI、托盘、工作空间和诊断导出 |
 | `internal/audit`、`internal/auditreader`、`internal/supportbundle` | 结构化审计、有界读取、脱敏和 support bundle 边界 |
 | `internal/runtimeowner`、`internal/supervisor`、`internal/connectionmanager` | R6 非生产生命周期契约和 fake automation core；不能当作生产 supervisor |
@@ -76,7 +76,7 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
 
 ## 两条 Tunnel 链路的开发边界
 
-Cloudflare Preview 使用 `127.0.0.1:8788`、Access JWT 和 `cloudflared.exe`；Preview controller 只管理自己启动的两个子进程。OpenAI Secure MCP Tunnel 使用 `127.0.0.1:8787`、本地 hop token 和官方 `tunnel-client.exe`，由独立 PowerShell 脚本管理。两套入口不共享身份，不要为了让测试通过而关闭 Host、loopback、Access 或 token 校验。
+Cloudflare Preview 使用 `127.0.0.1:8788`、Access JWT 和 `cloudflared.exe`；OpenAI Secure MCP Tunnel 使用 `127.0.0.1:8787`、本地 hop token 和官方 `tunnel-client.exe`。Preview controller 按 `-transport` 只选择其中一条并只管理自己启动的两个子进程；OpenAI 独立 PowerShell 脚本仍保留。两套入口不共享身份，不要为了让测试通过而关闭 Host、loopback、Access 或 token 校验。
 
 相关文档：
 
@@ -114,4 +114,4 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass `
 
 `docs/IMPLEMENTATION_STATUS.md` 记录已实现与未完成项；`docs/evidence/` 只保存不含凭据的机器可读证据。每条验证记录应包含实际命令、环境、限制和时间，不要把“脚本存在”写成“脚本已成功运行”。
 
-本仓库尚未选择对外许可证；在正式公开发布前必须补充许可证和第三方通知审查。Preview 源码上传、Preview ZIP 和生产发布是三个不同的交付动作。
+本仓库自有源码采用 MIT（见根目录 LICENSE）；第三方代码保留各自许可证，发布前须复核打包生成的 NOTICE。Preview 源码上传、Preview ZIP 和生产发布是三个不同的交付动作。

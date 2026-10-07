@@ -1,23 +1,24 @@
 # Local-Probe Windows Preview
 
-这是 Local-Probe 的 Windows 原生 GUI/tray 预览版。它提供只读状态投影、Cloudflare 8788 一键连接、工作空间授权管理、托盘驻留、结构化日志查看和脱敏诊断导出。它不是生产 supervisor、通用进程控制器或正式安装包。
+这是 Local-Probe 的 Windows 原生 GUI/tray 预览版。它提供只读状态投影、Cloudflare 8788 或 OpenAI Secure MCP Tunnel 8787 一键连接、工作空间授权管理、托盘驻留、结构化日志查看和脱敏诊断导出。它不是生产 supervisor、通用进程控制器或正式安装包。
 
 第一次部署请先阅读 [Windows Preview 部署](DEPLOYMENT_PREVIEW.zh-CN.md)。该文档明确区分 Cloudflare Preview（8788）和 OpenAI Secure MCP Tunnel（8787）两条二选一链路。
 
 ## 构建与启动
 
-要求：Windows x64、Go 1.25 或更高版本、Git 和 PowerShell。Cloudflare 一键连接还需要官方 `cloudflared.exe`；它放在被 Git 忽略的本地工具目录，不提交到源码仓库。
+要求：Windows x64、Go 1.25 或更高版本、Git 和 PowerShell。Cloudflare 通道需要官方 `cloudflared.exe`；OpenAI 通道需要官方 `tunnel-client.exe`。两者都放在被 Git 忽略的本地工具目录或文档列出的外部工具目录，不提交到源码仓库。
 
 从仓库根目录运行环境检查、初始化、构建和启动：
 
 ~~~powershell
+$authorizedRoot = (Resolve-Path 'C:\replace-with-folder-you-authorize').Path
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-LocalProbeEnvironment.ps1 -RepoRoot (Get-Location).Path
-pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Setup-LocalProbePreview.ps1 -RepoRoot (Get-Location).Path
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Setup-LocalProbePreview.ps1 -RepoRoot (Get-Location).Path -AuthorizedRoot $authorizedRoot
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-LocalProbePreview.ps1 -RepoRoot (Get-Location).Path
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-LocalProbePreview.ps1 -RepoRoot (Get-Location).Path
 ~~~
 
-也可以使用 Start-LocalProbePreview.ps1 -Build 一次构建并启动。脚本的完整参数以 Get-Help .\scripts\Setup-LocalProbePreview.ps1 -Full 为准；可用 AuthorizedRoot 指定 GPT 可访问的目录，用 PublicHost 指定公网 hostname。
+`-AuthorizedRoot` 是必须显式指定的已存在目录；Setup 不会默认授权仓库或包目录。也可以使用 Start-LocalProbePreview.ps1 -Build 一次构建并启动。脚本的完整参数以 Get-Help .\scripts\Setup-LocalProbePreview.ps1 -Full 为准；`-PublicHost` 用于指定公网 hostname。
 
 构建产物位于被 Git 忽略的 bin 目录：
 
@@ -47,13 +48,13 @@ Cloudflare Preview 默认寻找：
 ## 界面真实能力
 
 - Overview：显示配置 revision、root/profile/connection 数量、审计摘要和连接建议。
-- Connections：显示脱敏连接状态，执行 Cloudflare 8788 的一键连接或重新连接，并显示 MCP、metrics readiness 和 edge connection 阶段。
+- Connections：显示脱敏连接状态，并按启动参数管理 Cloudflare 8788 或 OpenAI 8787 的一键连接/重新连接及其本机就绪阶段。
 - Developer Rules：只读展示开发者模式、connection 和固定规则摘要，不能在此编辑或启用规则。
 - 工作空间访问：输入路径或浏览目录，新增多个授权 root，并通过复选框批量撤销。
 - Logs / Diagnostics：读取有界结构化审计和诊断摘要。
 - About：显示 Preview 版本和边界。
 
-Connections 的一键连接固定执行：本地预检、启动 bin\local-probe-mcp.exe（cloudflare-access，8788）、等待 loopback、启动 cloudflared、等待 metrics /ready 和活动 HA connection。它不启动 OpenAI tunnel-client，不接受模型提供的任意 executable、argv、env、cwd 或命令。
+默认启动仍选择 Cloudflare：本地预检、启动 `bin\local-probe-mcp.exe`（`cloudflare-access`，8788）、等待 loopback、启动 `cloudflared`、等待 metrics `/ready` 和活动 HA connection。使用 `Start-LocalProbePreview.ps1 -Transport openai_runtime` 时，一键连接改为启动 `local-token` MCP（8787）、进行带 hop token 的 MCP 工具探针、生成仅引用外部 secret 文件的临时 tunnel-client profile、启动官方 `tunnel-client` 并等待它写出的 loopback `/readyz`。两条路径都不接受模型提供的任意 executable、argv、env、cwd 或命令。
 
 ## 工作空间访问
 
@@ -68,8 +69,8 @@ Connections 的一键连接固定执行：本地预检、启动 bin\local-probe-
 - Preview 使用单实例保护。
 - 关闭窗口只隐藏到托盘。
 - 托盘右键菜单提供主界面、刷新、诊断导出、关于、退出和字号档位切换。
-- 退出只停止本次 Preview 自己启动的 MCP/cloudflared，不会终止手动启动或其他服务拥有的进程。
-- Preview 连接按钮只管理 Cloudflare 8788 生命周期。手动进程已经占用端口时报告 port_in_use，不会杀掉无关进程。
+- 退出只停止本次 Preview 自己启动的 MCP 和所选 Tunnel 客户端，不会终止手动启动或其他服务拥有的进程。
+- Preview 连接按钮只管理本次启动参数选择的一条生命周期。手动进程已经占用端口时报告 `port_in_use`，不会杀掉无关进程。
 
 ## 连接故障类别
 
@@ -101,4 +102,4 @@ Connections 的一键连接固定执行：本地预检、启动 bin\local-probe-
 - 安装器、自动更新、代码签名、正式发布包或生产就绪声明；
 - Linux/macOS GUI、任意 shell、任意命令、写入工具和默认大规模索引。
 
-OpenAI Secure MCP Tunnel 8787 不由本 Preview 一键按钮管理，必须按 [TUNNEL_SETUP.zh-CN.md](TUNNEL_SETUP.zh-CN.md) 单独启动。
+OpenAI Secure MCP Tunnel 仍可按 [TUNNEL_SETUP.zh-CN.md](TUNNEL_SETUP.zh-CN.md) 使用独立脚本；也可先完成同一份外部凭据初始化，再用 `Start-LocalProbePreview.ps1 -Transport openai_runtime` 交给 Preview 管理本次 8787 生命周期。本机 ready 只证明本地客户端链路，不等于 ChatGPT workspace 已完成关联或真实工具调用验收。

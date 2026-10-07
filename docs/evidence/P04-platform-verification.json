@@ -78,7 +78,7 @@
       },
       "temporary_copy": {
         "copy_commands": [
-          "src=/mnt/d/HOPP/download/Local-Probe/repo",
+          "src=<local-checkout-path-redacted>",
           "tmp=$(mktemp -d /tmp/local-probe-full.XXXXXX)",
           "cp -a \"$src\"/. \"$tmp\"/"
         ],

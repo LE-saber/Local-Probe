@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/LE-saber/Local-Probe/internal/config"
 )
 
 type stopFailChild struct{}
@@ -25,6 +27,20 @@ func TestDefaultOptionsUsePackagedMCPAndRepoLocalCloudflared(t *testing.T) {
 	}
 	if want := `.secrets/cloudflared-tunnel-token.txt`; credentialHint(opts) != want {
 		t.Fatalf("credential hint = %q, want %q", credentialHint(opts), want)
+	}
+}
+
+func TestNormalizeOpenAIOptionsUsesOfficialTunnelDefaults(t *testing.T) {
+	repo := t.TempDir()
+	opts, err := normalizeOptions(Options{RepoRoot: repo, Transport: config.TransportOpenAIRuntime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.MCPListenAddr != DefaultOpenAIMCPListenAddr {
+		t.Fatalf("MCP listen address = %q", opts.MCPListenAddr)
+	}
+	if credentialHint(opts) != ".secrets/control-plane-api-key.txt" {
+		t.Fatalf("credential hint = %q", credentialHint(opts))
 	}
 }
 
@@ -187,6 +203,56 @@ func TestReconnectFailsClosedWhenOwnedChildCannotStop(t *testing.T) {
 	status, err := controller.Reconnect(nil, nil)
 	if asProblem(err).Code != CodeStopFailed || status.Stage != StageFailed {
 		t.Fatalf("reconnect result = %+v err=%v", status, err)
+	}
+}
+
+func TestConnectReusesReadyOwnedConnection(t *testing.T) {
+	ready := Status{Stage: StageReady, Transport: config.TransportOpenAIRuntime, TunnelReady: true, MCPReady: true}
+	controller := &Controller{
+		status: ready,
+		mcp:    &childHandle{},
+		tunnel: &childHandle{},
+		now:    time.Now,
+	}
+	got, err := controller.Connect(nil, nil)
+	if err != nil || got != ready {
+		t.Fatalf("idempotent Connect = %+v, err=%v", got, err)
+	}
+}
+
+func TestStatusDetectsExitedOwnedProcessWithoutReadingOutput(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	controller := &Controller{
+		status: Status{Stage: StageReady, MCPReady: true, TunnelReady: true},
+		mcp:    &childHandle{done: done},
+		tunnel: &childHandle{done: make(chan struct{})},
+		now:    time.Now,
+	}
+	got := controller.Status()
+	if got.Stage != StageFailed || got.Code != CodeMCPNotReady || got.MCPReady || !got.TunnelReady {
+		t.Fatalf("status after owned MCP exit = %+v", got)
+	}
+}
+
+func TestConnectCleansUpAndDoesNotReuseExitedReadyHandles(t *testing.T) {
+	doneMCP := make(chan struct{})
+	doneTunnel := make(chan struct{})
+	close(doneMCP)
+	close(doneTunnel)
+	controller := &Controller{
+		status: Status{Stage: StageReady, MCPReady: true, TunnelReady: true},
+		mcp:    &childHandle{done: doneMCP},
+		tunnel: &childHandle{done: doneTunnel},
+		opts:   Options{RepoRoot: t.TempDir()},
+		now:    time.Now,
+	}
+	got, err := controller.Connect(nil, nil)
+	if err == nil || got.Stage == StageReady || got.Code == CodeNone {
+		t.Fatalf("Connect reused exited handles: status=%+v err=%v", got, err)
+	}
+	if controller.mcp != nil || controller.tunnel != nil {
+		t.Fatal("exited handles remain owned after cleanup")
 	}
 }
 

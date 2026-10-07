@@ -1,5 +1,69 @@
 # 实际实施状态与验证记录
 
+## 2026-10-07 补充：R11.3 原生主题确认与重试
+
+- 用户反馈浅色切换后原生区域曾保持深色，随后反馈已自行恢复。本轮未复现该用户窗口的间歇故障，不能将下列代码缺陷断言为其唯一触发原因：旧同步器发出请求即缓存成功、失败不重试，并依赖后台 snapshot 成功才同步；原生错误诊断代码未进入日志 allowlist。
+- 可信页面 NavigationCompleted 发送 `window.ready`，主题不再等待配置/连接状态。宿主设置 DWM 与 WebView2 并回读 PreferredColorScheme 后才回传已应用主题；前端收到匹配确认才缓存成功。单请求串行、快速切换合并到最新偏好；失败最多追加三次有界重试。开始请求时清除旧确认，避免部分应用失败后切回旧主题被错误跳过。补充固定主题成功/失败日志代码，不记录授权内容。
+- 根模块 `go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...` PASS，依赖 fork edge 包 test/race PASS；前端 24 个 VM 场景 PASS，覆盖无 snapshot 就绪、延迟/无效确认、暂时失败、旧请求失败后切回及重复就绪事件。独立 `LOCAL_PROBE_DPI_WEBVIEW=1` 实机隐藏窗口 PASS：真实 Profile 深→浅→深回读，以及实际页面经 `window.ready` → 生产 `window.theme` RPC 恢复深色，不提供后台 snapshot；DPI=120/DPR=1.25 与物理像素匹配，临时 Profile 回收通过。
+- 用户正在使用的 R11.2 GUI、配置、连接与授权保持不动；未完成 R11.3 可见窗口/右键菜单的人工视觉验收。Windows 11 Build 22000+ 的自定义标题栏限制与 fork 既有 unsafe.Pointer vet 警告仍按 R11.2 记录，不扩大为系统主题、网络策略或执行权限修改。按 karpathy-guidelines 限定改动范围。
+- 独立产物 `bin/local-probe-desktop-r11.3.exe`，版本 `R11.3-desktop`，SHA256 `8675e000f91a76f7ae84180a5133ae5537c2d4f6b0cbd1005aa970263f133743`。不覆盖旧 EXE/MCP，无新 ZIP、提交、推送或部署。
+
+## 2026-10-07 补充：R11.2 原生主题同步
+
+- 用户反馈深色页面的标题栏与右键菜单仍为浅色。修复不涉及连接、权限或执行功能：可信顶层页面通过严格 `window.theme` 枚举请求，在原生 STA/UI 线程设置 DWM 标题栏/边框/文字配色及 WebView2 profile PreferredColorScheme；前端深浅主题同时设置 CSS color-scheme。启动、设置页和顶部主题切换、刷新后的偏好恢复均同步；重复渲染/轮询不会重复发送主题请求。未禁用或替换默认菜单、复制与刷新。
+- ABI 依据微软 WebView2 SDK 1.0.1210.39 的头文件核对：ICoreWebView2_13 get_Profile slot 105、profile put_PreferredColorScheme slot 9；仅添加窄接口声明及自身实现，未复制 SDK 实现代码。上下文菜单主题接口见 [微软文档](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2profile)。DWM 明确标题栏/文字/边框 COLORREF 支持 Windows 11 Build 22000+，见 [属性文档](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute)；旧系统或 Runtime 不支持时保留可用界面并提示原生同步失败，不修改系统主题或借助未公开 UxTheme API。
+- 末次源码修改后全项目 test/race、根模块 `go vet ./...` PASS；显式测试依赖 fork 的 edge 包也 PASS；前端 21 个 VM 场景 PASS。新增严格请求与 ABI 布局检查、Windows 隐藏窗口深浅深 DWM 设置和 dark BOOL 回读。首次测试试图回读仅 setter 的颜色属性，DwmGetWindowAttribute 返回 E_INVALIDARG，已按接口契约修正；没有把颜色回读记为 PASS。
+- 显式 `LOCAL_PROBE_DPI_WEBVIEW=1` 独立临时隐藏窗口/Profile 集成 PASS：实际 WebView2 preferred scheme 深→浅→深设置/回读，实际 DPI=120、DPR=1.25、viewport=466×283 与物理像素一致，临时浏览器目录回收通过。无用户配置、RPC 权限编辑、真实连接或网络专项测试。
+- 另行对 fork 全包运行 vet 会报告原有 secure_host_windows.go 的 21 处 unsafe.Pointer 回调转换警告；新 theme 文件无此警告。未扩大此次主题修复去改动这些已有 COM 桥接点；根模块 vet PASS 与 fork 单独 vet 的警告分开记录。
+- 实际新版 GUI 启动被用户托盘中的 R11.1 单实例保护拦截，只关闭了新启动的提示，未停止用户 GUI/连接。尚未完成新版深浅标题栏和右键菜单的人工视觉验收；已提示用户先从托盘退出旧版后检查。
+- 独立产物 `bin/local-probe-desktop-r11.2.exe`，SHA256 `d003a96644ec28369f1bb347ba498078c8a8674243915f2bd1e6cc4ed89336ac`。不覆盖旧 GUI/MCP；无新 ZIP、提交、推送或部署。采用 karpathy-guidelines 将改动限定于主题同步与验证，没有扩大权限。
+
+## 2026-10-07 补充：R11.1 GUI 接入离线文件规则
+
+- 按用户最新要求暂停严格网络专项实验，不修改 WFP/防火墙、系统策略或账号。历史网络失败仍保留；暂停检查不代表执行安全门已通过，`execution_available=false`，没有启用命令、脚本或构建执行，也没有把本机固定版本测试结果冒充产品调用入口。
+- 新增本地 `rules.read/preview/apply` GUI 桥接及“访问范围 → 高级自定义”的连接级/目录级 deny/ignore 编辑器。编辑仅修改当前层，显示叠加后的有效规则；路径预览复用真实 policy，不扫描或读取工作文件。预览绑定 revision 与输入，输入改变必须重新预览；共享影响列表必须完整确认。
+- 保存前停止本 GUI 自有连接，使用现有配置锁与 CAS 持久化，不自动重连，返回 `saved` 与 `applied=false`。其它使用相同配置的 MCP/GUI 实例须由用户先停止；复选框不是全局离线证明或在线撤权能力。无效规则、影响确认不完整或停止失败不改配置；CAS 冲突保留外部修改并保持连接停止。保存失败保留会话草稿，重试需重新预览。
+- 最后源码修改后，全项目 `go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...` 均 PASS，前端 19 个 VM 场景 PASS。新增生产桥接测试覆盖真实配置落盘/重载与两连接 policy 判定、显式清空、无变更、非法参数、共享影响、停止失败、CAS 冲突及忙状态；生命周期控制器是测试替身，不是外部 Tunnel 验收。全部可选隔离/版本/live Tunnel/DPI WebView 实验开关关闭。
+- 原生 WebView2 窗口已验证真实规则读取及允许/拒绝/忽略三类预览、文本选择、右键复制菜单及 Ctrl+R 后配置重载；发现并修复暗色多行编辑框未继承文字颜色的问题，并加入回归断言。没有通过自动 UI 操作保存或改变权限；持久化验证使用独立临时配置的后端测试。测试窗口已停止；合成临时目录保留，无用户文件被删除。仅本机视觉检查，不声称所有电脑/双屏 DPI 均已验收。
+- 独立产物：`bin/local-probe-desktop-r11.1.exe`；SHA256 `62c33344c5da0a643094ff7307a9a0125a1fa08a3293e2f0b21a9623cd81b66f`。未覆盖旧 GUI/MCP，未生成新 ZIP、提交、推送或部署。完整 R11 后端仍未交付，详见 [R11 进展](R11_BACKEND_PROGRESS.zh-CN.md) 与 [桌面操作说明](DESKTOP_PREVIEW.zh-CN.md)。
+
+## 2026-10-06 补充：无系统策略修改的替代路线复测
+
+- 保留已修复的受限 worker 默认 DACL；本轮补充测试进程的有界 stdout/stderr 采集，继承清单仅包含测试创建的三个 stdio 管道，不继承其它宿主句柄。fixture 无法写出结果时报告实际错误，日志不替代结果文件，不发放生产 capability。
+- 新增显式 `LOCAL_PROBE_LPAC_TEST=1` 的更严格 per-process LPAC 候选，未修改 WFP/防火墙、安装服务、创建登录账号或扩大现有目录权限。LPAC 不是当前可用替代方案：cmd 空操作通过；Node 报 `WSAStartup (10107)` 并以 `0x80000003` 退出；Go 报 Winsock 未初始化、授权目录 I/O 与子进程未通过，最终无法写结果并退出 3。该失败不能解释为严格网络拒绝成功。没有通过补加资源能力或回退普通执行来消除失败。
+- 普通 AppContainer 综合实验仍 FAIL：21 项身份/文件/继承与共享应用资源检查通过，4 项严格网络断言失败。所有随机新建应用配置删除 API 成功，并核验存储目录不存在。LPAC 的 token information class 46 在本机返回 `ERROR_INVALID_PARAMETER`，未据此虚构可用 token 证明。
+- 源码修改后重新执行全项目 `go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...`，均 PASS；这些常规检查显式清空可选实机开关，与上面的集成失败分开记录。产品命令执行仍关闭，完整 R11 后端未交付。用户“不修改系统策略”限制仍有效；本轮尚未找到满足这一限制且通过全部严格网络门的方案。详细证据见 [R11 进展记录](R11_BACKEND_PROGRESS.zh-CN.md)。
+
+## 2026-10-06 补充：R11 启动故障已修复，严格网络门仍未通过
+
+- 定位到本机受限令牌继承的默认 DACL：管理员与 SYSTEM 完整访问，登录会话仅 read/execute，没有当前用户的完整 ACE；LUA 降权后管理员 SID 为 deny-only。只修改新建测试 worker 令牌的默认 DACL 为 SYSTEM/当前用户，不修改父令牌或已有系统对象；获取令牌句柄增加 `TOKEN_ADJUST_DEFAULT`，用于配置该私有副本。
+- 相同 cmd/Node 映像、参数、环境、私有桌面、Job 和降权条件在修复前退出 `0xc0000142`，修复后受限对照及 AppContainer 启动全部通过。新增回归验证默认 DACL、父令牌不变、无提权、管理员仅拒绝用途及最大特权移除。没有把故障误归因为缺少运行库，也没有放宽安装路径守卫或退回普通用户脚本执行。
+- Go fixture 已实际运行：父/子进程的授权目录读写、越界读写拒绝、只读程序目录写入拒绝、另一临时容器目录读写拒绝及同 SID 继承断言均通过；临时应用配置及存储清理验证通过。仅为合成目录的本机证据，不是产品级任意脚本沙箱、MCP 多连接或写回能力。
+- 严格网络测试仍 FAIL：TCP4/TCP6 超时而非明确拒绝，UDP 写调用与监听调用成功；有 UDP 实际送达正对照，但容器包在 300ms 观察内未到达宿主。这不证明实际数据已经泄露，也不能证明满足严格拒绝门。用户选择只继续不修改系统策略的测试，故没有添加 WFP/防火墙规则；产品执行 capability 继续关闭。
+- 修改后全项目 `go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...` 均 PASS，常规命令跳过 opt-in 集成实验；单独隔离实验因网络条件失败如实保留。完整后端尚未交付；复测和状态见 [R11 进展记录](R11_BACKEND_PROGRESS.zh-CN.md)。
+
+## 2026-10-06 补充：首次当前账号真实测试（修复前记录）
+
+- 用户要求不新开账号直接测试；没有创建 Windows 登录账号或外部账号，没有安装服务或 WFP/防火墙规则。新增显式 opt-in 的当前账号测试，临时应用配置与合成文件不接入产品运行链。
+- 本机固定版本探查实际通过：Node 24.19.0、Python 3.13.1、PowerShell 7.6.5。Node 使用已核对的物理安装路径，未放宽原有 reparse/映像守卫；这些本地版本结果不是任意命令或隔离能力验收。
+- cmd/Node 的复制映像固定空操作在普通本地进程中成功；相同映像的当前账号受限令牌对照和 AppContainer 候选在初始化时退出 `0xc0000142`。Go 隔离 helper 同样未进入测试正文。启动失败原因尚未定位，文件/网络/子进程边界均没有 PASS 证据，不启用产品命令、脚本或构建执行。
+- 临时 AppContainer 删除返回成功，并核验其存储目录不存在。新增代码后的常规全项目 test/race/vet 通过，但默认跳过 opt-in 隔离实验；不能把常规回归 PASS 抵消上述失败。详细结果和复测入口见 [R11 进展记录](R11_BACKEND_PROGRESS.zh-CN.md)。
+
+## 2026-10-06 补充：R11 后端第一增量（非完整交付）
+
+- 用户批准执行后端优先第 2 版计划；主 agent 在 `feat/backend-r11` 直接实现，无前端修改。新增按连接的 deny/ignore 规则管理、真实 policy 预览、共享影响确认、CAS 持久化及本地离线管理 CLI；修复 Win32 配置 mutex 的线程所有权。
+- 规则模块/CLI 与全项目单元、race、vet 检查通过，新增两个真实 Windows 进程的 CAS 竞争及 CLI 子进程流程；短时 JSON fuzz 152,642 次通过。独立产物为 `bin/local-probe-admin-r11-rules-dev.exe`，没有覆盖旧 GUI 或现有 MCP 产物。
+- **完整 R11 尚未交付。** 在线撤权、写授权/工作文件写入、多连接生产运行链、真实命令/版本调用、脚本和 build/test 仍未完成。本地离线管理不是生产授权控制面。第一增量结束时隔离测试尚待授权；随后用户指定当前账号直接测试，结果见上方补充，不能继续将等待账号创建授权作为唯一阻塞。常驻服务仍另行确认。本轮未安装身份/系统规则/服务、未调用外部 Tunnel/ChatGPT、未提交或推送。
+- 完整七项状态、真实命令和边界见 [R11 进展与验证记录](R11_BACKEND_PROGRESS.zh-CN.md)，CLI 用法见 [规则管理说明](R11_RULE_ADMIN.zh-CN.md)。历史记录保持，不能拿历史 PASS 作为本轮七项功能全部完成的证据。
+
+## 2026-10-06 补充：R10.2 GUI DPI 与开发者配置（R8/R4）
+
+- GUI 宿主在创建 UI 前启用并核实 PMv2，处理跨屏 DPI 建议矩形和移动通知，初始尺寸按 DPI 计算并适配工作区。删除强制字体平滑；保持原生 WebView2 自动缩放，不使用 CSS zoom/位图拉伸。新增 DPI 参数矩阵与真实 Win32 隐藏窗口测试。本机可选 WebView2 集成实测 DPI=120、DPR=1.25，viewport 与客户区物理尺寸匹配；尚无第二台电脑/真实混合 DPI 双屏的视觉验收证据。
+- 开发者配置提供显式开启/关闭、connection 选择、受限命令模板 JSON 增删改、revision 绑定确认与落盘。默认关闭，关闭撤销连接授权，删除连接同步撤销授权；无效内容、未知连接、旧 revision、停止失败均不应用新授权。模板只在本地管理视图显示，不进入诊断导出，恢复备份清空命令配置。没有新增文件写能力。
+- **实际命令执行仍未交付。** 网络 enforcement 后端与受限 broker/可信启动链未完成，`execution_available=false`；没有注册 GUI run RPC 或 MCP `run_probe`，未将 enabled/config/fake capability 当作执行准入。开启的是配置意图，不能声称命令已可运行。管理员服务安装、系统网络策略与真实命令测试仍待单独授权。
+- 本次证据：`go test ./...`、`go vet ./...`、`go test -race ./...` 通过；最后新增诊断脱敏断言另行复测 desktopbridge/desktophost 竞态检查。前端 13 个 VM 场景通过，含授权确认、旧 revision、撤销、模板管理与执行门保持关闭。可选 `LOCAL_PROBE_DPI_WEBVIEW=1` 隐藏窗口集成通过；首次测试仅临时浏览器目录异步清理失败，修正等待 Runtime 释放映射文件后复测通过。未用交叉编译或伪造 DPI 消息代替真实多机视觉验证。
+- 生成独立 `bin/local-probe-desktop-r10.2.exe`，没有覆盖或停止用户正在使用的旧 GUI；未生成新 ZIP，未提交、推送或部署。操作说明与验收边界见 `docs/DESKTOP_PREVIEW.zh-CN.md`。
+
 日期：2026-09-19。当前等级：**K0 内核原型 + P04 平台有界验证 + P05 真实 ChatGPT/Cloudflare Tunnel 调用通过 + P06 有界文件发现与 literal 搜索已实现 + R1 audit.v1 与 direct-search 第一增量已接入本地 MCP + R2 lines/tail 与 workspace_snapshot 第一增量已接入本地 MCP + R3 无进程环境发现已接入本地 MCP + R4 本地固定探针/typed input/审计与 networkguard 规划边界已实现 + R4 commandpath 本地 identity binding 已实现 + R5 固定 Git plan/parser 已实现但保持不可执行 + R6 transport config、非生产 FileStore、admission gate、fake supervisor automation core、Windows runtimeowner/readiness、lifecycle epochs/capabilities、ReadyChild、lifecycleadapter 和本地 connectionmanager 协调契约已实现 + R7 bounded local-only metadata candidate catalog 与 direct-search 证据 harness 已实现 + R8 desktopadmin 本地只读管理投影，以及 Windows GUI/tray Preview、日志/诊断读取与安全导出已实现 + R9 本地 releasecheck typed-evidence gate 与 Windows acceptance 脚本已实现但 release-ready=false。** 本轮按用户重新排序，优先完成日志/诊断产品化增量和 Windows 桌面 Preview；此前尚未开发的命令执行、索引、生产 supervisor 接线等不在本轮范围。R4/R5/R6/R7/R8/R9 的生产硬门仍未闭合，Preview 不是生产控制面或正式发布产物。下一阶段执行路线见 [`docs/NEXT_PHASE_PLAN.zh-CN.md`](NEXT_PHASE_PLAN.zh-CN.md)。
 
 本次 Preview 源码发布补充了面向陌生 Windows 用户的 [部署入口](DEPLOYMENT_PREVIEW.zh-CN.md)、[开发指南](DEVELOPMENT.zh-CN.md) 和 [架构说明](ARCHITECTURE.zh-CN.md)。Cloudflare Preview 的 8788 与 OpenAI Secure MCP Tunnel 的 8787 是两条二选一链路；统一初始化、环境检查和打包脚本属于发布入口，但外部 Tunnel、Access、ChatGPT Workspace 和网页端调用仍需按实际环境单独验收。本文的历史验证记录不应被解读为新的端到端或 release-ready 证据。

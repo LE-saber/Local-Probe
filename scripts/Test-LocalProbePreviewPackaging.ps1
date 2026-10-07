@@ -53,6 +53,7 @@ Assert-Contains $buildText "\./cmd/local-probe-mcp" 'Build script must compile c
 Assert-Contains $buildText 'McpOutputPath must be a \.exe path inside RepoRoot' 'MCP output must remain repository-local.'
 Assert-Contains $buildText 'OutputPath and McpOutputPath must be different files' 'Preview and MCP outputs must not overwrite each other.'
 Assert-Contains $startText 'Build-LocalProbePreview\.ps1' 'Preview start script must use the shared packaging script.'
+Assert-Contains $startText "ValidateSet\('cloudflare_named', 'openai_runtime'\)" 'Preview start script must constrain the supported transport selector.'
 Assert-Contains $docText '\.secrets[\\/]cloudflared-tunnel-token\.txt' 'Preview documentation must name the external token file.'
 if (($docText -notmatch 'The token value is never displayed, logged') -and ($docText -notmatch 'Preview 不显示、记录或导出 token')) {
     throw 'Preview documentation must state that token values are not displayed or logged.'
@@ -69,7 +70,7 @@ if ($packageText -match "'--others'") {
     throw 'Preview package must not absorb arbitrary untracked files.'
 }
 Assert-Contains $ignoreText '/\.tools/' 'Repo-local cloudflared tools must be ignored by git.'
-if ($tunnelExampleText -match '(?i)(?:D:[\\/]+HOPP|C:[\\/]+Users[\\/]+)') {
+if ($tunnelExampleText -match '(?i)(?:[A-Z]:[\\/]+[^\\/]+[\\/]+download[\\/]+|[A-Z]:[\\/]+Users[\\/]+)') {
     throw 'Tunnel example must not contain a developer-machine absolute path.'
 }
 

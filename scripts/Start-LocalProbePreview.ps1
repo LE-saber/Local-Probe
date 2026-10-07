@@ -4,6 +4,8 @@ param(
     [string]$ConfigPath,
     [string]$AuditDir,
     [string]$ExecutablePath,
+    [ValidateSet('cloudflare_named', 'openai_runtime')]
+    [string]$Transport = 'cloudflare_named',
     [switch]$Build
 )
 
@@ -120,12 +122,16 @@ if ($null -ne $argumentListProperty) {
     [void]$psi.ArgumentList.Add($ConfigPath)
     [void]$psi.ArgumentList.Add('-audit-dir')
     [void]$psi.ArgumentList.Add($AuditDir)
+    [void]$psi.ArgumentList.Add('-transport')
+    [void]$psi.ArgumentList.Add($Transport)
 } else {
     $psi.Arguments = @(
         (Quote-WindowsArgument '-config'),
         (Quote-WindowsArgument $ConfigPath),
         (Quote-WindowsArgument '-audit-dir'),
-        (Quote-WindowsArgument $AuditDir)
+        (Quote-WindowsArgument $AuditDir),
+        (Quote-WindowsArgument '-transport'),
+        (Quote-WindowsArgument $Transport)
     ) -join ' '
 }
 $process = [System.Diagnostics.Process]::Start($psi)
