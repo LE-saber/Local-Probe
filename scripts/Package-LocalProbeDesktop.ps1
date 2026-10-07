@@ -177,9 +177,16 @@ $webviewLicense = Assert-RegularFile (Join-Path $webviewRoot 'LICENSE') 'jchv go
 $sdkLicense = Assert-RegularFile (Join-Path $webviewRoot 'webviewloader\sdk\LICENSE.txt') 'Microsoft WebView2 SDK license'
 $standardLicenses = Join-Path $stage 'third_party\licenses'
 $null = [IO.Directory]::CreateDirectory($standardLicenses)
+$goRoot = ([string](& $go.Source env GOROOT)).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($goRoot)) { throw 'Cannot locate Go redistribution notices.' }
+foreach ($name in @('LICENSE', 'PATENTS')) {
+    $goNotice = Assert-RegularFile (Join-Path $goRoot $name) "Go $name notice"
+    [IO.File]::Copy($goNotice, (Join-Path $standardLicenses "Go-$name.txt"), $false)
+}
 [IO.File]::Copy($webviewLicense, (Join-Path $standardLicenses 'go-webview2-LICENSE.txt'), $false)
 [IO.File]::Copy($sdkLicense, (Join-Path $standardLicenses 'WebView2SDK-LICENSE.txt'), $false)
 $noticeLines.Add('- Microsoft WebView2 SDK loader: third_party/licenses/WebView2SDK-LICENSE.txt')
+$noticeLines.Add('- Go runtime and standard library: third_party/licenses/Go-LICENSE.txt and third_party/licenses/Go-PATENTS.txt')
 $noticeLines.Add('- Local go-webview2 fork: third_party/licenses/go-webview2-LICENSE.txt; upstream commit and changes are documented in third_party/go-webview2/UPSTREAM.md.')
 $noticePath = Join-Path $stage 'third_party\NOTICE.txt'
 [IO.File]::WriteAllLines($noticePath, $noticeLines, [Text.UTF8Encoding]::new($false))

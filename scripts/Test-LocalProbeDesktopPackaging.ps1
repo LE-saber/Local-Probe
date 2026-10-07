@@ -45,7 +45,8 @@ if (Test-Path -LiteralPath $testOutput) { throw 'Randomized packaging test outpu
         'LICENSE', 'go.mod', 'go.sum', 'cmd\local-probe-desktop\main.go', 'cmd\local-probe-mcp\main.go',
         'internal\desktopweb\assets\index.html', 'internal\desktopweb\assets\app.js', 'internal\desktopweb\assets\icons.js',
         'third_party\NOTICE.txt', 'third_party\licenses\go-webview2-LICENSE.txt',
-        'third_party\licenses\WebView2SDK-LICENSE.txt'
+        'third_party\licenses\WebView2SDK-LICENSE.txt',
+        'third_party\licenses\Go-LICENSE.txt', 'third_party\licenses\Go-PATENTS.txt'
     )) { Assert-File (Join-Path $extractRoot $relative) "Clean archive extraction is missing $relative." }
 
     $desktopSource = Join-Path $RepoRoot 'bin\local-probe-desktop.exe'
@@ -70,6 +71,8 @@ if (Test-Path -LiteralPath $testOutput) { throw 'Randomized packaging test outpu
         if (-not $item.PSIsContainer -and $item.Name -match '(?i)\.desktop-(?:events|backup)\.json(?:\.bak)?$') { throw "Desktop user data included: $relative" }
     }
     Assert-Contains (Join-Path $extractRoot 'LICENSE') 'MIT License' 'The selected project license must be included.'
+    Assert-Contains (Join-Path $extractRoot 'third_party\licenses\Go-LICENSE.txt') 'Redistribution and use' 'Go redistribution terms must be retained.'
+    Assert-Contains (Join-Path $extractRoot 'third_party\licenses\Go-PATENTS.txt') 'patent' 'Go patent notice must be retained.'
     Assert-Contains (Join-Path $extractRoot 'third_party\NOTICE.txt') 'not a production-ready release' 'Third-party notice must state the preview limitations.'
 
     $go = Get-Command go -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1

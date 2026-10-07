@@ -32,6 +32,13 @@ jobs:
           go-version: '1.26.5'
           cache: false
 
+      - name: Windows race regression
+        shell: pwsh
+        run: |
+          # Keep test failures visible; acceptance intentionally suppresses command output.
+          go test -race -count=1 ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run local acceptance (non-Quick)
         shell: pwsh
         continue-on-error: false
