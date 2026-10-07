@@ -42,6 +42,14 @@ jobs:
             -File .\scripts\acceptance.ps1 -Json *> $reportPath
           $acceptanceExit = $LASTEXITCODE
           if ($acceptanceExit -ne 0) {
+            try {
+              $failedReport = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+              $failedReport.summary | ConvertTo-Json -Compress | Write-Host
+              $failedReport.checks | Where-Object status -eq 'FAIL' |
+                Select-Object name, status, hard, detail | ConvertTo-Json -Compress | Write-Host
+            } catch {
+              Write-Host 'Acceptance failed without a readable bounded report.'
+            }
             exit $acceptanceExit
           }
 
@@ -114,6 +122,7 @@ jobs:
               throw 'acceptance report checks must be a non-empty array'
             }
           } catch {
+            Write-Host ('Acceptance report validation failed: ' + $_.Exception.Message)
             exit 1
           }
 
