@@ -6,7 +6,7 @@
 - 按 use-system-ssh-git 使用系统 Git 与既有 SSH 密钥，认证成功。提交使用 GitHub noreply 邮箱；不读取/打印认证令牌，不改全局 Git/系统策略。现有公共 Git 历史不重写，第三方版权声明不删改。忽略本机 Serena/GSD 新草稿、运行配置、备份、日志与构建目录；已跟踪历史保留。当前工作树中的个人安装/机器路径已改为环境参数、相对路径或标明脱敏的证据字段。
 - Gitleaks 8.30.1 官方 Windows 下载经官方 checksum 核验；本地历史（新增整合提交后 69 commits）、index 快照与首轮包源码扫描均未发现密钥/令牌。使用全量脱敏日志；扫描不能保证识别所有隐私。本机 `.runtime`/`.secrets` 不作为上传或测试输入。
 - 源码提交 `cd2a20cf6535c95082256b3b3c388c057602f2a4` 的干净本地 clone：全项目 test/race/vet/build、fork edge test/race、前端 24 VM 场景、两个 5s fuzz、旧 Preview 打包契约以及新版 ZIP 排除/许可/哈希/干净解包重建检查通过。包含 17 个 Go 模块许可记录。未启动用户 MCP/Tunnel、未停止正在运行的 GUI，不覆盖其 EXE。
-- 首次非 Quick acceptance FAIL：只有 tracked safety policy 将两个上游 `COREWEBVIEW2_*KEY*` 键盘枚举 `.go` 文件误报为 secret-like；其它本地自动检查全部通过。修复仅豁免这两个确切上游路径，不豁免目录、任意源码或 `.runtime` 下同名文件；生产 predicate 的 11 项回归 PASS。修正后的完整预检及最终合并/资产结果在发布准备时继续核验，不预填成功。
+- 首次非 Quick acceptance FAIL：只有 tracked safety policy 将两个上游 `COREWEBVIEW2_*KEY*` 键盘枚举 `.go` 文件误报为 secret-like；其它本地自动检查全部通过。修复仅豁免这两个确切上游路径，不豁免目录、任意源码或 `.runtime` 下同名文件；生产 predicate 的 11 项回归 PASS。源码 `4e2251e15d87b6b69efc997f16ec2e059150dd7a` 的干净 clone 复测完整非 Quick 预检 PASS：10 pass、0 fail、6 个非自动外部门 skip、hard_fail=0、hard_skip=0、local_automated_checks_passed=true、release_ready=false。所有 PowerShell 脚本解析 PASS；70 个历史提交敏感扫描 PASS。
 - `docs/RELEASE_NOTES_R11.3.zh-CN.md` 为拟议 `v0.11.3-preview.1` 的说明草稿。新增 CI Desktop 干净打包入口，入口存在不等于远端 CI 已通过。不创建稳定发布或自动公开 Release；生产 `release_ready=false` 与执行硬门保持不变。
 
 ## 2026-10-07 补充：R11.3 原生主题确认与重试

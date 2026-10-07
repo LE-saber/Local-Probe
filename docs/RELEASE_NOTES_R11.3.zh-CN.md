@@ -37,4 +37,4 @@ Windows x64 未签名便携预览，包含 GUI、匹配的 MCP 程序、源码�
 - 记录精确 source commit、工具链、资产 SHA256；核对远端 main 与该提交一致。
 - 未经所有者最终发布决定，不创建正式稳定版、不自动公开 Release。
 
-实际证据另记 [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)，此草稿不预填本轮未完成的检查。
+本轮干净 clone 的 test/race/vet/build、前端 24 场景、两项 fuzz、ZIP 排除/许可/哈希与干净解包重建通过；修正键盘枚举文件名误报后，非 Quick acceptance 为 10 pass、0 fail，6 个外部人工门明确 skip，`release_ready=false`。Gitleaks 历史/源码/包扫描未发现密钥。源 commit 与最终资产 SHA256 将随准备包的外部 manifest 提供；远端 CI 结果另查，不由本地测试代替。实际证据见 [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
