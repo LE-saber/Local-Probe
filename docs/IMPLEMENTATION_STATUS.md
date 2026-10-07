@@ -2,6 +2,8 @@
 
 ## 2026-10-07 补充：源码整合与 MIT Preview 发布准备
 
+- 后续 Windows CI（`ff8ed76`）失败已定位为 `TestWindowsRejectsSymlinkAndJunctionSwapRace` 的目录转换覆盖不足（实际 3–4 次，要求至少 8 次），并非发现越界内容读出。本机 Go 1.26.5 test/race/vet、干净解包重建、前端 24 VM 与完整非 Quick acceptance 均 PASS，但不能覆盖远端失败结论。测试夹具只对临时项 rename/remove 的既有 Windows sharing/lock/access/busy 错误做最多 16 次有界重试；其它错误立即失败，保留转换次数、正常状态读取、竞争重叠及外部 marker 不变断言，补充重试次数回归。最终远端结果随准备包外部 manifest 记录。
+- 发布打包补齐 Go runtime/标准库 LICENSE 与 PATENTS，连同项目 MIT、17 个模块许可及 WebView2 SDK/fork 声明一起分发；干净解包测试检查这些声明。最终包使用与 CI 一致的 Go 1.26.5，只在忽略目录中解压该工具链，不改系统安装或现有运行进程。
 - 首次 main 整合已通过 SSH 推送为 `7b0547ab1332ce07569ab22338d4f5fd4bfa38e5`。远端 Ubuntu CI 发现两项此前 Windows 本机未覆盖的问题：DefaultOptions 测试写死反斜线；Unix 管理入口在 filepath.Clean 后检查 `//`，该前缀已被折叠。将测试预期改为 filepath.Join，将 Unix 拒绝检查前移到原始绝对路径，增加不触达 FS 的前缀回归。未跳过失败用例或放宽路径策略；修正后的远端 CI 另行核验。
 - 同轮 macOS CI 的 live tree 测试错误要求固定目录枚举顺序，改为验证根节点和必要文件/深度，不增加排序或减弱覆盖。Windows CI 的合成 DPI 矩形超过小屏工作区，被 OS 限制宽度；隐藏窗口 fixture 按实际显示器工作区限制请求大小，仍要求真实 GetWindowRect 与请求完全一致，纯 DPI 数值矩阵不变。首轮 Desktop 干净打包 CI 已通过，其余失败先保留，不能用本机 PASS 覆盖。
 - 用户授权整理有效源码合并 main 并推送，选择自有代码 MIT；新增根 LICENSE，保留 WebView2 fork/Microsoft SDK 和模块许可证。README 改为 R11.3 Desktop 入口，更新官方 Tunnel 本机控制说明，不将配置意图宣传为命令执行、写文件或多连接同时运行。

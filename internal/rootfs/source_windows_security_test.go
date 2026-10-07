@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/LE-saber/Local-Probe/internal/readcore"
 )
@@ -286,7 +287,9 @@ func TestWindowsRejectsSymlinkAndJunctionSwapRace(t *testing.T) {
 	var allowedDirFailures atomic.Int64
 	recordTransitionFailure := func(kind string, sequence int, err error, allowed *atomic.Int64) bool {
 		if isAllowedWindowsTransitionError(err) {
-			allowed.Add(1)
+			if allowed.Add(1) <= 3 {
+				t.Logf("%s transition %d exhausted sharing retries: %v", kind, sequence, err)
+			}
 			return true
 		}
 		reportBad("%s transition %d failed: %v", kind, sequence, err)
@@ -470,11 +473,11 @@ func swapWindowsFileToRegular(path string, content []byte, sequence int) error {
 	if err := os.WriteFile(stage, content, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(path, backup); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(path, backup) }); err != nil {
 		_ = os.Remove(stage)
 		return err
 	}
-	if err := os.Rename(stage, path); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(stage, path) }); err != nil {
 		_ = os.Remove(stage)
 		_ = os.Rename(backup, path)
 		return err
@@ -489,11 +492,11 @@ func swapWindowsFileToSymlink(path, target string, sequence int) error {
 	if err := os.Symlink(target, stage); err != nil {
 		return err
 	}
-	if err := os.Rename(path, backup); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(path, backup) }); err != nil {
 		_ = os.Remove(stage)
 		return err
 	}
-	if err := os.Rename(stage, path); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(stage, path) }); err != nil {
 		_ = os.Remove(stage)
 		_ = os.Rename(backup, path)
 		return err
@@ -512,11 +515,11 @@ func swapWindowsDirectoryToInside(path string, content []byte, sequence int) err
 		_ = cleanupWindowsDirectoryBackup(stage)
 		return err
 	}
-	if err := os.Rename(path, backup); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(path, backup) }); err != nil {
 		_ = cleanupWindowsDirectoryBackup(stage)
 		return err
 	}
-	if err := os.Rename(stage, path); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(stage, path) }); err != nil {
 		_ = cleanupWindowsDirectoryBackup(stage)
 		_ = os.Rename(backup, path)
 		return err
@@ -530,11 +533,11 @@ func swapWindowsDirectoryToJunction(path, target string, sequence int) error {
 	if err := createWindowsJunction(stage, target); err != nil {
 		return err
 	}
-	if err := os.Rename(path, backup); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(path, backup) }); err != nil {
 		_ = os.Remove(stage)
 		return err
 	}
-	if err := os.Rename(stage, path); err != nil {
+	if err := retryWindowsTransition(func() error { return os.Rename(stage, path) }); err != nil {
 		_ = os.Remove(stage)
 		_ = os.Rename(backup, path)
 		return err
@@ -554,7 +557,7 @@ func cleanupWindowsDirectoryBackup(backup string) error {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || fileInfoReparse(info) {
-		return os.Remove(backup)
+		return retryWindowsTransition(func() error { return os.Remove(backup) })
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("unexpected non-directory backup %q", backup)
@@ -564,10 +567,53 @@ func cleanupWindowsDirectoryBackup(backup string) error {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-	} else if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+	} else if err := retryWindowsTransition(func() error { return os.Remove(marker) }); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Remove(backup)
+	return retryWindowsTransition(func() error { return os.Remove(backup) })
+}
+
+// Readers and host scanners can briefly retain Windows sharing locks. Retry
+// only those errors on synthetic fixture entries, not failed security reads.
+// Coverage thresholds and outside-marker assertions remain mandatory.
+func retryWindowsTransition(action func() error) error {
+	const attempts = 16
+	for i := 0; ; i++ {
+		err := action()
+		if err == nil || !isAllowedWindowsTransitionError(err) || i == attempts-1 {
+			return err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func TestWindowsTransitionRetriesAreBounded(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		failure   error
+		failures  int
+		wantCalls int
+		wantError error
+	}{
+		{"success", nil, 0, 1, nil},
+		{"sharing", windowsErrorSharingViolation, 2, 3, nil},
+		{"not found", os.ErrNotExist, 1, 1, os.ErrNotExist},
+		{"exhausted", windowsErrorSharingViolation, 100, 16, windowsErrorSharingViolation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			err := retryWindowsTransition(func() error {
+				calls++
+				if calls <= test.failures {
+					return test.failure
+				}
+				return nil
+			})
+			if calls != test.wantCalls || !errors.Is(err, test.wantError) {
+				t.Fatalf("calls=%d error=%v; want calls=%d error=%v", calls, err, test.wantCalls, test.wantError)
+			}
+		})
+	}
 }
 
 const (
