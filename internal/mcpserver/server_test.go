@@ -192,8 +192,18 @@ func TestSearchToolsAreMCPScopedAndUseStructuredResults(t *testing.T) {
 		Coverage search.Coverage    `json:"coverage"`
 	}
 	decodeToolJSON(t, treeResult, &tree)
-	if len(tree.Entries) < 2 || tree.Entries[0].Path != "" || tree.Entries[0].Depth != 0 || tree.Entries[1].Path != "hello.txt" || tree.Entries[1].Depth != 1 {
+	if len(tree.Entries) < 2 || tree.Entries[0].Path != "" || tree.Entries[0].Depth != 0 {
 		t.Fatalf("tree_directory = %#v", tree)
+	}
+	// Live traversal order is filesystem-dependent, not a sorted contract.
+	foundHello := false
+	for _, entry := range tree.Entries {
+		if entry.Path == "hello.txt" && entry.Depth == 1 {
+			foundHello = true
+		}
+	}
+	if !foundHello {
+		t.Fatalf("tree_directory omitted expected depth-one file: %#v", tree)
 	}
 }
 

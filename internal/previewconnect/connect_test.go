@@ -18,11 +18,12 @@ func (stopFailChild) Wait() error { return nil }
 func (stopFailChild) Kill() error { return errors.New("injected stop failure") }
 
 func TestDefaultOptionsUsePackagedMCPAndRepoLocalCloudflared(t *testing.T) {
-	opts := DefaultOptions(`C:\work\Local-Probe\repo`)
-	if want := `C:\work\Local-Probe\repo\bin\local-probe-mcp.exe`; opts.MCPBinary != want {
+	repo := t.TempDir()
+	opts := DefaultOptions(repo)
+	if want := filepath.Join(repo, "bin", "local-probe-mcp.exe"); opts.MCPBinary != want {
 		t.Fatalf("MCPBinary = %q, want %q", opts.MCPBinary, want)
 	}
-	if want := `C:\work\Local-Probe\repo\.tools\cloudflared.exe`; opts.CloudflaredBinary != want {
+	if want := filepath.Join(repo, ".tools", "cloudflared.exe"); opts.CloudflaredBinary != want {
 		t.Fatalf("CloudflaredBinary = %q, want %q", opts.CloudflaredBinary, want)
 	}
 	if want := `.secrets/cloudflared-tunnel-token.txt`; credentialHint(opts) != want {

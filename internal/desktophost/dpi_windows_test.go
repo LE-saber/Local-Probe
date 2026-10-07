@@ -73,8 +73,24 @@ func TestDPIHiddenWindowIntegration(t *testing.T) {
 	if err := sizeInitialDPIWindow(h.hwnd); err != nil {
 		t.Fatal(err)
 	}
+	// Synthetic high-DPI rectangles must fit the runner's actual work area.
+	// Otherwise DefWindowProc clamps oversized windows on small CI displays,
+	// which tests monitor limits rather than application of the suggested RECT.
+	var monitorInfo struct {
+		Size          uint32
+		Monitor, Work hostRect
+		Flags         uint32
+	}
+	monitorInfo.Size = uint32(unsafe.Sizeof(monitorInfo))
+	monitor, _, _ := monitorFromWindowDPI.Call(hwnd, 2)
+	if ok, _, _ := getMonitorInfoDPI.Call(monitor, uintptr(unsafe.Pointer(&monitorInfo))); ok == 0 {
+		t.Fatal("test monitor work area unavailable")
+	}
+	maxWidth := monitorInfo.Work.Right - monitorInfo.Work.Left
+	maxHeight := monitorInfo.Work.Bottom - monitorInfo.Work.Top
 	for _, dpi := range []uint32{96, 120, 144, 168, 192, 240, 288, 96} {
-		rect := hostRect{Left: 40, Top: 50, Right: 40 + dpiPixels(600, dpi), Bottom: 50 + dpiPixels(400, dpi)}
+		left, top := monitorInfo.Work.Left, monitorInfo.Work.Top
+		rect := hostRect{Left: left, Top: top, Right: left + min(dpiPixels(600, dpi), maxWidth), Bottom: top + min(dpiPixels(400, dpi), maxHeight)}
 		if result := h.handleMessage(wmDPIChanged, uintptr(dpi)|uintptr(dpi)<<16, uintptr(unsafe.Pointer(&rect))); result != 0 {
 			t.Fatal("WM_DPICHANGED result")
 		}

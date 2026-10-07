@@ -2,6 +2,8 @@
 
 ## 2026-10-07 补充：源码整合与 MIT Preview 发布准备
 
+- 首次 main 整合已通过 SSH 推送为 `7b0547ab1332ce07569ab22338d4f5fd4bfa38e5`。远端 Ubuntu CI 发现两项此前 Windows 本机未覆盖的问题：DefaultOptions 测试写死反斜线；Unix 管理入口在 filepath.Clean 后检查 `//`，该前缀已被折叠。将测试预期改为 filepath.Join，将 Unix 拒绝检查前移到原始绝对路径，增加不触达 FS 的前缀回归。未跳过失败用例或放宽路径策略；修正后的远端 CI 另行核验。
+- 同轮 macOS CI 的 live tree 测试错误要求固定目录枚举顺序，改为验证根节点和必要文件/深度，不增加排序或减弱覆盖。Windows CI 的合成 DPI 矩形超过小屏工作区，被 OS 限制宽度；隐藏窗口 fixture 按实际显示器工作区限制请求大小，仍要求真实 GetWindowRect 与请求完全一致，纯 DPI 数值矩阵不变。首轮 Desktop 干净打包 CI 已通过，其余失败先保留，不能用本机 PASS 覆盖。
 - 用户授权整理有效源码合并 main 并推送，选择自有代码 MIT；新增根 LICENSE，保留 WebView2 fork/Microsoft SDK 和模块许可证。README 改为 R11.3 Desktop 入口，更新官方 Tunnel 本机控制说明，不将配置意图宣传为命令执行、写文件或多连接同时运行。
 - 按 use-system-ssh-git 使用系统 Git 与既有 SSH 密钥，认证成功。提交使用 GitHub noreply 邮箱；不读取/打印认证令牌，不改全局 Git/系统策略。现有公共 Git 历史不重写，第三方版权声明不删改。忽略本机 Serena/GSD 新草稿、运行配置、备份、日志与构建目录；已跟踪历史保留。当前工作树中的个人安装/机器路径已改为环境参数、相对路径或标明脱敏的证据字段。
 - Gitleaks 8.30.1 官方 Windows 下载经官方 checksum 核验；本地历史（新增整合提交后 69 commits）、index 快照与首轮包源码扫描均未发现密钥/令牌。使用全量脱敏日志；扫描不能保证识别所有隐私。本机 `.runtime`/`.secrets` 不作为上传或测试输入。

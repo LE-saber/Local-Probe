@@ -15,12 +15,14 @@ func validateExistingWorkspaceDirectory(raw string) (string, string, error) {
 	if raw == "" || len(raw) > maxWorkspacePath || strings.ContainsRune(raw, 0) || !filepath.IsAbs(raw) {
 		return "", "", problem(CodeInvalidPath, "选择一个绝对路径下的本地文件夹。", ErrInvalidPath)
 	}
+	// Clean collapses a leading // on Unix. Reject the original spelling before
+	// normalization or any filesystem lookup so the network-path policy survives.
+	if strings.HasPrefix(raw, "//") {
+		return "", "", problem(CodeRemotePath, "网络共享路径不可作为工作空间，请选择本机磁盘上的文件夹。", ErrRemotePath)
+	}
 	path := filepath.Clean(raw)
 	if path == string(filepath.Separator) {
 		return "", "", problem(CodeDriveRoot, "不要授权文件系统根目录，请选择更具体的项目文件夹。", ErrDriveRoot)
-	}
-	if strings.HasPrefix(path, "//") {
-		return "", "", problem(CodeRemotePath, "网络共享路径不可作为工作空间，请选择本机磁盘上的文件夹。", ErrRemotePath)
 	}
 	if err := rejectLinkComponents(path); err != nil {
 		return "", "", err
