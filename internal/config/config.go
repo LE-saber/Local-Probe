@@ -20,6 +20,8 @@ import (
 
 const SchemaVersionV1 = "local-probe.config.v1"
 
+const SchemaVersionV2 = "local-probe.config.v2"
+
 const MaxConfigBytes = 1 << 20
 
 var (
@@ -64,7 +66,8 @@ func (r Root) clone() Root {
 	return r
 }
 
-// Profile is a read-only access profile. A profile can be referenced by more
+// Profile defaults to read-only; explicit write grants require schema v2.
+// A profile can be referenced by more
 // than one connection, but its slices are never exposed for mutation.
 type Profile struct {
 	id             string
@@ -96,6 +99,10 @@ func (p Profile) DenyPatterns() []string { return append([]string(nil), p.denyPa
 func (p Profile) IgnorePatterns() []string { return append([]string(nil), p.ignorePatterns...) }
 
 func (p Profile) ReadOnly() bool { return p.readOnly }
+
+// WithWriteAccess is an explicit local grant. Only schema v2 can persist it;
+// operation tools still require developer mode, trusted_host and local approval.
+func (p Profile) WithWriteAccess() Profile { p = p.clone(); p.readOnly = false; return p }
 
 func (p Profile) clone() Profile {
 	p.rootIDs = append([]string(nil), p.rootIDs...)
@@ -140,6 +147,8 @@ func cloneWorkspaceRootMetadata(values []WorkspaceRootMetadata) []WorkspaceRootM
 // credential reference. The reference is not a secret and is never resolved
 // by this package.
 type Connection struct {
+	executionPolicy  ExecutionPolicy
+	purpose          ConnectionPurpose
 	id               string
 	label            string
 	profileID        string
@@ -479,6 +488,8 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		enabled := connection.enabled
 		transport := string(connection.Transport())
 		raw.Connections[i] = rawConnection{
+			ExecutionPolicy:  connection.executionPolicy,
+			Purpose:          connection.purpose,
 			ID:               connection.id,
 			Label:            connection.label,
 			ProfileID:        connection.profileID,
@@ -658,6 +669,8 @@ func parseWorkspaceRootMetadata(values []rawWorkspaceRootMetadata) ([]WorkspaceR
 }
 
 type rawConnection struct {
+	ExecutionPolicy  ExecutionPolicy     `json:"execution_policy,omitempty"`
+	Purpose          ConnectionPurpose   `json:"purpose,omitempty"`
 	DesktopTransport ConnectionTransport `json:"desktop_transport,omitempty"`
 	DesktopPort      int                 `json:"desktop_port,omitempty"`
 	ID               string              `json:"id"`
@@ -723,6 +736,8 @@ func fromRaw(raw rawConfig) (Config, error) {
 			transport = ConnectionTransport(*connection.Transport)
 		}
 		c.connections[i] = Connection{
+			executionPolicy:  connection.ExecutionPolicy,
+			purpose:          connection.Purpose,
 			id:               connection.ID,
 			label:            connection.Label,
 			profileID:        connection.ProfileID,
@@ -766,7 +781,7 @@ func fromRaw(raw rawConfig) (Config, error) {
 }
 
 func (c Config) validate() error {
-	if c.schemaVersion != SchemaVersionV1 {
+	if c.schemaVersion != SchemaVersionV1 && c.schemaVersion != SchemaVersionV2 {
 		return invalid("schema_version", "unsupported schema version")
 	}
 	rootIDs := make(map[string]struct{}, len(c.roots))
@@ -792,6 +807,9 @@ func (c Config) validate() error {
 	profileIDs := make(map[string]struct{}, len(c.profiles))
 	for i, profile := range c.profiles {
 		field := fmt.Sprintf("profiles[%d]", i)
+		if !profile.readOnly && c.schemaVersion != SchemaVersionV2 {
+			return invalid(field+".read_only", "write profiles require schema v2")
+		}
 		if err := validateProfile(profile, field); err != nil {
 			return err
 		}
@@ -836,6 +854,18 @@ func (c Config) validate() error {
 		if err := validateConnectionTransport(connection.Transport(), connection.tunnelID, connection.tunnelAlias, field); err != nil {
 			return err
 		}
+		if c.schemaVersion == SchemaVersionV1 && connection.purpose != "" {
+			return invalid(field+".purpose", "requires schema v2")
+		}
+		if c.schemaVersion == SchemaVersionV1 && connection.executionPolicy != "" {
+			return invalid(field+".execution_policy", "requires schema v2")
+		}
+		if !connection.Purpose().valid() {
+			return invalid(field+".purpose", "unsupported purpose")
+		}
+		if !connection.ExecutionPolicy().valid() {
+			return invalid(field+".execution_policy", "unsupported execution policy")
+		}
 	}
 	if err := validateEnvironmentTools(c.environmentTools); err != nil {
 		return err
@@ -879,9 +909,6 @@ func validateRoot(root Root, field string) error {
 func validateProfile(profile Profile, field string) error {
 	if !validIdentifier(profile.id) {
 		return invalid(field+".id", "invalid id")
-	}
-	if !profile.readOnly {
-		return invalid(field+".read_only", "write profiles are not enabled")
 	}
 	if err := validateIDList(profile.rootIDs, field+".roots"); err != nil {
 		return err

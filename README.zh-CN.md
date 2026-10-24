@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
 
+> **R12 开发更新：** 当前分支 `feat/r12-dual-mode` 包含配对 Agent、加密 Relay 和逐次本地批准的 Windows 操作后端；尚未接入旧 GUI/Web 高级入口。仓库默认文档为英文，请先看[英文首页](README.md)、[开发指南](docs/R12_DEVELOPMENT.md)和[GUI交接](docs/GUI_HANDOFF.md)。下文保留 R11.3 桌面基线说明，不代表新独立后端的完整能力。
+
 Local-Probe 是面向 Windows 的本地 MCP 工具与桌面 GUI：让 ChatGPT 在明确授权的工作空间内发现、搜索和读取文件。当前版本为 **R11.3 Desktop Preview**，自有源码采用 [MIT](LICENSE)；它不是生产级 supervisor、安装器或签名稳定版。
 
 ## 桌面 GUI（推荐）

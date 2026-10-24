@@ -9,6 +9,7 @@ type managedProcess struct {
 	stderr ioReadCloser
 	wait   func() (int64, error)
 	kill   func() error
+	reap   func() error
 	close  func()
 }
 

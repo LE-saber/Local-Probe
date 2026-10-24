@@ -154,7 +154,7 @@ func TestUpdatePauseAndResumeAreProfileScoped(t *testing.T) {
 	pausedValue := false
 	paused, err := env.manager.Update(context.Background(), DefaultConnectionID, env.initial.Revision(), "shared", RootUpdate{Enabled: &pausedValue})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("pause failed: %v; storage detail: %v", err, errors.Unwrap(err))
 	}
 	var shared WorkspaceRoot
 	for _, root := range paused.Roots {
@@ -185,7 +185,7 @@ func TestUpdatePauseAndResumeAreProfileScoped(t *testing.T) {
 	resumedValue := true
 	resumed, err := env.manager.Update(context.Background(), DefaultConnectionID, paused.Revision, "shared", RootUpdate{Enabled: &resumedValue})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("resume failed: %v; storage detail: %v", err, errors.Unwrap(err))
 	}
 	profileA, _ = mustLoadConfig(t, env.store).Profile("profile-a")
 	if !reflect.DeepEqual(profileA.RootIDs(), []string{"project", "shared"}) {

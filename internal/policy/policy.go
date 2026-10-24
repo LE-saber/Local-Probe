@@ -1,5 +1,6 @@
-// Package policy binds authenticated connections to immutable, read-only
-// configuration snapshots. It does not open files or authenticate transport.
+// Package policy binds authenticated connections to immutable configuration
+// snapshots. The readcore scope stays read-only; AllowsWrites is an independent
+// explicit v2 grant. Policy does not open files or authenticate transport.
 package policy
 
 import (
@@ -42,6 +43,7 @@ type BoundScope struct {
 	revision     string
 	tools        map[string]struct{}
 	roots        map[string]rootPolicy
+	readOnly     bool
 }
 
 type rootPolicy struct {
@@ -62,7 +64,7 @@ func (m *Manager) BindAuthenticated(connectionID string) (BoundScope, error) {
 		return BoundScope{}, fmt.Errorf("%w: connection unavailable", ErrDenied)
 	}
 	profile, ok := cfg.Profile(connection.ProfileID())
-	if !ok || !profile.ReadOnly() {
+	if !ok || !profile.ReadOnly() && cfg.SchemaVersion() != config.SchemaVersionV2 {
 		return BoundScope{}, fmt.Errorf("%w: profile unavailable", ErrDenied)
 	}
 	scope, err := readcore.NewScope(connection.ID(), snapshot.Revision(), profile.RootIDs())
@@ -95,6 +97,7 @@ func (m *Manager) BindAuthenticated(connectionID string) (BoundScope, error) {
 		revision:     snapshot.Revision(),
 		tools:        tools,
 		roots:        roots,
+		readOnly:     profile.ReadOnly(),
 	}, nil
 }
 
@@ -111,6 +114,10 @@ func (m *Manager) Validate(bound BoundScope) error {
 	cfg := snapshot.Config()
 	connection, ok := cfg.Connection(bound.connectionID)
 	if !ok || !connection.Enabled() || connection.ProfileID() != bound.profileID {
+		return ErrRevoked
+	}
+	profile, ok := cfg.Profile(bound.profileID)
+	if !ok || profile.ReadOnly() != bound.readOnly {
 		return ErrRevoked
 	}
 	if bound.scope.ConnectionID() != bound.connectionID || bound.scope.ProfileRevision() != bound.revision {
@@ -143,6 +150,21 @@ func (b BoundScope) ConnectionID() string { return b.connectionID }
 func (b BoundScope) ProfileID() string { return b.profileID }
 
 func (b BoundScope) Revision() string { return b.revision }
+
+func (b BoundScope) AllowsWrites() bool { return b.Validate() == nil && !b.readOnly }
+
+// AcquireRevisionLease is a short commit/launch guard, not a job-long lock.
+// Callers must not recursively call scope methods while holding this lease.
+func (b BoundScope) AcquireRevisionLease() (func(), error) {
+	if b.manager == nil || b.revision == "" {
+		return nil, ErrRevoked
+	}
+	release, ok := b.manager.store.AcquireRevisionLease(b.revision)
+	if !ok {
+		return nil, ErrRevoked
+	}
+	return release, nil
+}
 
 func (b BoundScope) AllowsTool(tool string) bool {
 	if b.Validate() != nil {

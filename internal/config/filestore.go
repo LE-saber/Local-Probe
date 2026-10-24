@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -627,7 +628,13 @@ func sameFileStorePath(left, right string) bool {
 	return left == right
 }
 
-func fileStoreIO(operation string, _ error) error {
+func fileStoreIO(operation string, cause error) error {
+	// Retain only the numeric OS category, never PathError paths or raw cause
+	// text. This distinguishes transient sharing from permanent I/O failures.
+	var code syscall.Errno
+	if errors.As(cause, &code) {
+		return fmt.Errorf("%w: %s (os code %d)", ErrFileStoreIO, operation, uint64(code))
+	}
 	return fmt.Errorf("%w: %s", ErrFileStoreIO, operation)
 }
 

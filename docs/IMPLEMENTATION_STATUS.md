@@ -1,4 +1,51 @@
-# 实际实施状态与验证记录
+# Implementation status and verification history
+
+## 2026-10-24: R12 repository handoff
+
+The complete R12 development implementation is delivered on `feat/r12-dual-mode`, based on the R11.3 code plus the four-language README update from main. Earlier entries saying "uncommitted" or "not pushed" describe their historical development rounds; they do not supersede this source handoff. No new Release, deployment or main merge is part of this upload.
+
+English is the default entry language: [developer guide](R12_DEVELOPMENT.md), [GUI handoff](GUI_HANDOFF.md), [operations](R12_OPERATIONS.md), [pairing/transport](R12_PAIRING_AND_TRANSPORT.md) and [documentation index](README.md). The dated Chinese plans and evidence are retained.
+
+| Area | Implemented | Still pending |
+| --- | --- | --- |
+| Paired transport | Persistent identities, certificate grants, revocation/leases, stdio Agent, direct WSS and static Relay with endpoint mTLS | Automated rotation/renewal and production control plane |
+| Windows operations | Explicit trusted-host commands/scripts/versions/build/test, text writes/patches, exact local approval, private durable jobs, bounded output and cancellation | GUI/Web advanced ingress and trusted local management adapters |
+| Runtime/rules | Scoped reads/writes, offline rules, two independent concurrent jobs | Full three-connection host, online rules and selective authorization epochs |
+| Testing | Local Windows operation evidence; previous public read-only Relay evidence; fresh Go test/race/vet and frontend checks for upload | Linux Agent to Windows operation acceptance over the real Relay, GUI integration and actual mixed-DPI acceptance |
+
+`trusted_host` uses current-user file/network permissions without sandbox guarantees. It does not enable old desktop execution gates or upgrade read-only profiles. Linux target execution/writes remain unsupported. File updates are not atomic replacement, and unknown results are not replayed.
+
+Fresh upload checks and their limits are recorded in [source handoff evidence](evidence/r12/2026-10-24-source-upload.md). The records below remain a historical timeline.
+
+---
+
+## 2026-10-24：R12 本地审批与真实操作后端
+
+- 新增私有持久化作业、本地批准 CLI 和配对 MCP 操作工具。真实命令/版本/脚本/build/test、文本写入/精确补丁已接线；需 v2 显式可写 profile、trusted_host、开发者连接许可、工具许可及精确计划本地批准，旧只读配置不升级。
+- 本机真实四类脚本、Go 编译/单元测试、加密 MCP 闭环、CLI批准、幂等、重启不重放、双连接作业隔离、取消、文件冲突及只读权限测试通过；Windows Job 限制经内核读取验证。
+- 独立后端开发构建，未接 GUI/Web 高级入口；Linux Agent 待实机验收，Linux 目标执行不支持。在线规则/选择性授权版本/完整多连接宿主仍待完成。本轮未测试或修改真实 Relay、未连接另一电脑、未提交或推送。
+- 细节见[操作后端说明](R12_OPERATIONS_BACKEND.zh-CN.md)。
+- 最终完整 test/race/vet、独立 Windows 构建、Linux 交叉编译及敏感信息扫描通过；跨机/真实中转操作未测试。证据见[本轮操作验证](evidence/r12/2026-10-24-operations.md)。
+
+## 2026-10-24：R12 公网 Relay 测试部署
+
+- 已按授权在既有云服务器部署 Relay/TLS 前端，仅开放 TCP 8080，复用 nobody，保留原有 443 服务。直接公网 WSS、端点 mTLS、实际合成文件读取与范围拒绝通过；修复等待目标断线槽残留后，公网 race 连续三次 PASS，临时 SSH 转发已关闭。
+- 前端限制公网 NAT 网卡监听、单元日志限流及自身 socket MSS=1100，解决 Docker 误连和本次公网 TLS 超时；未降低证书验证、未修改全局 MTU/路由。Linux 前端实际测试通过。测试叶证书 2026-11-07 到期，正式续期和完整远程操作仍未交付。
+- 详细故障、测试范围、部署哈希及维护约束见[公网 Relay 运维记录](R12_RELAY_DEPLOYMENT.zh-CN.md)。本轮没有提交或推送源码。
+- 最终源码完整 `go test ./...`、`go test -race ./...`、`go vet ./...` 均通过；相关源码/部署脚本/文档敏感信息扫描未命中。
+
+## 2026-10-24：R12 配对、原生 Agent 与 Relay 只读后端闭环
+
+- 新增持久化设备身份/配对/撤销、Windows DPAPI 与私有 DACL、独立叶密钥运行时；新 pair/agent/target/relay CLI 已可编译运行。配对主体进入现有 MCP policy，保留只读与目录范围，认证入口互斥。
+- 直接 WSS 和自建静态 Relay 均通过本机集成；真实目标/Agent EXE 经官方 SDK stdio 和 Relay 读取合成文件通过。修复 WSS 读取 deadline 被 Gorilla 永久缓存导致的 HTTP EOF 风险，增加恢复读取回归和 race 重复验证。
+- 本轮不等于完整远程操作交付；实际命令/写入/审批/作业、多连接控制面、GUI 和公网跨机验收仍未完成。完整范围、失败与测试记录见 [R12 进展](R12_PROGRESS.zh-CN.md)，操作约定见 [配对与通道说明](R12_PAIRING_AND_TRANSPORT.zh-CN.md)。
+- 最终完整 test/race/vet 通过，配对解码 fuzz 237,185 次通过；还修复 Windows 配置替换的短暂错误 5，占用类错误有限重试且保留永久失败，暂停/恢复 race 300 次通过。开发产物位于忽略目录 `bin/r12/`，未提交/推送或部署。
+
+## 2026-10-23：R12 双用途与远程操作第一后端增量
+
+- 依据 [R12 技术实现书](R12_DUAL_MODE_REMOTE_IMPLEMENTATION_PLAN.zh-CN.md) 在 `feat/r12-dual-mode` 实施；用户已明确选择新增 `trusted_host`。旧配置仍默认隔离要求，不自动开放执行。
+- 已新增 v2 用途/执行策略配置、官方 MCP 的原生访问优先说明、TLS 1.3 双向认证与 WSS 字节流样机，以及 Windows 本地受信任进程启动基础。尚未接入生产 MCP/GUI，也未完成 Relay、持久化配对、作业审批、写入和多连接。
+- 正常主机环境全项目 test、完整 race 复测、vet 通过；首轮 race 的连接切换偶发失败仍保留，不能声称根因已修复。详细范围、失败与后续事项见 [R12 进展](R12_PROGRESS.zh-CN.md)。未提交/推送/部署，未新建账号或修改系统网络策略。
 
 ## 2026-10-07 补充：源码整合与 MIT Preview 发布准备
 

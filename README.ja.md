@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
 
+> **R12 開発更新:** `feat/r12-dual-mode` にはペアリング済み Agent、暗号化 Relay、操作ごとのローカル承認を必要とする Windows バックエンドが含まれます。既存 GUI/Web の高度な操作画面への接続は未完了です。既定の文書は英語です。[英語 README](README.md)、[開発ガイド](docs/R12_DEVELOPMENT.md)、[GUI 引き継ぎ](docs/GUI_HANDOFF.md)をご覧ください。以下は R11.3 デスクトップの説明です。
+
 **明示的に許可したローカルワークスペースを探索・検索・読取するための、Windows デスクトップ管理 UI と MCP ツール。**
 
 > **R11.3 Desktop Preview。** 独自コードは [MIT](LICENSE)、第三者コードは各自のライセンスです。この時点で公開済み GitHub Release はありません。署名なしのプレビューであり、本番 supervisor やインストーラーではありません。`execution_available=false`、`release_ready=false` は維持されています。
