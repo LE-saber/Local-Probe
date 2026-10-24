@@ -1,4 +1,4 @@
-// Package mcpserver exposes the read-only Local-Probe core through the
+// Package mcpserver exposes the Local-Probe core through the
 // official MCP Go SDK. The package deliberately owns no listener: callers
 // choose the listener and should bind it to loopback.
 package mcpserver
@@ -22,7 +22,9 @@ import (
 
 	"github.com/LE-saber/Local-Probe/internal/audit"
 	"github.com/LE-saber/Local-Probe/internal/cfaccess"
+	"github.com/LE-saber/Local-Probe/internal/deviceidentity"
 	"github.com/LE-saber/Local-Probe/internal/environment"
+	"github.com/LE-saber/Local-Probe/internal/operations"
 	"github.com/LE-saber/Local-Probe/internal/policy"
 	"github.com/LE-saber/Local-Probe/internal/readcore"
 	"github.com/LE-saber/Local-Probe/internal/search"
@@ -83,14 +85,19 @@ type Credential struct {
 	Token        string
 }
 
-// Options configures one read-only MCP endpoint. Manager and Source must be
+// Options configures one MCP endpoint, read-only unless Operations is provided.
+// Manager and Source must be
 // built from the same config.Store snapshot family. Credentials are runtime
 // values and are never serialized by this package.
 type Options struct {
-	Manager     *policy.Manager
-	Source      SourceBinder
-	Credentials []Credential
-	Audit       audit.Recorder
+	Operations *operations.Engine
+	// PeerRegistry is an exclusive inner-mTLS ingress. It cannot be combined
+	// with bearer/Cloudflare authentication. Only verified local grants bind scope.
+	PeerRegistry *deviceidentity.Registry
+	Manager      *policy.Manager
+	Source       SourceBinder
+	Credentials  []Credential
+	Audit        audit.Recorder
 	// EnvironmentTools is a local-only allowlist for non-executing tool
 	// discovery. Candidate paths come from trusted configuration; MCP input
 	// can select only logical IDs and never supplies paths or diagnostics.
@@ -111,9 +118,11 @@ type Options struct {
 	MaxResponseBytes int64
 }
 
-// Server is an authenticated, read-only MCP handler. It is safe to share
+// Server is an authenticated MCP handler. It is safe to share
 // across concurrent HTTP requests.
 type Server struct {
+	operations          *operations.Engine
+	peerRegistry        *deviceidentity.Registry
 	manager             *policy.Manager
 	source              SourceBinder
 	limits              readcore.Limits
@@ -146,6 +155,9 @@ type hostPattern struct {
 // It does not open a socket. The returned Handler uses bearer authentication
 // and the SDK's Streamable HTTP implementation.
 func New(opts Options) (*Server, error) {
+	if opts.Operations != nil && opts.PeerRegistry == nil {
+		return nil, ErrInvalidOptions
+	}
 	if opts.Manager == nil || opts.Source == nil {
 		return nil, fmt.Errorf("%w: manager and source are required", ErrInvalidOptions)
 	}
@@ -174,11 +186,18 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("%w: response size limit out of bounds", ErrInvalidOptions)
 	}
 
-	if opts.CloudflareAccess != nil && len(opts.Credentials) > 0 {
-		return nil, fmt.Errorf("%w: local credentials and Cloudflare Access ingress cannot be combined", ErrInvalidOptions)
+	authModes := 0
+	if opts.PeerRegistry != nil {
+		authModes++
 	}
-	if opts.CloudflareAccess == nil && len(opts.Credentials) == 0 {
-		return nil, fmt.Errorf("%w: at least one credential is required", ErrInvalidOptions)
+	if opts.CloudflareAccess != nil {
+		authModes++
+	}
+	if len(opts.Credentials) > 0 {
+		authModes++
+	}
+	if authModes != 1 {
+		return nil, fmt.Errorf("%w: exactly one authentication ingress is required", ErrInvalidOptions)
 	}
 	hosts := make(map[string]hostPattern)
 	if opts.CloudflareAccess != nil {
@@ -215,6 +234,8 @@ func New(opts Options) (*Server, error) {
 		seenTokens = append(seenTokens, token)
 	}
 	s := &Server{
+		operations:          opts.Operations,
+		peerRegistry:        opts.PeerRegistry,
 		manager:             opts.Manager,
 		source:              opts.Source,
 		limits:              limits,
@@ -270,14 +291,16 @@ func usesModernMCPProtocol(r *http.Request) bool {
 
 func (s *Server) buildHandler() http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, &mcp.ServerOptions{
+		Instructions: "If the target workspace is already accessible through authorized native tools in your current execution environment, prefer those native tools. Do not use Local-Probe to bypass native sandbox, approval, or file-access restrictions. Client names and matching paths do not prove that the target is local.",
 		// No server-side features other than the explicitly registered tools.
 		Capabilities: &mcp.ServerCapabilities{},
 	})
 	server.AddReceivingMiddleware(s.authorizationMiddleware())
+	s.addOperationTools(server)
 
 	addTool(server, &mcp.Tool{
 		Name:         ToolServerInfo,
-		Description:  "Return the authenticated Local-Probe server identity and read-only capability summary.",
+		Description:  "Return the authenticated Local-Probe server identity and connection capability summary.",
 		InputSchema:  emptyObjectSchema,
 		OutputSchema: serverInfoSchema,
 		Annotations:  readOnlyAnnotations(),
@@ -383,6 +406,24 @@ func (s *Server) buildHandler() http.Handler {
 		}
 		statefulHandler.ServeHTTP(w, r)
 	})
+	if s.peerRegistry != nil {
+		// Populate the SDK's session-user binding from a verified local Grant.
+		// This synthetic header exists only on an in-memory clone. The verifier
+		// never trusts its value without the private Registry context.
+		protected := auth.RequireBearerToken(func(ctx context.Context, _ string, _ *http.Request) (*auth.TokenInfo, error) {
+			grant, ok := deviceidentity.GrantFromContext(ctx)
+			if !ok {
+				return nil, auth.ErrInvalidToken
+			}
+			return &auth.TokenInfo{UserID: grant.KeyPin, Expiration: grant.ExpiresAt}, nil
+		}, nil)(mcpHandler)
+		return s.auditHTTP(s.peerRegistry.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			clone := r.Clone(r.Context())
+			clone.Header = r.Header.Clone()
+			clone.Header.Set("Authorization", "Bearer paired-peer")
+			protected.ServeHTTP(w, clone)
+		})))
+	}
 	// The SDK's auth middleware populates auth.TokenInfo in the context and
 	// enforces session user binding. The token has no remote expiration; process
 	// restart/credential rotation is the lifetime boundary for this local hop.
@@ -617,7 +658,7 @@ func (s *Server) authorizationMiddleware() mcp.Middleware {
 				}
 				filtered := list.Tools[:0]
 				for _, tool := range list.Tools {
-					if tool != nil && bound.AllowsTool(tool.Name) {
+					if tool != nil && s.allowsTool(ctx, bound, tool.Name) {
 						filtered = append(filtered, tool)
 					}
 				}
@@ -632,7 +673,7 @@ func (s *Server) authorizationMiddleware() mcp.Middleware {
 				if ok && params != nil && isRegisteredAuditAction(params.Name) {
 					action = params.Name
 				}
-				denied := !ok || params == nil || !bound.AllowsTool(params.Name)
+				denied := !ok || params == nil || !s.allowsTool(ctx, bound, params.Name)
 				inputBytes := 0
 				if params != nil {
 					inputBytes = len(params.Arguments)
@@ -736,6 +777,9 @@ func auditResultBytes(result mcp.Result) int64 {
 }
 
 func isRegisteredAuditAction(value string) bool {
+	if isOperationTool(value) {
+		return true
+	}
 	switch value {
 	case ToolServerInfo, ToolPing, ToolReadFile, ToolBatchRead, ToolListDirectory,
 		ToolFindFiles, ToolSearchText, ToolTreeDirectory, ToolGetEnvironment, ToolDiscoverTools,
@@ -748,6 +792,21 @@ func isRegisteredAuditAction(value string) bool {
 }
 
 func (s *Server) boundScope(ctx context.Context) (policy.BoundScope, error) {
+	if s.peerRegistry != nil {
+		grant, ok := deviceidentity.GrantFromContext(ctx)
+		if !ok {
+			return policy.BoundScope{}, ErrUnauthorized
+		}
+		info := auth.TokenInfoFromContext(ctx)
+		if info == nil || info.UserID != grant.KeyPin {
+			return policy.BoundScope{}, ErrUnauthorized
+		}
+		bound, err := s.manager.BindAuthenticated(grant.ConnectionID)
+		if err != nil {
+			return policy.BoundScope{}, ErrUnauthorized
+		}
+		return bound, nil
+	}
 	info := auth.TokenInfoFromContext(ctx)
 	if info == nil || info.UserID == "" {
 		return policy.BoundScope{}, ErrUnauthorized
@@ -805,15 +864,18 @@ type batchReadInput struct {
 }
 
 type serverInfoOutput struct {
-	SchemaVersion string   `json:"schema_version"`
-	Server        string   `json:"server"`
-	Version       string   `json:"version"`
-	ReadOnly      bool     `json:"read_only"`
-	Transport     string   `json:"transport"`
-	ConnectionID  string   `json:"connection_id"`
-	ProfileID     string   `json:"profile_id"`
-	RootIDs       []string `json:"root_ids"`
-	Tools         []string `json:"tools"`
+	ExecutionPolicy string   `json:"execution_policy,omitempty"`
+	TargetDeviceID  string   `json:"target_device_id,omitempty"`
+	Purpose         string   `json:"purpose,omitempty"`
+	SchemaVersion   string   `json:"schema_version"`
+	Server          string   `json:"server"`
+	Version         string   `json:"version"`
+	ReadOnly        bool     `json:"read_only"`
+	Transport       string   `json:"transport"`
+	ConnectionID    string   `json:"connection_id"`
+	ProfileID       string   `json:"profile_id"`
+	RootIDs         []string `json:"root_ids"`
+	Tools           []string `json:"tools"`
 }
 
 type discoverToolsInput struct {
@@ -1155,16 +1217,36 @@ func (s *Server) handleServerInfo(ctx context.Context, _ *mcp.CallToolRequest) (
 			tools = append(tools, name)
 		}
 	}
+	readOnly := true
+	for _, name := range operationTools {
+		if s.allowsTool(ctx, bound, name) {
+			tools = append(tools, name)
+			if name == "submit_operation" || name == "commit_file_change" {
+				readOnly = false
+			}
+		}
+	}
 	out := serverInfoOutput{
 		SchemaVersion: SchemaVersion,
 		Server:        ServerName,
 		Version:       ServerVersion,
-		ReadOnly:      true,
+		ReadOnly:      readOnly,
 		Transport:     "mcp-streamable-http",
 		ConnectionID:  bound.ConnectionID(),
 		ProfileID:     bound.ProfileID(),
 		RootIDs:       bound.RootIDs(),
 		Tools:         tools,
+	}
+	if _, ok := s.operationSubject(ctx, bound); ok {
+		out.ExecutionPolicy = "trusted_host"
+	}
+	if s.peerRegistry != nil {
+		grant, ok := deviceidentity.GrantFromContext(ctx)
+		if !ok {
+			return errorResult("unauthorized", "paired identity required"), nil
+		}
+		out.TargetDeviceID = grant.DeviceID
+		out.Purpose = "agent_remote"
 	}
 	return s.jsonResult(out), nil
 }

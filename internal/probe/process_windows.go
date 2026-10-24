@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -29,6 +30,14 @@ type windowsProcess struct {
 }
 
 func startFixedProcess(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity, expectedSHA256 string) (*managedProcess, error) {
+	return startManagedProcess(ctx, path, args, cwd, env, expected, expectedSHA256, false)
+}
+
+func startTrustedProcess(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity, expectedSHA256 string) (*managedProcess, error) {
+	return startManagedProcess(ctx, path, args, cwd, env, expected, expectedSHA256, true)
+}
+
+func startManagedProcess(ctx context.Context, path string, args []string, cwd string, env []string, expected fileIdentity, expectedSHA256 string, trustedSubtree bool) (*managedProcess, error) {
 	if path == "" || cwd == "" {
 		return nil, ErrInvalidInput
 	}
@@ -61,9 +70,15 @@ func startFixedProcess(ctx context.Context, path string, args []string, cwd stri
 		return nil, ErrUnavailable
 	}
 	state := &windowsProcess{job: job, process: windows.InvalidHandle, thread: windows.InvalidHandle}
-	if err := configureKillOnClose(job); err != nil {
+	if err := configureProcessJob(job, trustedSubtree); err != nil {
 		state.close()
 		return nil, ErrUnavailable
+	}
+	if trustedSubtree {
+		if err := configureTrustedCPUTime(job, ctx); err != nil {
+			state.close()
+			return nil, ErrUnavailable
+		}
 	}
 
 	stdinRead, stdinWrite, stdoutRead, stdoutWrite, stderrRead, stderrWrite, err := makeProbePipes()
@@ -208,6 +223,7 @@ func startFixedProcess(ctx context.Context, path string, args []string, cwd stri
 		stderr: stderr,
 		wait:   state.wait,
 		kill:   state.kill,
+		reap:   state.reap,
 		close: func() {
 			// Closing the readers is safe after the capture goroutines have
 			// completed and also makes the ownership explicit if a future
@@ -250,15 +266,43 @@ func makeProbePipes() (stdinRead, stdinWrite, stdoutRead, stdoutWrite, stderrRea
 }
 
 func configureKillOnClose(job windows.Handle) error {
+	return configureProcessJob(job, false)
+}
+
+func configureProcessJob(job windows.Handle, trustedSubtree bool) error {
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
 	info.BasicLimitInformation.ActiveProcessLimit = 1
+	if trustedSubtree {
+		info.BasicLimitInformation.ActiveProcessLimit = 32
+		info.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_JOB_MEMORY
+		info.JobMemoryLimit = 1 << 30
+	}
 	_, err := windows.SetInformationJobObject(
 		job,
 		windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)),
 		uint32(unsafe.Sizeof(info)),
 	)
+	return err
+}
+
+func configureTrustedCPUTime(job windows.Handle, ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ErrInvalidInput
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return ErrDeadlineExceeded
+	}
+	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	if err := windows.QueryInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+		return err
+	}
+	info.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_JOB_TIME
+	info.BasicLimitInformation.PerJobUserTimeLimit = int64(remaining / (100 * time.Nanosecond))
+	_, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
 	return err
 }
 
@@ -302,6 +346,34 @@ func (state *windowsProcess) kill() error {
 		return err
 	}
 	return nil
+}
+
+// TerminateJobObject is asynchronous. Confirm the bounded process list is
+// actually empty before reporting a trusted job as fully cancelled/completed.
+func (state *windowsProcess) reap() error {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var list struct {
+			Assigned, Count uint32
+			IDs             [32]uintptr
+		}
+		state.mu.Lock()
+		job := state.job
+		closed := state.closed
+		if closed || job == windows.InvalidHandle {
+			state.mu.Unlock()
+			return ErrUnavailable
+		}
+		err := windows.QueryInformationJobObject(job, windows.JobObjectBasicProcessIdList, uintptr(unsafe.Pointer(&list)), uint32(unsafe.Sizeof(list)), nil)
+		state.mu.Unlock()
+		if err == nil && list.Count == 0 && list.Assigned == 0 {
+			return nil
+		}
+		if err != nil || time.Now().After(deadline) {
+			return ErrUnavailable
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (state *windowsProcess) terminateSetup() {

@@ -1,4 +1,5 @@
-// Package rootfs provides the read-only filesystem boundary for readcore.
+// Package rootfs provides the read-only filesystem boundary for readcore and
+// a separately authorized, handle-bound Windows writer for explicit v2 grants.
 //
 // Source instances are built from one immutable config.Store snapshot. A
 // Source is used with a policy.BoundScope; the scope is deliberately retained

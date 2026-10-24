@@ -1,0 +1,10 @@
+{
+  "version": "local-probe.relay.v1",
+  "routes": [
+    {
+      "device_id": "replace-with-public-device-id",
+      "target_token_env": "LOCAL_PROBE_RELAY_TARGET_TOKEN",
+      "agent_token_env": "LOCAL_PROBE_RELAY_AGENT_TOKEN"
+    }
+  ]
+}

@@ -30,7 +30,7 @@ func TestDesktopHistoryPersistsIndependentScopesAndSelection(t *testing.T) {
 	secondID := added.Desktop.ActiveID
 	selected := desktopWrite(t, f.service, "connections.select", map[string]any{"expected_revision": added.Desktop.Revision, "id": original.Desktop.ActiveID})
 	if len(selected.Workspace.Roots) != 1 || selected.Workspace.Roots[0].ID != f.rootID {
-		t.Fatal("selection mixed scopes")
+		t.Fatalf("selection mixed scopes: connection=%+v workspace=%+v desktop=%+v", selected.Connection, selected.Workspace, selected.Desktop)
 	}
 	again := desktopWrite(t, f.service, "connections.select", map[string]any{"expected_revision": selected.Desktop.Revision, "id": secondID})
 	next, err := New(f.service.options)

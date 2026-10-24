@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
 
+> **R12 開發更新：** `feat/r12-dual-mode` 已包含配對 Agent、加密 Relay 與逐次本機核准的 Windows 操作後端；舊 GUI/Web 進階入口尚未接入。英文為預設文件語言，請先閱讀[英文首頁](README.md)、[開發指南](docs/R12_DEVELOPMENT.md)及 [GUI 交接](docs/GUI_HANDOFF.md)。以下保留 R11.3 桌面基線說明。
+
 **Windows 桌面管理介面與 MCP 工具，讓 AI 探索、搜尋及讀取明確授權的本機工作區。**
 
 > **R11.3 Desktop Preview。** 自有原始碼採 [MIT](LICENSE)，第三方授權另列。目前快照沒有已發布的 GitHub Release。這是未簽章預覽版，並非正式 supervisor 或安裝程式；`execution_available=false`、`release_ready=false` 維持不變。
